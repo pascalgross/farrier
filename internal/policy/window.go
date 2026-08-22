@@ -197,9 +197,22 @@ func (w Window) String() string {
 // Contains reports whether an instant falls inside the window.
 //
 // Yesterday's window instance is checked as well as today's, which is what makes a window crossing
-// midnight work: at 00:30 on Sunday the open window is Saturday's. Building the instances with
-// time.Date rather than by adding a duration means daylight-saving transitions move the window with
-// the wall clock, which is what an operator writing "03:00" meant.
+// midnight work: at 00:30 on Sunday the open window is Saturday's.
+//
+// The window's start is built with time.Date in the configured zone, so on an ordinary day it opens at
+// the wall-clock time the operator wrote, which is what somebody writing "03:00" meant. On the two days
+// a year when that wall-clock time is not a single unambiguous instant, the behaviour is as follows and
+// is pinned by a test, so that any change to it is deliberate:
+//
+//   - Spring forward, where the start time does not exist: time.Date normalises to the following hour,
+//     so the window opens an hour later than written and still runs for its full configured length.
+//   - Autumn back, where the start time happens twice: the second occurrence is used, so a window
+//     nominally opening at 02:00 does not open during the first, repeated 02:00.
+//
+// Neither is worth special-casing. A maintenance window that opens an hour late on one night a year,
+// or misses one repeated hour on another, costs a fleet nothing; code that tried to be clever about it
+// would be read by somebody at 03:00 on exactly the night it went wrong. Configuring a window that does
+// not span the local transition — as "Sun 03:00-05:00" does not in Europe/Berlin — avoids both.
 func (w Window) Contains(t time.Time) bool {
 	if w.always {
 		return true

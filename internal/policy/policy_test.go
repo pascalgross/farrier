@@ -279,3 +279,59 @@ func TestParseWindowRejectsNonsense(t *testing.T) {
 		}
 	}
 }
+
+// TestWindowBehaviourAcrossDaylightSavingTransitions pins what happens on the two awkward days.
+//
+// It is not asserting that the behaviour is ideal — it is asserting what the behaviour *is*, so that a
+// future change to the window arithmetic is a deliberate act with a failing test rather than a
+// discovery somebody makes at 03:00 on the one night it mattered. The reasoning for leaving it as it
+// stands is in Contains's doc comment.
+func TestWindowBehaviourAcrossDaylightSavingTransitions(t *testing.T) {
+	// A window that spans the transition, which is the only interesting case. Europe/Berlin moves at
+	// 02:00 CET -> 03:00 CEST in spring and 03:00 CEST -> 02:00 CET in autumn.
+	w := mustParseWindow(t, "Sun 02:00-04:00", "Europe/Berlin")
+
+	cases := []struct {
+		name   string
+		at     string
+		inside bool
+	}{
+		// Spring forward, 2026-03-29. 02:00 local does not exist, so the window opens at 03:00 CEST
+		// and runs its full two hours, closing at 05:00 CEST.
+		{"before the window, spring", "2026-03-29T00:30:00Z", false},  // 01:30 CET
+		{"inside the shifted window", "2026-03-29T01:30:00Z", true},   // 03:30 CEST
+		{"still inside, an hour later", "2026-03-29T02:30:00Z", true}, // 04:30 CEST
+		{"after the shifted window", "2026-03-29T03:30:00Z", false},   // 05:30 CEST
+
+		// Autumn back, 2026-10-25. 02:00 local happens twice; the second is used, so the first,
+		// repeated 02:30 is outside the window and the second is inside.
+		{"first repeated hour, outside", "2026-10-25T00:30:00Z", false}, // 02:30 CEST
+		{"second repeated hour, inside", "2026-10-25T01:30:00Z", true},  // 02:30 CET
+		{"inside, after the repeat", "2026-10-25T02:30:00Z", true},      // 03:30 CET
+		{"after the window closes", "2026-10-25T03:30:00Z", false},      // 04:30 CET
+	}
+
+	for _, tc := range cases {
+		at, err := time.Parse(time.RFC3339, tc.at)
+		if err != nil {
+			t.Fatalf("%s: parsing the instant: %v", tc.name, err)
+		}
+		if got := w.Contains(at); got != tc.inside {
+			t.Errorf("%s (%s): Contains = %v, want %v", tc.name, tc.at, got, tc.inside)
+		}
+	}
+
+	// A window that does not span the local transition is unaffected on both days, which is the
+	// configuration to recommend and the one docs/SECURITY.md and packaging/policy.toml show.
+	safe := mustParseWindow(t, "Sun 03:00-05:00", "Europe/Berlin")
+	for _, at := range []string{"2026-03-29T02:00:00Z", "2026-10-25T02:00:00Z"} {
+		instant, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", at, err)
+		}
+		if !safe.Contains(instant) {
+			t.Errorf("a window clear of the transition was closed at %s (%s local)",
+				at, instant.In(time.UTC).Format("15:04"))
+		}
+	}
+}
