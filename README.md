@@ -120,7 +120,7 @@ make web            # the Angular application, embedded into farrier-server
 make deb            # the farrier-agent .deb via nfpm
 ```
 
-Go 1.25 or newer. `make deb` additionally needs [`nfpm`](https://nfpm.goreleaser.com/);
+Go 1.26 or newer. `make deb` additionally needs [`nfpm`](https://nfpm.goreleaser.com/);
 `make web` needs Node and pnpm.
 
 ## Licence, and why it will not change

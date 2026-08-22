@@ -34,10 +34,13 @@ else
 fi
 
 # say prints a progress line.
-say() { printf '%s==>%s %s\n' "$C_DIM" "$C_RESET" "$*"; }
+# Narration goes to stderr, not stdout. build_package returns the package path by printing it, so a
+# progress line on stdout ends up inside the caller's variable — which is exactly how the fleet spent a
+# run reporting that it could not find a package at a path with a status message glued to the front.
+say() { printf '%s==>%s %s\n' "$C_DIM" "$C_RESET" "$*" >&2; }
 
 # pass records a scenario assertion that held.
-pass() { printf '%s  ✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+pass() { printf '%s  ✓%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
 
 # fail records a scenario assertion that did not hold, and stops the scenario.
 fail() { printf '%s  ✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; return 1; }
@@ -46,7 +49,7 @@ fail() { printf '%s  ✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; return 1; }
 #
 # It exists so that a scenario which depends on write capability is visible as pending rather than
 # quietly absent. A test suite whose gaps are invisible is one whose coverage is a guess.
-skip() { printf '%s  ↷%s %s\n' "$C_YELLOW" "$C_RESET" "$*"; }
+skip() { printf '%s  ↷%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 
 # instance_name renders the LXD instance name for a release.
 instance_name() {

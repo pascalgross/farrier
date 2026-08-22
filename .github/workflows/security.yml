@@ -43,6 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          # Given explicitly, as in ci.yml: there is no package.json at the repository root and no
+          # packageManager field for the action to read, so without it the step fails before it starts
+          # — which is how this job managed never to have run at all.
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -64,7 +69,7 @@ jobs:
         # Pinned to a release rather than @master. This is the workflow whose subject is supply-chain
         # vigilance; running a third-party action from a moving branch in it would be funny in a way
         # nobody wants to explain.
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .

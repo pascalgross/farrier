@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -152,9 +153,18 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 			return nil, fmt.Errorf("agent: --bootstrap %q but the control plane returned a template "+
 				"named %q; refusing", opts.Bootstrap, res.Bootstrap.Name)
 		}
-		if err := applyBootstrap(opts.StateDir, *res.Bootstrap); err != nil {
+		signer, err := verifyBootstrap(opts.StateDir, *res.Bootstrap)
+		if err != nil {
 			return nil, err
 		}
+		// The refusal is here rather than inside verifyBootstrap, so that "this build applies nothing"
+		// reads as a property of this phase at the one place that would apply it, and so that
+		// verification stays a function that can succeed. Nothing has been written: no record, no
+		// credential. A later build with an executor can still apply this template exactly once.
+		return nil, fmt.Errorf("agent: --bootstrap %q was verified against %s (signed by %s), and this "+
+			"build applies no templates: nothing was executed and nothing was recorded. Tier 2 "+
+			"provisioning arrives in phase 3 and cloud-init will do the applying",
+			res.Bootstrap.Name, signing.TrustedSignersPath, signer)
 	}
 
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
@@ -234,7 +244,11 @@ func installLocalFile(source, destination string) error {
 // BootstrapRecordFile is where an applied provisioning template is recorded permanently.
 const BootstrapRecordFile = "bootstrap-applied.json"
 
-// bootstrapRecord is what is written to the host before a template is executed.
+// bootstrapRecord is the permanent record of a template that was applied.
+//
+// Phase 0 reads it and never writes it: the interlock has to be honoured by every build, and only a
+// build that applies something has anything to record. Writing it here would consume the apply-once
+// interlock for an application that did not happen.
 type bootstrapRecord struct {
 	// Name is the template as the operator named it.
 	Name string `json:"name"`
@@ -249,48 +263,59 @@ type bootstrapRecord struct {
 	AppliedAt time.Time `json:"appliedAt"`
 }
 
-// applyBootstrap verifies, records and would apply a provisioning template.
+// verifyBootstrap checks a provisioning template against this host's own trust anchor, and shows it.
 //
-// This is the exception named in the second paragraph of the guarantee, and every guardrail in
-// docs/SECURITY.md §6 is enforced here: the signature is checked against a key already in this host's
-// own trusted-signers, the full text is printed and recorded *before* anything happens, and an on-disk
-// interlock makes it exactly once.
+// This is the exception named in the second paragraph of the guarantee, and the guardrails in
+// docs/SECURITY.md §6 that constrain *authorising* a template are enforced here: the apply-once
+// interlock is checked first, the signature is verified against a key already in this host's own
+// trusted-signers, and the full text is printed before anything could happen.
 //
-// Phase 0 stops before applying: Tier 2 provisioning arrives in phase 3, and cloud-init will do the
-// applying then. Farrier will never ship a hand-written YAML-to-shell engine, which would be the exec
-// channel wearing a hat.
-func applyBootstrap(stateDir string, bootstrap protocol.Bootstrap) error {
+// It stops there, and returns the key that authorised it. Applying — and writing the permanent record
+// that consumes the interlock — belongs to the code that actually applies, which phase 0 does not have.
+// Recording an application that did not happen would be both a false audit entry and a spent interlock,
+// leaving a host that could never apply the template it was enrolled for.
+func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.PublicKey, error) {
 	recordPath := filepath.Join(stateDir, BootstrapRecordFile)
-	if _, err := os.Stat(recordPath); err == nil {
-		return fmt.Errorf("agent: a bootstrap template has already been applied on this host "+
-			"(see %s); templates are applied at most once", recordPath)
+	if raw, err := os.ReadFile(recordPath); err == nil {
+		// Named in the refusal where the record is readable. "A template was already applied" sends an
+		// operator looking through a file; "standard-server was applied on the 4th" usually ends the
+		// question.
+		var applied bootstrapRecord
+		if json.Unmarshal(raw, &applied) == nil && applied.Name != "" {
+			return signing.PublicKey{}, fmt.Errorf("agent: the template %q was already applied on this "+
+				"host at %s (see %s); templates are applied at most once",
+				applied.Name, applied.AppliedAt.Format(time.RFC3339), recordPath)
+		}
+		return signing.PublicKey{}, fmt.Errorf("agent: a bootstrap template has already been applied on "+
+			"this host (see %s); templates are applied at most once", recordPath)
 	}
 
 	signers, err := signing.LoadTrustedSigners()
 	if err != nil {
-		return fmt.Errorf("agent: reading the trust anchor: %w", err)
+		return signing.PublicKey{}, fmt.Errorf("agent: reading the trust anchor: %w", err)
 	}
 	if signers.Empty() {
-		return fmt.Errorf("%w: refusing to apply a template with no trust anchor", ErrNoTrustAnchor)
+		return signing.PublicKey{}, fmt.Errorf(
+			"%w: refusing to apply a template with no trust anchor", ErrNoTrustAnchor)
 	}
 
 	signature, err := decodeSignature(bootstrap.Signature)
 	if err != nil {
-		return err
+		return signing.PublicKey{}, err
 	}
 	payload, err := canonical.Marshal(bootstrap.SignedPayload())
 	if err != nil {
-		return fmt.Errorf("agent: canonicalising the bootstrap template: %w", err)
+		return signing.PublicKey{}, fmt.Errorf("agent: canonicalising the bootstrap template: %w", err)
 	}
 	key, err := signers.Verify(payload, signature)
 	if err != nil {
-		return fmt.Errorf("agent: the bootstrap template is not signed by any key in %s: %w",
+		return signing.PublicKey{}, fmt.Errorf(
+			"agent: the bootstrap template is not signed by any key in %s: %w",
 			signing.TrustedSignersPath, err)
 	}
 
-	// Printed in full, to the terminal and to the journal, and written to disk — all before execution.
-	// An operator must be able to see exactly what is about to run on their machine, and afterwards
-	// anybody auditing the host must be able to see exactly what did.
+	// Printed in full, to the terminal and to the journal, before anything could act on it. An operator
+	// must be able to see exactly what is about to run on their machine.
 	//
 	// Quoted with %q rather than printed raw. The body comes from the control plane, and a raw body can
 	// contain terminal control sequences that scroll the real content away, or a line that looks exactly
@@ -299,23 +324,8 @@ func applyBootstrap(stateDir string, bootstrap protocol.Bootstrap) error {
 	// nobody should be approving casually anyway.
 	fmt.Printf("\n--- bootstrap template %q, signed by %s ---\n%q\n--- end of template ---\n\n",
 		bootstrap.Name, key, bootstrap.Body)
-	slog.Info("applying bootstrap template", "name", bootstrap.Name, "signer", key.String(),
+	slog.Info("bootstrap template verified", "name", bootstrap.Name, "signer", key.String(),
 		"body", bootstrap.Body)
 
-	record, err := jsonRecord(bootstrapRecord{
-		Name:        bootstrap.Name,
-		Body:        bootstrap.Body,
-		SignerKeyID: key.KeyID,
-		AppliedAt:   time.Now(),
-	})
-	if err != nil {
-		return err
-	}
-	if err := WriteFileAtomic(recordPath, record, 0o644); err != nil {
-		return err
-	}
-
-	return fmt.Errorf("agent: this build applies no bootstrap templates. The template was verified "+
-		"against %s and recorded in %s; nothing was executed. Tier 2 provisioning arrives in phase 3 "+
-		"and cloud-init will do the applying", key, recordPath)
+	return key, nil
 }

@@ -206,7 +206,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 
-	go func() {
+	// context.Background below is correct here and the linter's usual advice is not: this goroutine runs
+	// *because* ctx was cancelled, so deriving the shutdown deadline from it would produce a context
+	// that is already done and a Shutdown that abandons every in-flight request instead of draining it.
+	// The fifteen seconds are what a long-poll needs to finish.
+	go func() { //nolint:gosec // G118: the request-scoped context is the cancelled one; see above.
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

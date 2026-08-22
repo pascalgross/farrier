@@ -12,14 +12,12 @@
 name: pages
 
 on:
+  # Every push to main, without a paths filter. A filter would save a minute of runner time and cost
+  # more than that in confusion: GitHub does not apply path filters to the push that creates a branch,
+  # so the first push to a new main silently skips the deployment and the site simply never appears.
+  # The job builds one small Go program and unpacks a tarball; it is not worth optimising.
   push:
     branches: [main]
-    paths:
-      - "README.md"
-      - "CONTRIBUTING.md"
-      - "docs/**"
-      - "tools/docsite/**"
-      - ".github/workflows/pages.yml"
   # After a release, so the newly published repository replaces the one under /apt.
   workflow_run:
     workflows: [release]

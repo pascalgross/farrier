@@ -34,7 +34,10 @@ func NewID() (string, error) {
 	// low six bytes of a positive int64 needs no conversion that could overflow.
 	ms := time.Now().UnixMilli()
 	for i := range 6 {
-		raw[5-i] = byte(ms >> (8 * i))
+		// Masked explicitly. Taking the low byte is the intent, and writing it out means neither a
+		// reader nor a linter has to decide whether an unmasked conversion was meant to be a
+		// truncation or was an oversight that happens to work.
+		raw[5-i] = byte((ms >> (8 * i)) & 0xff)
 	}
 	if _, err := rand.Read(raw[6:]); err != nil {
 		return "", fmt.Errorf("server: generating an identifier: %w", err)

@@ -106,10 +106,11 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Install golangci-lint
-        # Installed directly rather than through the action, so that CI runs the same binary and the
-        # same Makefile target a contributor runs locally. An action whose major version has to track
-        # the configuration format is one more thing to keep in step.
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+        # Installed through the Makefile rather than an action, so that CI runs the same binary and the
+        # same target a contributor runs locally — and at the version the Makefile pins. It used to
+        # install @latest, which made that claim false: a linter release could fail a pull request that
+        # changed nothing, with findings the author could not reproduce.
+        run: make golangci-install
 
       - name: golangci-lint
         run: make golangci

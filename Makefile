@@ -91,6 +91,15 @@ vet: ## go vet
 doccheck: ## Enforce a doc comment on every type and function, exported or not
 	go run ./tools/doccheck ./cmd ./internal ./helpers ./tools
 
+# The linter version, used by the golangci target and by CI. Pinned rather than @latest: a new linter
+# release must be something somebody adopts deliberately, not something that turns every open pull
+# request red overnight on a tree nobody touched.
+GOLANGCI_VERSION := v2.13.1
+
+.PHONY: golangci-install
+golangci-install: ## Install the pinned golangci-lint
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+
 .PHONY: golangci
 golangci: ## golangci-lint, if it is installed
 	@if command -v golangci-lint >/dev/null 2>&1; then \

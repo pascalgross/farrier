@@ -104,9 +104,25 @@ type proStatus struct {
 // whereas a Debian host could not be and showing it an ESM badge only teaches its operator to ignore
 // the dashboard.
 func (u *Ubuntu) SubscriptionStatus(ctx context.Context) (*collect.Subscription, error) {
+	_, err := os.Stat(string(run.Pro))
+	return u.subscription(ctx, !errors.Is(err, os.ErrNotExist))
+}
+
+// subscription reports Pro state given whether the pro tool is installed.
+//
+// Split from SubscriptionStatus so that the "no pro tool" branch can be tested on a machine that has
+// one. It took a CI failure to notice that it could not be: GitHub's runners ship
+// ubuntu-advantage-tools, so a test asserting the absent-tool behaviour passed on every developer
+// container and failed on every runner, which is the wrong way round for a test to be
+// environment-dependent.
+//
+// Deliberately a bool rather than a path. The path this stats and the program run.Command executes must
+// be the same compile-time constant, and a parameter that could diverge from it is the kind of seam
+// that turns into an exec channel three refactors later.
+func (u *Ubuntu) subscription(ctx context.Context, proInstalled bool) (*collect.Subscription, error) {
 	sub := &collect.Subscription{Applicable: true, Services: map[string]string{}}
 
-	if _, err := os.Stat(string(run.Pro)); errors.Is(err, os.ErrNotExist) {
+	if !proInstalled {
 		sub.Note = "ubuntu-advantage-tools is not installed"
 		return sub, nil
 	}

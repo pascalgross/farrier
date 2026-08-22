@@ -122,9 +122,12 @@ func TestDebianReportsSubscriptionAsNotApplicable(t *testing.T) {
 // An Ubuntu host without ubuntu-advantage-tools *could* be attached and is not, which is worth showing.
 // A Debian host could not be. Both are "no subscription" and they are not the same fact.
 func TestUbuntuReportsSubscriptionAsApplicableEvenWithoutTheProTool(t *testing.T) {
-	sub, err := (&Ubuntu{}).SubscriptionStatus(context.Background())
+	// proInstalled=false explicitly, rather than relying on this machine not having the tool. GitHub's
+	// runners do have it, so the version of this test that called SubscriptionStatus asserted the
+	// absent-tool behaviour everywhere except where it mattered.
+	sub, err := (&Ubuntu{}).subscription(context.Background(), false)
 	if err != nil {
-		t.Fatalf("SubscriptionStatus: %v", err)
+		t.Fatalf("subscription: %v", err)
 	}
 	if sub == nil {
 		t.Fatal("Ubuntu returned nil, which means not applicable")
@@ -137,6 +140,22 @@ func TestUbuntuReportsSubscriptionAsApplicableEvenWithoutTheProTool(t *testing.T
 	}
 	if sub.Note == "" {
 		t.Error("an unattached host with no pro tool gave no explanation")
+	}
+}
+
+// TestUbuntuSubscriptionNeverFails covers the whole entry point on whatever machine runs the tests.
+//
+// The specific branches are tested deterministically above; what this adds is that the real
+// SubscriptionStatus — including the path that shells out to a pro tool that may or may not be here —
+// answers rather than erroring. "The pro tool failed" is a subscription state, not a collection
+// failure, and a host must never drop out of the fleet view because of it.
+func TestUbuntuSubscriptionNeverFails(t *testing.T) {
+	sub, err := (&Ubuntu{}).SubscriptionStatus(context.Background())
+	if err != nil {
+		t.Fatalf("SubscriptionStatus returned an error rather than a state: %v", err)
+	}
+	if sub == nil || !sub.Applicable {
+		t.Error("Ubuntu reported Ubuntu Pro as not applicable")
 	}
 }
 

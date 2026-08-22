@@ -123,7 +123,7 @@ make deb      # the farrier-agent package
 make test lint guarantee
 ```
 
-Go 1.25 or newer. `make deb` needs [nfpm](https://nfpm.goreleaser.com/install/); `make web` needs Node
+Go 1.26 or newer. `make deb` needs [nfpm](https://nfpm.goreleaser.com/install/); `make web` needs Node
 and pnpm.
 
 ## Where to look when something is wrong
