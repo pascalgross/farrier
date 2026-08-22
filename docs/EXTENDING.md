@@ -71,8 +71,10 @@ type Signer interface {
 }
 ```
 
-Shipped: `file`, `sshagent`, `pkcs11`, `gpgagent`, `kms`. Deliberately no vendor is hard-coded —
-`pkcs11` covers YubiKey PIV, Nitrokey and SoftHSM alike, and `kms` covers AWS, GCP and Azure.
+Implemented today: `file` — a passphrase-protected key file, scrypt over the passphrase and NaCl
+secretbox over a PKCS#8 key. Specified and not yet written: `sshagent` (including FIDO2 `ed25519-sk`),
+`pkcs11`, `gpgagent`, `kms`. Deliberately no vendor is hard-coded — `pkcs11` will cover YubiKey PIV,
+Nitrokey and SoftHSM alike, and `kms` will cover AWS, GCP and Azure.
 
 **This is the seam that is safest to leave open, and it is worth understanding why: the verifier never
 changes.** The agent only ever sees a public key and a signature over a canonical payload. It cannot
