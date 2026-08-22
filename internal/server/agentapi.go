@@ -64,6 +64,15 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The certificate request is checked before the token is consumed. A token is single-use, so a
+	// malformed CSR would otherwise burn one and leave an operator to work out why their second attempt
+	// says the token is unusable — which reads exactly like the token having been stolen.
+	if _, _, err := s.cfg.Authority.Issue([]byte(req.CSR), hostID); err != nil {
+		slog.Warn("rejected a certificate request before consuming the token", "error", err)
+		writeError(w, http.StatusBadRequest, "bad_csr", "the certificate request could not be signed")
+		return
+	}
+
 	now := time.Now()
 	token, err := s.cfg.Store.ConsumeEnrollmentToken(r.Context(), HashToken(req.Token), hostID, now)
 	if errors.Is(err, store.ErrTokenUnusable) {
@@ -262,6 +271,14 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, host store.H
 		wait = min(max(n, 0), protocol.MaxJobWaitSeconds)
 	}
 
+	// Subscribed before the queue is read, not after. The other order leaves a gap in which a job
+	// inserted between the empty read and the subscription fires its notification with nobody
+	// listening — and the agent then holds its long-poll for the full twenty-five seconds over work
+	// that was already waiting. The consequence is only latency, which is precisely why nobody would
+	// ever diagnose it.
+	notified, unsubscribe := s.cfg.Store.Subscribe(host.ID)
+	defer unsubscribe()
+
 	jobs, err := s.cfg.Store.ClaimJobs(r.Context(), host.ID, 10)
 	if err != nil {
 		slog.Error("could not claim jobs", "error", err, "host", host.ID)
@@ -278,13 +295,15 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, host store.H
 
 	// A wake-up may be spurious — the store says so — so the queue is re-read rather than trusted.
 	// Returning an empty list after a spurious wake is correct and costs the agent one round trip.
-	if err := s.cfg.Store.WaitForJob(ctx, host.ID); err == nil {
+	select {
+	case <-notified:
 		jobs, err = s.cfg.Store.ClaimJobs(r.Context(), host.ID, 10)
 		if err != nil {
 			slog.Error("could not claim jobs after a wake-up", "error", err, "host", host.ID)
 			writeError(w, http.StatusInternalServerError, "internal", "could not read the job queue")
 			return
 		}
+	case <-ctx.Done():
 	}
 	writeJSON(w, http.StatusOK, protocol.JobsResponse{Jobs: nonNil(jobs)})
 }

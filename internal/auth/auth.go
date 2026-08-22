@@ -73,13 +73,17 @@ type StaticToken struct {
 
 // NewStaticToken returns a provider accepting exactly one bearer token.
 func NewStaticToken(token, display string) (*StaticToken, error) {
+	token = strings.TrimSpace(token)
 	if len(token) < 16 {
 		return nil, errors.New("auth: an admin token must be at least 16 characters")
 	}
 	if display == "" {
 		display = "operator"
 	}
-	return &StaticToken{hash: sha256.Sum256([]byte(token)), display: display}, nil
+	// Trimmed on both sides. The presented token is trimmed too, so a configured token carrying a
+	// trailing newline — which is what happens when it comes from a file, or from a shell that added
+	// one — would otherwise be a token that can never be presented successfully.
+	return &StaticToken{hash: sha256.Sum256([]byte(strings.TrimSpace(token))), display: display}, nil
 }
 
 // GenerateToken returns a new random admin token.

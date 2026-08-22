@@ -61,7 +61,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Filesystem scan
-        uses: aquasecurity/trivy-action@master
+        # Pinned to a release rather than @master. This is the workflow whose subject is supply-chain
+        # vigilance; running a third-party action from a moving branch in it would be funny in a way
+        # nobody wants to explain.
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
           scan-ref: .

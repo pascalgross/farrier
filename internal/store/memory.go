@@ -344,21 +344,33 @@ func (m *Memory) Result(jobID string) (protocol.ResultRequest, bool) {
 	return r, ok
 }
 
-// WaitForJob blocks until a job is enqueued for the host, or the context ends.
-func (m *Memory) WaitForJob(ctx context.Context, hostID string) error {
-	m.mu.Lock()
-	if len(m.jobs[hostID]) > 0 {
-		m.mu.Unlock()
-		return nil
-	}
+// Subscribe registers interest in work for a host and returns a channel closed when some arrives.
+func (m *Memory) Subscribe(hostID string) (<-chan struct{}, func()) {
 	wake := make(chan struct{})
+
+	m.mu.Lock()
 	m.waiters[hostID] = append(m.waiters[hostID], wake)
 	m.mu.Unlock()
 
-	select {
-	case <-wake:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	return wake, func() { m.removeWaiter(hostID, wake) }
+}
+
+// removeWaiter drops a waiter, whether it was woken or gave up.
+//
+// It is idempotent, because the caller always releases its subscription and the waker has usually
+// already removed it.
+func (m *Memory) removeWaiter(hostID string, wake chan struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	waiters := m.waiters[hostID]
+	for i, w := range waiters {
+		if w == wake {
+			m.waiters[hostID] = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	if len(m.waiters[hostID]) == 0 {
+		delete(m.waiters, hostID)
 	}
 }

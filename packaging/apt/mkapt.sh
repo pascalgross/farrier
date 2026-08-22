@@ -62,6 +62,9 @@ for arch in $ARCHES; do
 done
 
 (
+	# Written to a temporary file and moved into place. `apt-ftparchive release . > Release` truncates
+	# Release before apt-ftparchive walks the directory, so the file ends up listing itself with the
+	# checksum of an empty file — which apt then rejects, at the moment somebody is trying to install.
 	cd "$OUT_DIR/dists/$SUITE"
 	apt-ftparchive \
 		-o "APT::FTPArchive::Release::Origin=$ORIGIN" \
@@ -71,7 +74,8 @@ done
 		-o "APT::FTPArchive::Release::Components=$COMPONENT" \
 		-o "APT::FTPArchive::Release::Architectures=$ARCHES" \
 		-o "APT::FTPArchive::Release::Description=Farrier agent packages for Ubuntu and Debian" \
-		release . > Release
+		release . > Release.tmp
+	mv Release.tmp Release
 )
 
 if [ -n "${GPG_KEY_ID:-}" ]; then
@@ -88,7 +92,10 @@ else
 fi
 
 if [ -n "${FARRIER_APT_URL:-}" ]; then
-	sed "s|@@APT_URL@@|$FARRIER_APT_URL|" "$(dirname "$0")/farrier.sources.in" \
+	# Anchored to the URIs line. An unanchored substitution also rewrites the placeholder inside the
+	# explanatory comment at the top of the template, which then reads as though the decision had been
+	# made rather than substituted.
+	sed "/^URIs:/ s|@@APT_URL@@|$FARRIER_APT_URL|" "$(dirname "$0")/farrier.sources.in" \
 		> "$OUT_DIR/farrier.sources"
 	echo "mkapt: wrote farrier.sources for $FARRIER_APT_URL"
 else

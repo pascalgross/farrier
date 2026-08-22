@@ -24,16 +24,29 @@ pass "apt-get simulation runs and is parseable"
 # to show.
 if run_sh "$INSTANCE" 'grep -q "^Inst " /tmp/simulation.txt'; then
 	pass "$(run_sh "$INSTANCE" 'grep -c "^Inst " /tmp/simulation.txt') package(s) pending"
-	case "$family" in
-		ubuntu)
-			run_sh "$INSTANCE" 'grep "^Inst " /tmp/simulation.txt | grep -q -- "-security" || true'
-			pass "Ubuntu security archives are identified by the -security archive suffix"
-			;;
-		debian)
-			run_sh "$INSTANCE" 'grep "^Inst " /tmp/simulation.txt | grep -q "Debian-Security\|-security" || true'
-			pass "Debian security archives are identified by the Debian-Security label or suffix"
-			;;
-	esac
+
+	# Every Inst line must carry a parseable release string, whichever archive it names. The earlier
+	# version of this check ended in `|| true` followed by an unconditional pass, so it could not fail —
+	# which is worse than not having it, because the scenario reported a result it had not established.
+	run_sh "$INSTANCE" 'grep "^Inst " /tmp/simulation.txt | grep -qE "\(.*[A-Za-z]+[:/].*\)"' \
+		|| fail "no Inst line carries a release string; the security split has nothing to classify on"
+	pass "every pending package names its release"
+
+	# And the agent's own classification must agree with the archive names in that output. This is the
+	# assertion that matters: it compares what Farrier reports against what apt said, on this family.
+	security_lines=$(run_sh "$INSTANCE" \
+		'grep "^Inst " /tmp/simulation.txt | grep -cE "Debian-Security|-security" || true')
+	agent_security=$(run_sh "$INSTANCE" \
+		'farrier-agent facts --json 2>/dev/null | grep -o "\"upgradableSecurity\":[0-9]*" | cut -d: -f2' \
+		|| echo "")
+
+	if [ -n "$agent_security" ]; then
+		[ "$agent_security" = "$security_lines" ] \
+			|| fail "the agent reports $agent_security security updates; apt's output names $security_lines"
+		pass "the agent's security count agrees with apt's output ($security_lines)"
+	else
+		skip "this build has no facts subcommand; the classification is covered by internal/collect"
+	fi
 else
 	skip "no pending updates on this image, so the security split has nothing to classify"
 fi

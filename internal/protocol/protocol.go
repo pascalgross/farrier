@@ -134,11 +134,27 @@ type Bootstrap struct {
 	// wearing a hat.
 	Body string `json:"body"`
 
-	// Signature is a detached signature over the canonical form of this template.
+	// Signature is a detached signature over the canonical payload returned by SignedPayload.
+	//
+	// It covers the name as well as the body. Signing the body alone would let a compromised control
+	// plane return a template the operator did not name — genuinely signed, genuinely from a trusted
+	// key, and applied to a host whose operator asked for something else.
 	Signature string `json:"signature"`
 
 	// SignerKeyID names the key that signed it, for the record written to the host.
 	SignerKeyID string `json:"signerKeyId"`
+}
+
+// SignedPayload returns the exact structure a bootstrap template's signature is computed over.
+//
+// It is defined here, in the shared package, so that the agent verifying a signature and the tool
+// producing one cannot construct different bytes from the same template. The signer key id is absent
+// deliberately: it identifies the key that made the signature and cannot also be an input to it.
+func (b Bootstrap) SignedPayload() map[string]any {
+	return map[string]any{
+		"name": b.Name,
+		"body": b.Body,
+	}
 }
 
 // EnrollResponse is the body of a successful enrolment.

@@ -70,16 +70,10 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		}
 	}
 
-	// 2. Check the validity window against the local clock. Never against server-supplied time: a
-	//    compromised control plane could otherwise extend a signature's window by lying about now.
-	if !job.NotBefore.IsZero() && now.Before(job.NotBefore) {
-		return acceptance{status: protocol.StatusExpired, reason: "the job's validity window has not opened"}
-	}
-	if !job.NotAfter.IsZero() && now.After(job.NotAfter) {
-		return acceptance{status: protocol.StatusExpired, reason: "the job's validity window has closed"}
-	}
-
-	// 3. Refuse privileged work when the clock is too far out to reason about a validity window.
+	// 2. Refuse privileged work when the clock is too far out to reason about a validity window.
+	//    Before the window check, not after: a host whose clock is an hour wrong would otherwise
+	//    report every privileged job as "expired", which sends an operator looking at the control
+	//    plane's scheduling rather than at the host's clock. The refusal should name the cause.
 	//    Read-only intents still run: blinding an operator to the state of a host with a wrong clock
 	//    would help nobody.
 	if spec.Class.Privileged() && absDuration(clockOffset) > protocol.MaxClockSkewSeconds*time.Second {
@@ -90,6 +84,15 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		}
 	}
 
+	// 3. Check the validity window against the local clock. Never against server-supplied time: a
+	//    compromised control plane could otherwise extend a signature's window by lying about now.
+	if !job.NotBefore.IsZero() && now.Before(job.NotBefore) {
+		return acceptance{status: protocol.StatusExpired, reason: "the job's validity window has not opened"}
+	}
+	if !job.NotAfter.IsZero() && now.After(job.NotAfter) {
+		return acceptance{status: protocol.StatusExpired, reason: "the job's validity window has closed"}
+	}
+
 	// 4. Verify the signature the class requires, against this host's own trust anchor.
 	if spec.Class.RequiresOfflineSignature() {
 		if err := verifyOfflineSignature(job, hostID, signers); err != nil {
@@ -97,8 +100,11 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		}
 	}
 
-	// 5. Refuse a replayed nonce, for anything that carried a signature at all.
-	if job.Signature != "" {
+	// 5. Refuse a replayed nonce — but only for a job whose signature has already verified above.
+	//    Recording it first would let anyone who can reach the agent burn a nonce with a job carrying a
+	//    garbage signature, and the nonce store is persistent, so the genuine job bearing that nonce
+	//    would be refused as a replay for as long as its signature remained valid.
+	if job.Signature != "" && spec.Class.RequiresOfflineSignature() {
 		seen, err := nonces.Check(job.Nonce, job.NotAfter)
 		if err != nil {
 			return acceptance{status: protocol.StatusFailed, reason: "the replay store is unusable: " + err.Error()}

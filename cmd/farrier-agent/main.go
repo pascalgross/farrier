@@ -25,6 +25,10 @@ import (
 
 	"github.com/pegasusnetworks/farrier/internal/agent"
 	"github.com/pegasusnetworks/farrier/internal/buildinfo"
+	"github.com/pegasusnetworks/farrier/internal/canonical"
+	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pegasusnetworks/farrier/internal/collect/collector"
+	"github.com/pegasusnetworks/farrier/internal/collect/platform"
 	"github.com/pegasusnetworks/farrier/internal/intent"
 	"github.com/pegasusnetworks/farrier/internal/policy"
 )
@@ -44,6 +48,7 @@ func usage() {
 
 usage:
   farrier-agent run             run the agent in the foreground, as systemd does
+  farrier-agent facts           collect and print exactly what this host would report
   farrier-agent policy check    validate /etc/farrier/policy.toml and print the effective policy
   farrier-agent version         print the version
 
@@ -65,6 +70,8 @@ func main() {
 	switch args[0] {
 	case "run":
 		os.Exit(run(args[1:]))
+	case "facts":
+		os.Exit(factsCommand(args[1:]))
 	case "policy":
 		os.Exit(policyCommand(args[1:]))
 	case "version":
@@ -183,6 +190,81 @@ func reportState(policyPath string) {
 		"max_job_age_seconds", p.Limits.MaxJobAgeSeconds,
 		"paused", policy.Paused(),
 	)
+}
+
+// factsCommand implements `farrier-agent facts`.
+//
+// It collects and prints exactly what a heartbeat would carry. That is worth a subcommand rather than
+// being inferred from the journal: the first question about a wrong number on a dashboard is whether
+// the host reported it wrongly or the control plane displayed it wrongly, and this answers that in one
+// command, on the host, with no control plane involved at all.
+//
+// It is also what the integration suite compares against apt's own output, which is how the
+// security/regular split is checked on a real machine rather than against a fixture.
+func factsCommand(argv []string) int {
+	fs := flag.NewFlagSet("facts", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print the facts document as JSON, exactly as it goes on the wire")
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	setupLogging()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	plat, dist, err := platform.Detect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier-agent: %v\n", err)
+		return 1
+	}
+
+	facts, err := collect.Gather(ctx, plat, collector.All()...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier-agent: collecting facts: %v\n", err)
+		return 1
+	}
+
+	if *asJSON {
+		// The canonical encoding, not encoding/json's default: this is the document the digest is
+		// computed over, so printing anything else would answer a slightly different question.
+		raw, err := canonical.Marshal(facts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "farrier-agent: encoding facts: %v\n", err)
+			return 1
+		}
+		fmt.Println(string(raw))
+		return 0
+	}
+
+	digest, err := canonical.Digest(facts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier-agent: digesting facts: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("hostname            %s\n", facts.Hostname)
+	fmt.Printf("distribution        %s\n", dist)
+	fmt.Printf("supported           %t\n", dist.Supported)
+	fmt.Printf("kernel              %s\n", facts.Kernel)
+	fmt.Printf("architecture        %s\n", facts.Architecture)
+	fmt.Printf("updates             %d security of %d total\n",
+		facts.Packages.UpgradableSecurity, facts.Packages.UpgradableTotal)
+	fmt.Printf("reboot required     %t (%s)\n", facts.Reboot.Required, facts.Reboot.Source)
+	if len(facts.Reboot.Services) > 0 {
+		fmt.Printf("services to restart %v\n", facts.Reboot.Services)
+	}
+	fmt.Printf("service scan whole  %t\n", facts.Reboot.ServiceScanComplete)
+	if facts.Subscription.Applicable {
+		fmt.Printf("ubuntu pro          attached=%t %s\n", facts.Subscription.Attached, facts.Subscription.Note)
+	} else {
+		fmt.Printf("ubuntu pro          not applicable\n")
+	}
+	fmt.Printf("units               %d\n", len(facts.Services))
+	for name := range facts.Extra {
+		fmt.Printf("collector           %s\n", name)
+	}
+	fmt.Printf("facts digest        %s\n", digest)
+	return 0
 }
 
 // policyCommand implements `farrier-agent policy check`.

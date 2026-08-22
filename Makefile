@@ -59,6 +59,7 @@ cover: ## Run unit tests with a coverage profile
 guarantee: ## Run the tests that enforce docs/SECURITY.md section 1
 	go test -count=1 -run '^(TestGuarantee|TestClassPredicates)' -v ./internal/...
 	go test -count=1 -run '^$$' -fuzz 'FuzzGuarantee' -fuzztime 60s ./internal/intent/
+	go test -count=1 -run '^$$' -fuzz 'FuzzNormalize' -fuzztime 60s ./internal/canonical/
 
 .PHONY: fuzz
 fuzz: ## Fuzz the parameter decoders for longer than CI does

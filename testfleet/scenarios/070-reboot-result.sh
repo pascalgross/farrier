@@ -58,11 +58,18 @@ run_sh "$INSTANCE" "grep -q '$JOB' $SPOOL/$JOB.json" \
 	|| fail "the pending result survived but is not readable"
 pass "the pending result survived a hard reboot"
 
-# The agent must have found it and tried to deliver it. With no control plane configured it cannot
-# succeed, and the file must therefore still be there — a result is removed only after a 2xx, which is
-# what stops a lost response from turning into a re-execution.
+# The agent must have found it and tried to deliver it — and, with no control plane configured, failed.
+# The earlier version of this repeated the previous assertion verbatim and established nothing; what
+# matters is that the agent *looked*, and that a result it could not deliver stays on disk. A result is
+# removed only after a 2xx, which is what stops a lost response from turning into a re-execution.
+run_sh "$INSTANCE" "journalctl -u farrier-agent.service --no-pager --since '-5 min' \
+	| grep -q 'held from an earlier run\|pending job result'" \
+	|| skip "the agent has not logged a delivery attempt yet; it is unenrolled on this machine"
+
 run_sh "$INSTANCE" "test -s $SPOOL/$JOB.json" \
-	|| fail "the agent removed an undelivered result"
-pass "an undelivered result stays on disk rather than being dropped"
+	|| fail "the agent removed a result it had not delivered"
+run_sh "$INSTANCE" "grep -q 'succeeded' $SPOOL/$JOB.json" \
+	|| fail "the surviving result was rewritten rather than left alone"
+pass "an undelivered result stays on disk, unaltered"
 
 run_sh "$INSTANCE" "rm -f $SPOOL/$JOB.json"

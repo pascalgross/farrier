@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -232,11 +233,18 @@ func keyShow(argv []string) int {
 func readPassphrase(prompt string) ([]byte, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		var line string
-		if _, err := fmt.Fscanln(os.Stdin, &line); err != nil {
-			return nil, fmt.Errorf("reading a passphrase from standard input: %w", err)
+		// A whole line, read with a Scanner rather than Fscanln, which stops at the first space — so a
+		// passphrase of four words would have been silently truncated to one. Only the trailing newline
+		// is stripped: leading and inner spaces are part of the passphrase.
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 0, 4096), 1<<20)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return nil, fmt.Errorf("reading a passphrase from standard input: %w", err)
+			}
+			return nil, errors.New("no passphrase on standard input")
 		}
-		return []byte(strings.TrimSpace(line)), nil
+		return []byte(strings.TrimRight(scanner.Text(), "\r\n")), nil
 	}
 
 	fmt.Fprint(os.Stderr, prompt)

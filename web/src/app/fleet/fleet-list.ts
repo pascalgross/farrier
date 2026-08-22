@@ -133,7 +133,7 @@ export class FleetList {
     if (!dist) {
       return 'not reported yet';
     }
-    return dist.prettyName ?? `${dist.id} ${dist.version}`;
+    return dist.prettyName || `${dist.id} ${dist.version} (${dist.codename})`;
   }
 
   /**

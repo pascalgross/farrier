@@ -277,12 +277,21 @@ type Store interface {
 	// real one when it arrived.
 	RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) error
 
-	// WaitForJob blocks until a job may be available for a host, or the context ends.
+	// Subscribe registers interest in work for a host and returns a channel closed when some arrives.
 	//
-	// It is what makes the long-poll a long-poll rather than a sleep. In PostgreSQL it is LISTEN on a
-	// channel the job insert NOTIFYs, which is why Farrier needs no Redis. Implementations may return
-	// spuriously — the caller re-checks — but must not miss a wake-up indefinitely.
-	WaitForJob(ctx context.Context, hostID string) error
+	// It is deliberately separate from claiming, and the caller must subscribe *before* it looks at the
+	// queue. Doing it the other way round leaves a gap: a job inserted between the empty read and the
+	// subscription fires its notification with nobody listening, and the agent then holds a long-poll
+	// for its full duration over work that was already waiting. The gap is small and the consequence is
+	// only latency, which is exactly why it would never be diagnosed.
+	//
+	// This is what makes the long-poll a long-poll rather than a sleep. In PostgreSQL it is LISTEN on a
+	// channel the job insert NOTIFYs, which is why Farrier needs no Redis. The channel may be closed
+	// spuriously — the caller re-checks the queue — but a wake-up must not be missed indefinitely.
+	//
+	// The returned function releases the subscription and must always be called, or a fleet whose
+	// agents reconnect every twenty-five seconds accumulates one dead waiter per poll.
+	Subscribe(hostID string) (<-chan struct{}, func())
 
 	// Close releases the store's resources.
 	Close() error

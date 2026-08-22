@@ -1,12 +1,10 @@
 import { Component, computed, inject, input, signal } from '@angular/core';
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
 import { MatCardModule } from '@angular/material/card';
-import { MatChipsModule } from '@angular/material/chips';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatIconModule } from '@angular/material/icon';
 import { MatListModule } from '@angular/material/list';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatTooltipModule } from '@angular/material/tooltip';
 import { RouterLink } from '@angular/router';
 import { catchError, of, startWith, switchMap } from 'rxjs';
 
@@ -26,12 +24,10 @@ import { formatDuration, formatOffset } from '../core/format';
   selector: 'farrier-host-detail',
   imports: [
     MatCardModule,
-    MatChipsModule,
     MatDividerModule,
     MatIconModule,
     MatListModule,
     MatProgressBarModule,
-    MatTooltipModule,
     RouterLink,
   ],
   templateUrl: './host-detail.html',
@@ -88,6 +84,20 @@ export class HostDetail {
       return 'None. This host will execute no destructive operation, from anyone.';
     }
     return `${count} key${count === 1 ? '' : 's'} may authorise destructive operations on this host.`;
+  }
+
+  /**
+   * Describes the host's release, falling back through what it did report.
+   *
+   * PRETTY_NAME is absent from some minimal images, and rendering an em dash for a host that reported
+   * its id, version and codename perfectly well would say "not reported" about a fact that was.
+   */
+  protected release(host: Host): string {
+    const dist = host.facts?.distribution;
+    if (!dist) {
+      return 'not reported yet';
+    }
+    return dist.prettyName || `${dist.id} ${dist.version} (${dist.codename})`;
   }
 
   /** Renders Ubuntu Pro state, distinguishing "not applicable" from "not attached". */

@@ -403,21 +403,18 @@ func TestRecordResultIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestWaitForJobWakesOnNotify is what makes the long-poll a long-poll rather than a sleep.
+// TestSubscribeWakesOnNotify is what makes the long-poll a long-poll rather than a sleep.
 //
 // Without it, jobs would still be delivered — on the next poll, up to twenty-five seconds later — and
 // nothing would look broken. It is the failure people notice as "why is this so slow" months
 // afterwards.
-func TestWaitForJobWakesOnNotify(t *testing.T) {
+func TestSubscribeWakesOnNotify(t *testing.T) {
 	pg := newPostgres(t)
-	ctx := context.Background()
+
 	host := enrolTestHost(t, pg, "01JHOSTH", "web-01")
 
-	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	woken := make(chan error, 1)
-	go func() { woken <- pg.WaitForJob(waitCtx, host.ID) }()
+	notified, unsubscribe := pg.Subscribe(host.ID)
+	defer unsubscribe()
 
 	// A moment for the listener connection to establish and LISTEN to take effect.
 	time.Sleep(500 * time.Millisecond)
@@ -429,37 +426,36 @@ func TestWaitForJobWakesOnNotify(t *testing.T) {
 	})
 
 	select {
-	case err := <-woken:
-		if err != nil {
-			t.Fatalf("WaitForJob returned %v", err)
-		}
+	case <-notified:
 		if elapsed := time.Since(started); elapsed > 5*time.Second {
 			t.Errorf("the wake-up took %s; LISTEN/NOTIFY is not delivering", elapsed.Round(time.Millisecond))
 		}
-	case <-waitCtx.Done():
-		t.Fatal("WaitForJob was never woken by an enqueued job")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Subscribe was never woken by an enqueued job")
 	}
 }
 
-// TestWaitForJobHonoursItsContext asserts a timed-out long-poll releases its waiter.
+// TestSubscribeReleasesItsWaiter asserts a released subscription leaves nothing behind.
 //
-// A fleet whose agents time out and reconnect every twenty-five seconds would otherwise accumulate dead
-// channels for the process's lifetime — a slow leak that only shows after a week of uptime, which is
-// the worst kind.
-func TestWaitForJobHonoursItsContext(t *testing.T) {
+// A fleet whose agents time out and reconnect every twenty-five seconds would otherwise accumulate a
+// dead channel per poll for the process's lifetime — a leak that only shows after a week of uptime,
+// which is the worst kind.
+func TestSubscribeReleasesItsWaiter(t *testing.T) {
 	pg := newPostgres(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
 
-	started := time.Now()
-	if err := pg.WaitForJob(ctx, "01JNOBODY"); err == nil {
-		t.Error("WaitForJob returned nil for a host with no work")
+	_, unsubscribe := pg.Subscribe("01JNOBODY")
+	if waiterCount(pg) != 1 {
+		t.Fatalf("%d waiters after subscribing once", waiterCount(pg))
 	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Errorf("WaitForJob took %s to honour a 300ms deadline", elapsed.Round(time.Millisecond))
-	}
+	unsubscribe()
 	if n := waiterCount(pg); n != 0 {
-		t.Errorf("%d waiter(s) were left behind after a timeout", n)
+		t.Errorf("%d waiter(s) were left behind after releasing the subscription", n)
+	}
+	// Releasing twice must not panic or corrupt the map: the caller always releases, and the waker has
+	// usually already removed the waiter.
+	unsubscribe()
+	if n := waiterCount(pg); n != 0 {
+		t.Errorf("%d waiter(s) after a second release", n)
 	}
 }
 

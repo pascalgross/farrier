@@ -520,36 +520,29 @@ func (p *Postgres) RecordResult(ctx context.Context, hostID string, r protocol.R
 	return wrap(tx.Commit(ctx), "recording a job result")
 }
 
-// WaitForJob blocks until a job may be available for a host, or the context ends.
+// Subscribe registers interest in work for a host and returns a channel closed when some arrives.
 //
 // One connection LISTENs for the whole process and fans notifications out in memory. A design that
 // opened a connection per waiting agent would need five hundred PostgreSQL connections to hold five
 // hundred long-polls, which is more than most instances allow in total — so the fan-out is what makes
 // the long-poll affordable at fleet scale.
-func (p *Postgres) WaitForJob(ctx context.Context, hostID string) error {
+func (p *Postgres) Subscribe(hostID string) (<-chan struct{}, func()) {
 	p.listenerOnce.Do(func() { go p.listen() })
 
-	p.mu.Lock()
 	wake := make(chan struct{})
+	p.mu.Lock()
 	p.waiters[hostID] = append(p.waiters[hostID], wake)
 	p.mu.Unlock()
 
-	select {
-	case <-wake:
-		return nil
-	case <-ctx.Done():
-		p.removeWaiter(hostID, wake)
-		return ctx.Err()
-	case <-p.closed:
-		return errors.New("store: closing")
-	}
+	return wake, func() { p.removeWaiter(hostID, wake) }
 }
 
-// removeWaiter drops a waiter that gave up before being woken.
+// removeWaiter drops a waiter, whether it was woken or gave up.
 //
-// Without this, a fleet whose agents time out and reconnect every twenty-five seconds would accumulate
+// Without it, a fleet whose agents time out and reconnect every twenty-five seconds would accumulate
 // dead channels for the process's lifetime — a slow leak that only shows up after a week of uptime,
-// which is the worst kind.
+// which is the worst kind. It is idempotent, because the caller always releases its subscription and
+// the waker has usually already removed it.
 func (p *Postgres) removeWaiter(hostID string, wake chan struct{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -114,6 +114,17 @@ func Generate(path, keyID string, alg signing.Algorithm, passphrase []byte) (*Si
 	if len(passphrase) == 0 {
 		return nil, errors.New("file: a passphrase is required for a file-backed key")
 	}
+	// Refused rather than overwritten. Losing a signing key means losing the ability to authorise
+	// anything on every host that trusts it, and the recovery is editing trusted-signers on each of
+	// them by hand. A tool that destroys that on a mistyped path is not a tool anybody should have to
+	// be careful with.
+	if _, err := os.Stat(path); err == nil {
+		return nil, fmt.Errorf("file: %s already exists; refusing to replace a signing key. "+
+			"Move it aside if you mean to generate a new one — every host trusting the old key would "+
+			"need its trusted-signers edited by hand", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("file: checking %s: %w", path, err)
+	}
 
 	var priv crypto.Signer
 	var err error

@@ -116,11 +116,26 @@ every guardrail in [`SECURITY.md` §6](SECURITY.md#6-provisioning-and-the-enrolm
 }
 ```
 
-`bootstrap` is present only if it was requested. The agent MUST verify `signature` against a key
-present in the host's **existing** `/etc/farrier/trusted-signers` before doing anything with `body`,
-MUST print `body` in full and record it to journald and
-`/var/lib/farrier/bootstrap-applied.json` before executing it, and MUST refuse entirely if
+`bootstrap` is present only if it was requested. `signature` covers the canonical encoding of
+
+```json
+{"body":"…","name":"…"}
+```
+
+(keys in canonical order, per [§8](#8-canonical-json)). The name is covered as well as the body: signing
+the body alone would let a compromised control plane return a genuinely signed template that the
+operator did not name.
+
+The agent MUST verify the signature against a key present in the host's **existing**
+`/etc/farrier/trusted-signers` before doing anything with `body`; MUST refuse if `name` is not the name
+the operator asked for; MUST print the template and record it to journald and
+`/var/lib/farrier/bootstrap-applied.json` before executing it; and MUST refuse entirely if
 `trusted-signers` is empty. It MUST NOT fall back to trusting the server.
+
+The body is printed **escaped**, not raw. It comes from the control plane, and a raw body can carry
+terminal control sequences that scroll the real content out of view, or a line that reproduces the
+end-of-template marker followed by something else — so that the operator reads one template and
+approves another.
 
 ### Errors
 
@@ -333,14 +348,24 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
 1. **Recognise the intent** against its compiled-in catalogue.
 2. **Validate the parameters** against that intent's validator. A unit name must match
    `^[a-zA-Z0-9@._-]+\.(service|socket|timer)$`; anything else is rejected without execution.
-3. **Check the class**:
+3. **Refuse privileged intents if the clock is too far out** — see [§4.4](#44-servertime-and-clock-skew).
+   This comes *before* the validity-window check, not after: a host whose clock is an hour wrong would
+   otherwise report every privileged job as `expired`, which sends an operator looking at the control
+   plane's scheduling rather than at the host's clock. A refusal should name its cause.
+4. **Check `notBefore`/`notAfter` against the local clock**, never against server-supplied time.
+5. **Check the class**:
    - `read` — no signature required, mTLS is sufficient;
-   - `routine` — signature by the control plane's online key required;
+   - `routine` — signature by the control plane's online key required. Note that Farrier's agent does
+     not yet verify this: phase 0 has no executor behind the routine intent and no online key to verify
+     against, so the check arrives with the first routine executor. An agent MUST NOT execute a routine
+     intent until it does;
    - `destructive` — signature by a key present in this host's `/etc/farrier/trusted-signers`
      required. A signature by the online key is **not** acceptable for this class.
-4. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)).
-5. **Check the nonce** against the persisted nonce store; refuse replays.
-6. **Check `notBefore`/`notAfter` against the local clock** (see [§4.4](#44-servertime-and-clock-skew)).
+6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **check the
+   nonce** against the persisted nonce store and refuse replays. In that order: recording the nonce
+   first would let anyone who can reach the agent burn one with a garbage signature, and the store is
+   persistent, so the genuine job bearing that nonce would be refused as a replay for as long as its
+   signature remained valid.
 7. **Check job age** against the local policy's `limits.max_job_age_seconds`.
    `issuedAt` is **not** covered by the signature (see [§8](#8-canonical-json)), so for a signed job the
    age is measured from `notBefore`, which is. A control plane that has been taken over could otherwise

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pegasusnetworks/farrier/internal/buildinfo"
+	"github.com/pegasusnetworks/farrier/internal/canonical"
 	"github.com/pegasusnetworks/farrier/internal/protocol"
 	"github.com/pegasusnetworks/farrier/internal/signing"
 )
@@ -142,6 +143,14 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 		if res.Bootstrap == nil {
 			return nil, fmt.Errorf("agent: --bootstrap %q was requested and the control plane returned "+
 				"no template; refusing to continue as though one had been applied", opts.Bootstrap)
+		}
+		// The name the operator typed must be the name that came back. The signature covers the name,
+		// so a mismatch is a control plane returning a genuinely signed template for something else —
+		// and "--bootstrap standard-server applied database-wipe" is not a sentence anybody should be
+		// able to write.
+		if res.Bootstrap.Name != opts.Bootstrap {
+			return nil, fmt.Errorf("agent: --bootstrap %q but the control plane returned a template "+
+				"named %q; refusing", opts.Bootstrap, res.Bootstrap.Name)
 		}
 		if err := applyBootstrap(opts.StateDir, *res.Bootstrap); err != nil {
 			return nil, err
@@ -272,7 +281,11 @@ func applyBootstrap(stateDir string, bootstrap protocol.Bootstrap) error {
 	if err != nil {
 		return err
 	}
-	key, err := signers.Verify([]byte(bootstrap.Body), signature)
+	payload, err := canonical.Marshal(bootstrap.SignedPayload())
+	if err != nil {
+		return fmt.Errorf("agent: canonicalising the bootstrap template: %w", err)
+	}
+	key, err := signers.Verify(payload, signature)
 	if err != nil {
 		return fmt.Errorf("agent: the bootstrap template is not signed by any key in %s: %w",
 			signing.TrustedSignersPath, err)
@@ -281,7 +294,13 @@ func applyBootstrap(stateDir string, bootstrap protocol.Bootstrap) error {
 	// Printed in full, to the terminal and to the journal, and written to disk — all before execution.
 	// An operator must be able to see exactly what is about to run on their machine, and afterwards
 	// anybody auditing the host must be able to see exactly what did.
-	fmt.Printf("\n--- bootstrap template %q, signed by %s ---\n%s\n--- end of template ---\n\n",
+	//
+	// Quoted with %q rather than printed raw. The body comes from the control plane, and a raw body can
+	// contain terminal control sequences that scroll the real content away, or a line that looks exactly
+	// like the end-of-template marker followed by something else — so the operator reads a template and
+	// approves a different one. %q escapes both, at the cost of a less pretty display of a document
+	// nobody should be approving casually anyway.
+	fmt.Printf("\n--- bootstrap template %q, signed by %s ---\n%q\n--- end of template ---\n\n",
 		bootstrap.Name, key, bootstrap.Body)
 	slog.Info("applying bootstrap template", "name", bootstrap.Name, "signer", key.String(),
 		"body", bootstrap.Body)

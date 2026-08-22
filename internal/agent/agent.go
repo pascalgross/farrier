@@ -441,16 +441,24 @@ func (a *Agent) maybeRenew(ctx context.Context) {
 		return
 	}
 
-	// The new key and certificate are written before either is used, and the client reloads them from
-	// disk on the next request. Writing the key first would leave a window in which the key on disk did
-	// not match the certificate, and a restart inside that window loses the host.
-	if err := WriteFileAtomic(a.state.Path(KeyFile),
-		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		slog.Error("could not write the renewed private key", "error", err)
+	// The certificate first, then the key. Both orderings leave a window in which the two on disk do not
+	// match, and the two windows are not equally bad: a new certificate beside the old key fails to
+	// authenticate and is retried for the thirty days the old certificate still has to run, whereas a
+	// new key beside the old certificate is the same failure with no way back — the private key that
+	// matched the working certificate is gone. Given a crash, the recoverable half should be the one
+	// already written.
+	//
+	// The client loads the pair from disk on each request, so a mismatch is one failed request rather
+	// than a process that has to be restarted.
+	if err := WriteFileAtomic(a.state.Path(CertFile), []byte(res.Certificate), 0o644); err != nil {
+		slog.Error("could not write the renewed certificate; the current one is unchanged", "error", err)
 		return
 	}
-	if err := WriteFileAtomic(a.state.Path(CertFile), []byte(res.Certificate), 0o644); err != nil {
-		slog.Error("could not write the renewed certificate", "error", err)
+	if err := WriteFileAtomic(a.state.Path(KeyFile),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		slog.Error("could not write the renewed private key; the certificate on disk no longer matches "+
+			"it and the next request will fail. Renewal happens with a third of the certificate's life "+
+			"remaining, so this retries.", "error", err)
 		return
 	}
 	if res.CABundle != "" {
