@@ -1,0 +1,197 @@
+# Build, sign and publish a release.
+#
+# Two things here are load-bearing rather than ceremony. The build is reproducible, so that anybody can
+# rebuild the tag and get the same bytes — which is the only way "the agent has no remote execution
+# channel" is checkable against the binary somebody actually installed. And the APT repository is signed
+# with a key that lives in this workflow and nowhere else, published to a custom domain, because the
+# repository URL is written into /etc/apt/sources.list.d/farrier.sources on every host that ever
+# installs the agent and can never be migrated afterwards.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v"
+        required: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Resolve the version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "building $version"
+
+      - name: The guarantee tests pass on the tag
+        # A release is exactly the moment not to take the last CI run's word for it.
+        run: make guarantee
+
+      - name: Build the web application
+        run: make web
+
+      - name: Build reproducibly for every architecture
+        # -trimpath removes the build directory from the binary, and SOURCE_DATE_EPOCH pins anything
+        # time-dependent to the commit. Without both, two builds of the same source differ and the
+        # reproducibility claim is not one anybody can check.
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+          for arch in amd64 arm64; do
+            for cmd in farrier-agent farrier-server farrier; do
+              GOARCH=$arch go build -trimpath \
+                -ldflags "-s -w -buildid= \
+                  -X github.com/pegasusnetworks/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }} \
+                  -X github.com/pegasusnetworks/farrier/internal/buildinfo.Commit=$(git rev-parse --short HEAD)" \
+                -o "dist/$arch/$cmd" "./cmd/$cmd"
+            done
+            for helper in apply-updates restart-unit reboot-host; do
+              GOARCH=$arch go build -trimpath \
+                -ldflags "-s -w -buildid= \
+                  -X github.com/pegasusnetworks/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }}" \
+                -o "dist/$arch/$helper" "./helpers/$helper"
+            done
+          done
+          find dist -type f -print0 | xargs -0 sha256sum | tee dist/SHA256SUMS
+
+      - name: Build the packages
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          mkdir -p dist/packages
+          for arch in amd64 arm64; do
+            # nfpm reads its inputs from ../dist, the same place `make deb` puts them, so each
+            # architecture's binaries are staged there in turn rather than the configuration growing a
+            # per-architecture path it would then have to keep in step with the Makefile.
+            cp dist/$arch/* dist/
+            (cd packaging && VERSION="${{ steps.version.outputs.version }}" ARCH="$arch" \
+              nfpm package --packager deb --target ../dist/packages)
+          done
+          ls -la dist/packages
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            dist/packages/*.deb
+            dist/SHA256SUMS
+            dist/amd64/*
+            dist/arm64/*
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Install apt-utils
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq apt-utils
+
+      - name: Import the repository signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "APT_SIGNING_KEY is not configured; refusing to publish an unsigned repository." >&2
+            echo "Every host that installs the agent trusts this key for this repository only." >&2
+            exit 1
+          fi
+          export GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s' "$APT_SIGNING_KEY" | gpg --batch --import
+          gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print "GPG_KEY_ID="$10; exit}' \
+            >> "$GITHUB_ENV"
+
+      - name: Build the signed repository
+        env:
+          # The repository URL is written into every host's sources file and can never be migrated, so
+          # it is a repository variable rather than a literal here — and the build fails loudly if
+          # nobody has set it, rather than publishing to a URL somebody has to live with.
+          FARRIER_APT_URL: ${{ vars.FARRIER_APT_URL }}
+        run: |
+          if [ -z "$FARRIER_APT_URL" ]; then
+            echo "The repository variable FARRIER_APT_URL is not set." >&2
+            echo "Set it to a custom domain CNAME'd to GitHub Pages before the first release:" >&2
+            echo "this URL is written into /etc/apt/sources.list.d/farrier.sources on every host that" >&2
+            echo "ever installs the agent, including fleets you will not be able to contact later." >&2
+            exit 1
+          fi
+          ./packaging/apt/mkapt.sh dist/packages ./public
+          cp dist/SHA256SUMS ./public/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+      - uses: actions/deploy-pages@v4
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/packages/*.deb
+            dist/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            ## Installing
+
+            ```bash
+            curl -fsSL ${{ vars.FARRIER_APT_URL }}/farrier-archive-keyring.gpg \
+              | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg > /dev/null
+            curl -fsSL ${{ vars.FARRIER_APT_URL }}/farrier.sources \
+              | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
+            sudo apt-get update && sudo apt-get install farrier-agent
+            ```
+
+            The agent installs with no keys in `/etc/farrier/trusted-signers` and a policy that permits
+            security updates and nothing else. It will report on the host and keep it patched, and will
+            do nothing else until you say otherwise.
+
+            ## Verifying the build
+
+            The binaries are built with `-trimpath` and a pinned `SOURCE_DATE_EPOCH`, so rebuilding this
+            tag reproduces them byte for byte. `SHA256SUMS` is attached.

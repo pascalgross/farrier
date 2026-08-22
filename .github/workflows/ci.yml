@@ -1,0 +1,210 @@
+# The checks every pull request runs.
+#
+# Each job calls a Makefile target rather than repeating its commands, so that "what does CI do" is
+# answerable by reading the Makefile and a contributor can run the same thing locally. A CI file that
+# drifts from what people run on their machines is one that fails for reasons nobody can reproduce.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole range between base and head is checked, so the history has to be there.
+          fetch-depth: 0
+      - name: Every commit is signed off
+        run: |
+          .github/scripts/dco-check.sh \
+            "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: Doc comments on every type and function, exported or not
+        run: make doccheck
+
+      - name: Tests
+        run: make test
+
+      - name: go mod tidy leaves no diff
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  golangci:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install golangci-lint
+        # Installed directly rather than through the action, so that CI runs the same binary and the
+        # same Makefile target a contributor runs locally. An action whose major version has to track
+        # the configuration format is one more thing to keep in step.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: golangci-lint
+        run: make golangci
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: ESLint, including the doc-comment rule on private members
+        run: pnpm exec eslint .
+
+      - name: Production build
+        run: pnpm run build
+
+  packaging:
+    name: Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: The sudoers file is valid
+        # An invalid sudoers file breaks sudo for the whole system, so it is validated before it can
+        # reach a package rather than after somebody installs one.
+        run: sudo visudo -c -f packaging/sudoers
+
+      - name: The systemd unit is valid
+        run: |
+          sudo install -Dm755 /bin/true /usr/bin/farrier-agent
+          systemd-analyze verify packaging/farrier-agent.service
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Build the .deb
+        run: make deb VERSION=0.0.0-ci
+
+      - name: Install it, and check the agent runs and the helper refuses
+        run: |
+          sudo dpkg -i dist/packages/farrier-agent_0.0.0-ci_amd64.deb
+          farrier-agent version
+          farrier-agent policy check
+          # The whole product in one command: the agent's own account, going through the only
+          # privileged path that exists, being told no by a file the control plane cannot touch.
+          set +e
+          sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit \
+            --action restart --unit nginx.service
+          status=$?
+          set -e
+          if [ "$status" -ne 3 ]; then
+            echo "expected exit 3 (refused by local policy), got $status" >&2
+            exit 1
+          fi
+
+      - name: A local edit to policy.toml and trusted-signers survives an upgrade
+        # This is a security test rather than a convenience one. A package upgrade that silently reset
+        # the trust anchor would re-open every destructive operation an administrator had closed.
+        run: |
+          printf '\ned25519 AAAAC3NzaC1lZDI1NTE5AAAAILOCALEDITXXXXXXXXXXXXXXXXXXXXXXXXXXXX local\n' \
+            | sudo tee -a /etc/farrier/trusted-signers > /dev/null
+          sudo sed -i 's/^allow = "security"/allow = "all"/' /etc/farrier/policy.toml
+          before_policy=$(md5sum /etc/farrier/policy.toml | cut -d' ' -f1)
+          before_signers=$(md5sum /etc/farrier/trusted-signers | cut -d' ' -f1)
+
+          make deb VERSION=0.0.1-ci
+          sudo dpkg -i dist/packages/farrier-agent_0.0.1-ci_amd64.deb
+
+          after_policy=$(md5sum /etc/farrier/policy.toml | cut -d' ' -f1)
+          after_signers=$(md5sum /etc/farrier/trusted-signers | cut -d' ' -f1)
+          [ "$before_policy" = "$after_policy" ] || { echo "policy.toml was replaced" >&2; exit 1; }
+          [ "$before_signers" = "$after_signers" ] || { echo "trusted-signers was replaced" >&2; exit 1; }
+          echo "conffiles survived the upgrade"
+
+      - name: Purge leaves nothing behind
+        run: |
+          sudo dpkg --purge farrier-agent
+          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier; do
+            [ ! -e "$path" ] || { echo "$path survived a purge" >&2; exit 1; }
+          done
+          ! getent passwd farrier
+
+  apt-repository:
+    name: APT repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install nfpm and apt-utils
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apt-utils
+
+      - name: Build a package and a signed repository
+        # An ephemeral key rather than the release secret: this proves the mechanism on every pull
+        # request without any pull request being able to reach the key that signs real packages.
+        run: |
+          make deb VERSION=0.0.0-ci
+          export GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --quick-generate-key --passphrase '' \
+            "Farrier CI <ci@example.invalid>" default default never
+          KEY=$(gpg --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
+          GPG_KEY_ID="$KEY" FARRIER_APT_URL="https://apt.example.invalid" \
+            ./packaging/apt/mkapt.sh dist/packages ./public
+
+      - name: apt verifies the repository and installs from it
+        run: |
+          sudo install -m0644 ./public/farrier-archive-keyring.gpg \
+            /usr/share/keyrings/farrier-archive-keyring.gpg
+          sudo sed "s|https://apt.example.invalid|file://$PWD/public|" \
+            ./public/farrier.sources | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
+          sudo apt-get -o APT::Sandbox::User=root update
+          sudo apt-get -o APT::Sandbox::User=root install -y --no-install-recommends farrier-agent
+          farrier-agent version

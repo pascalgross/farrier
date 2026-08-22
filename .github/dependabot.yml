@@ -1,0 +1,35 @@
+# Dependency updates.
+#
+# Weekly rather than daily, and grouped, because a stream of one-dependency pull requests is a stream
+# people stop reading — and the whole value of watching dependencies is that somebody reads them.
+#
+# Every dependency here ends up running as a service on other people's servers, so the bar for adding
+# one is high and the bar for keeping them current is correspondingly higher.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+    groups:
+      angular:
+        patterns: ["@angular*"]
+      other:
+        patterns: ["*"]
+        exclude-patterns: ["@angular*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

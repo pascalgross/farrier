@@ -1,0 +1,82 @@
+# Vulnerability and secret scanning.
+#
+# It runs on pull requests and on a schedule, because the interesting failure mode is not "this change
+# introduced a vulnerability" but "a vulnerability was published in something we already depend on" —
+# and that arrives on somebody else's timetable.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Every day at 05:17 UTC. An odd minute rather than the hour, because GitHub's scheduler queues
+    # everything submitted for :00 and a job that runs late every day is one people stop trusting.
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Known vulnerabilities in reachable Go code
+        # govulncheck reports only vulnerabilities in code paths the binary actually reaches, which is
+        # what makes its output worth reading rather than triaging.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  audit:
+    name: pnpm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Known vulnerabilities in the front-end dependency tree
+        # High and above fails. Everything below is reported and does not block: a build-time dependency
+        # with a moderate advisory is worth knowing about and is not worth stopping a security fix from
+        # landing.
+        run: pnpm audit --audit-level high
+
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secrets in the history
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

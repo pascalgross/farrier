@@ -1,0 +1,88 @@
+# The test fleet: real machines, the real .deb, all five supported releases.
+#
+# It is separate from `ci` because it is slow — five virtual machines booting and installing packages —
+# and because it must not be the check that blocks a documentation change. It runs on pull requests that
+# touch anything a machine would notice, on every push to main, and nightly, because a failure caused by
+# a change to an upstream image arrives on somebody else's timetable rather than with a pull request.
+name: integration
+
+on:
+  pull_request:
+    paths:
+      - "cmd/**"
+      - "helpers/**"
+      - "internal/**"
+      - "packaging/**"
+      - "testfleet/**"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/integration.yml"
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fleet:
+    name: ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # One release per job rather than one job running all five. A failure then names the release in
+      # the check list, which is the first thing anybody wants to know, and a slow release does not hold
+      # up the results for the others.
+      fail-fast: false
+      matrix:
+        release:
+          - ubuntu/22.04
+          - ubuntu/24.04
+          - ubuntu/26.04
+          - debian/12
+          - debian/13
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Install LXD
+        # Installed directly rather than through an action: this is three commands, and a third-party
+        # action in the path of the integration suite is a dependency whose failure looks like ours.
+        run: |
+          sudo snap install lxd || sudo snap refresh lxd
+          sudo lxd waitready --timeout 120
+          sudo lxd init --auto --storage-backend dir
+          sudo usermod -aG lxd "$USER"
+          sudo chmod 0666 /var/snap/lxd/common/lxd/unix.socket
+
+      - name: Run the fleet
+        env:
+          FARRIER_RELEASES: ${{ matrix.release }}
+          # GitHub's runners support nested virtualisation, so the reboot scenarios test what they
+          # claim to. If that ever stops being true, setting this to 0 keeps the rest of the suite
+          # running and makes 070-reboot-result skip visibly rather than pass vacuously.
+          FARRIER_VM: "1"
+        run: ./testfleet/fleet.sh ci
+
+      - name: Collect the journal from a failing machine
+        if: failure()
+        run: |
+          for instance in $(lxc list --format csv -c n); do
+            echo "::group::$instance"
+            lxc exec "$instance" -- journalctl --no-pager -n 200 || true
+            echo "::endgroup::"
+          done

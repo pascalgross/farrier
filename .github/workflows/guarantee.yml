@@ -1,0 +1,84 @@
+# The tests that enforce the guarantee in docs/SECURITY.md §1.
+#
+# This is a separate workflow from `ci` on purpose, so that it can be a required status check with no
+# maintainer override. That setting lives in the repository's branch protection rules rather than in
+# this file — a workflow cannot make itself unbypassable — and it is the thing that keeps the guarantee
+# true across contributors who never read the design brief, including future maintainers, including us
+# on a bad day.
+#
+# Repository setup, for whoever configures it:
+#
+#   Settings → Branches → main → Require status checks to pass
+#     ✓ guarantee / guarantee
+#     ✓ Do not allow bypassing the above settings
+#
+# If this workflow ever needs to be skipped to land a change, the change is wrong.
+name: guarantee
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guarantee:
+    name: guarantee
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: The catalogue is exactly the expected set, and nothing reaches a shell
+        # Verbose on purpose. When this fails, the output is the first thing a reviewer reads, and the
+        # test names and failure messages are written to explain the design rather than the assertion.
+        run: go test -count=1 -v -run '^(TestGuarantee|TestClassPredicates)' ./internal/...
+
+      - name: Fuzz the parameter decoders and the canonical encoder
+        # Sixty seconds each in CI. `make fuzz` runs ten minutes locally, and the corpus a failure
+        # produces is worth committing when one ever does.
+        run: |
+          go test -count=1 -run '^$' -fuzz 'FuzzGuarantee' -fuzztime 60s ./internal/intent/
+          go test -count=1 -run '^$' -fuzz 'FuzzNormalize' -fuzztime 60s ./internal/canonical/
+
+      - name: The catalogue in the binary matches the documentation
+        # docs/SECURITY.md lists the intents and the permanently refused names in prose. A build whose
+        # catalogue had drifted from the document would make the document a description of an older
+        # version, which for this particular document is worse than having none.
+        run: |
+          go build -o /tmp/farrier-server ./cmd/farrier-server
+          /tmp/farrier-server catalogue > /tmp/catalogue.txt
+          cat /tmp/catalogue.txt
+          for intent in facts.collect packages.listUpgradable services.list reboot.checkRequired \
+                        packages.applySecurity packages.applyAll service.start service.stop \
+                        service.restart host.reboot; do
+            grep -q "^${intent} " /tmp/catalogue.txt \
+              || { echo "the binary does not list ${intent}" >&2; exit 1; }
+            grep -q "\`${intent}\`" docs/SECURITY.md \
+              || { echo "docs/SECURITY.md does not document ${intent}" >&2; exit 1; }
+          done
+          for refused in shell.exec script.run file.write apt.addRepository user.create \
+                         ssh.authorizedKeys.add agent.updateFromURL; do
+            grep -q "^  ${refused}$" /tmp/catalogue.txt \
+              || { echo "the binary does not list ${refused} as refused" >&2; exit 1; }
+            grep -q "\`${refused}\`" docs/SECURITY.md \
+              || { echo "docs/SECURITY.md does not explain why ${refused} is refused" >&2; exit 1; }
+          done
+
+      - name: The guarantee is stated in full wherever it is stated at all
+        # Both paragraphs ship together, always. The second is the price of the bootstrap feature, and a
+        # guarantee with an undisclosed exception is worse than no guarantee — so the first must never
+        # appear on its own just because it reads better.
+        run: |
+          for file in README.md docs/SECURITY.md; do
+            grep -q "still cannot run arbitrary code on any" "$file" \
+              || { echo "$file does not state the guarantee" >&2; exit 1; }
+            grep -q "applies, at most once, the bootstrap template" "$file" \
+              || { echo "$file states the guarantee without its exception" >&2; exit 1; }
+          done
+          echo "both paragraphs are present in README.md and docs/SECURITY.md"

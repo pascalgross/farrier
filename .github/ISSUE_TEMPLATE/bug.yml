@@ -1,0 +1,54 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Not for security issues.** If this is a way to violate the guarantee in `docs/SECURITY.md` §1
+        — any path from a control-plane value to a shell, any way to exceed a host's local policy, any
+        way to get a job accepted without the signature its class requires — please use the **Report a
+        vulnerability** button on the Security tab instead, which opens a private advisory.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `farrier-agent version` or `farrier-server version`.
+    validations:
+      required: true
+
+  - type: input
+    id: release
+    attributes:
+      label: Distribution and release
+      placeholder: Ubuntu 24.04 / Debian 12
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journal
+      description: |
+        `journalctl -u farrier-agent -n 200`, or the control plane's output. The agent logs JSON, so
+        paste it as-is rather than summarising — the field that turns out to matter is usually not the
+        one that looked interesting.
+      render: shell
+
+  - type: textarea
+    id: policy
+    attributes:
+      label: The host's policy
+      description: |
+        `farrier-agent policy check`. Most "it refused to do the thing" reports are the local policy
+        working correctly, and this is the fastest way to tell.
+      render: shell
