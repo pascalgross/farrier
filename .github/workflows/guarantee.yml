@@ -37,14 +37,13 @@ jobs:
       - name: The catalogue is exactly the expected set, and nothing reaches a shell
         # Verbose on purpose. When this fails, the output is the first thing a reviewer reads, and the
         # test names and failure messages are written to explain the design rather than the assertion.
-        run: go test -count=1 -v -run '^(TestGuarantee|TestClassPredicates)' ./internal/...
+        # Through the Makefile, so that the required check and `make guarantee` cannot drift apart.
+        run: make guarantee-tests
 
       - name: Fuzz the parameter decoders and the canonical encoder
         # Sixty seconds each in CI. `make fuzz` runs ten minutes locally, and the corpus a failure
         # produces is worth committing when one ever does.
-        run: |
-          go test -count=1 -run '^$' -fuzz 'FuzzGuarantee' -fuzztime 60s ./internal/intent/
-          go test -count=1 -run '^$' -fuzz 'FuzzNormalize' -fuzztime 60s ./internal/canonical/
+        run: make guarantee-fuzz
 
       - name: The catalogue in the binary matches the documentation
         # docs/SECURITY.md lists the intents and the permanently refused names in prose. A build whose

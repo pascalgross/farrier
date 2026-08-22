@@ -353,6 +353,16 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   `unattended-upgrades` does not need us. A control-plane outage must never mean an unpatched fleet.
 - **Traffic analysis.** The existence, timing and size of heartbeats are visible to anyone on the
   path, even though the contents are not.
+- **A host enrolled *during* a control-plane compromise being given somebody else's identity.** The
+  signed job payload binds a job to a `hostId`, and a host learns its `hostId` from the enrolment
+  response — so a control plane that was already compromised when a host enrolled can hand that host an
+  identity belonging to another, and jobs signed for the other host will verify on it. The blast radius
+  is bounded by the mechanism that matters: the root helper re-reads the *local* policy of the machine
+  it is running on, so nothing exceeds what that host's own operator permitted, and §1 still holds. What
+  is lost is targeting — a signed job can reach a host it was not meant for. Binding the signature to
+  the certificate would not help, because the adversary in §1 owns the CA. An operator who cares should
+  enrol hosts from a control plane they have reason to trust at that moment, which is the same
+  requirement the bootstrap exception in §6 already makes.
 
 ---
 

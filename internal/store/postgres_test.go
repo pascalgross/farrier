@@ -428,8 +428,13 @@ func TestSubscribeWakesOnNotify(t *testing.T) {
 	notified, unsubscribe := pg.Subscribe(host.ID)
 	defer unsubscribe()
 
-	// A moment for the listener connection to establish and LISTEN to take effect.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the listener rather than sleeping for it. A fixed sleep is a test that passes on a fast
+	// machine and fails on a loaded one, and this is the assertion that would be quietly disabled first.
+	select {
+	case <-pg.ready:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the notification listener never issued its LISTEN")
+	}
 
 	started := time.Now()
 	enqueue(t, pg, host.ID, protocol.Job{

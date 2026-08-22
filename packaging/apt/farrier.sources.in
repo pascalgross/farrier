@@ -1,14 +1,14 @@
 # Farrier APT repository, deb822 format.
 #
-# @@APT_URL@@ is substituted by tools/mkapt.sh from the FARRIER_APT_URL variable. The release workflow
-# fails loudly when it is unset, which is deliberate — see the warning in packaging/README.md. This URL
-# is written into /etc/apt/sources.list.d/farrier.sources on every host that ever installs the agent,
-# including fleets you will not be able to contact later, so it must be a custom domain you control
-# from the very first release. A bare *.github.io URL can never be migrated.
+# This file is installed at /etc/apt/sources.list.d/farrier.sources. It is host-facing, so it explains
+# only what a person reading it on their own machine needs: why the key is named here rather than added
+# to the system keyring. The choice of URL is a maintainer decision and is documented in
+# packaging/README.md, where the person making it will be — a host is not where that argument belongs,
+# and the placeholder below is substituted on the URIs line only, so this comment stays true after it.
 #
-# Signed-By names an explicit keyring so the Farrier signing key is trusted for the Farrier repository
-# only. apt-key is never used: it installs a key that is trusted for every repository on the system,
-# which turns one compromised project into root on the machine.
+# Signed-By names an explicit keyring, so the Farrier signing key is trusted for the Farrier repository
+# and for nothing else. apt-key is never used: it installs a key trusted for every repository on the
+# system, which turns one compromised project into root on the machine.
 
 Types: deb
 URIs: @@APT_URL@@

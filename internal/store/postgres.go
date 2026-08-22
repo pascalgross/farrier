@@ -57,6 +57,19 @@ type Postgres struct {
 
 	// closed is closed when the store shuts down, stopping the listener.
 	closed chan struct{}
+
+	// ready is closed once the listener has issued its first LISTEN.
+	//
+	// Nothing on the request path waits for it: a notification that arrives before the listener is
+	// established is the same bounded gap as one that arrives while it is reconnecting, and blocking a
+	// long-poll on a database connection that may never come back would turn a latency problem into an
+	// availability one. It exists so that a test can wait for the listener instead of sleeping and
+	// hoping, which is the difference between a test that fails when the code breaks and one that fails
+	// on a slow machine.
+	ready chan struct{}
+
+	// readyOnce guards closing ready, which happens on every successful LISTEN and must happen once.
+	readyOnce sync.Once
 }
 
 // OpenPostgres connects to PostgreSQL and returns a Store.
@@ -81,6 +94,7 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 		dsn:     dsn,
 		waiters: map[string][]chan struct{}{},
 		closed:  make(chan struct{}),
+		ready:   make(chan struct{}),
 	}, nil
 }
 
@@ -651,6 +665,7 @@ func (p *Postgres) listenOnce() error {
 	if _, err := conn.Exec(ctx, "LISTEN "+jobChannel); err != nil {
 		return fmt.Errorf("store: LISTEN %s: %w", jobChannel, err)
 	}
+	p.readyOnce.Do(func() { close(p.ready) })
 
 	// Deliberately *not* waking every waiter here.
 	//

@@ -56,14 +56,25 @@ cover: ## Run unit tests with a coverage profile
 	go test -race -count=1 -coverprofile=coverage.txt -covermode=atomic $(GO_PACKAGES)
 
 .PHONY: guarantee
-guarantee: ## Run the tests that enforce docs/SECURITY.md section 1
+guarantee: guarantee-tests guarantee-fuzz ## Run the tests that enforce docs/SECURITY.md section 1
+
+# Split so that the guarantee workflow can call the two halves as two named steps — which is what puts
+# the right failure message at the top of a red run — without restating the commands. The required
+# check and `make guarantee` must be the same thing; a workflow that copied the commands could be
+# weakened by an edit here that nobody noticed, or strengthened here and never run in CI.
+.PHONY: guarantee-tests
+guarantee-tests: ## The catalogue is the expected set, and nothing reaches a shell
 	go test -count=1 -run '^(TestGuarantee|TestClassPredicates)' -v ./internal/...
+
+.PHONY: guarantee-fuzz
+guarantee-fuzz: ## Fuzz the parameter decoders and the canonical encoder, as CI does
 	go test -count=1 -run '^$$' -fuzz 'FuzzGuarantee' -fuzztime 60s ./internal/intent/
 	go test -count=1 -run '^$$' -fuzz 'FuzzNormalize' -fuzztime 60s ./internal/canonical/
 
 .PHONY: fuzz
-fuzz: ## Fuzz the parameter decoders for longer than CI does
+fuzz: ## Fuzz both guarantee targets for longer than CI does
 	go test -run '^$$' -fuzz 'FuzzGuarantee' -fuzztime 10m ./internal/intent/
+	go test -run '^$$' -fuzz 'FuzzNormalize' -fuzztime 10m ./internal/canonical/
 
 .PHONY: lint
 lint: vet doccheck golangci ## Run every Go linter
