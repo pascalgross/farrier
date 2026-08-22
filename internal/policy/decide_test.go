@@ -32,7 +32,7 @@ func openWindowPolicy(t *testing.T) Policy {
 [updates]
 allow = "all"
 auto_apply = true
-window = ""
+window = "daily 00:00-00:00"
 timezone = "UTC"
 reboot = "window"
 
@@ -207,7 +207,7 @@ func TestDecideRebootHonoursModeAndWindow(t *testing.T) {
 		{"never refuses always-open", RebootNever, "", sundayEarly, false, CodeRebootNotAllowed},
 		{"window permits inside", RebootWindow, "Sun 03:00-05:00", sundayEarly, true, CodeAllowed},
 		{"window refuses outside", RebootWindow, "Sun 03:00-05:00", saturdayAfternoon, false, CodeOutsideWindow},
-		{"window with no window is always open", RebootWindow, "", saturdayAfternoon, true, CodeAllowed},
+		{"an explicit all-day window is always open", RebootWindow, "daily 00:00-00:00", saturdayAfternoon, true, CodeAllowed},
 	}
 	for _, tc := range cases {
 		p := openWindowPolicy(t)

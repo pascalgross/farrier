@@ -84,7 +84,9 @@ func permissivePolicy(t *testing.T) policy.Policy {
 [updates]
 allow = "all"
 reboot = "window"
-window = ""
+# Open every hour of every day, written out. An empty window no longer combines with reboot = "window",
+# because "always open" was not what anybody writing that meant.
+window = "daily 00:00-00:00"
 timezone = "UTC"
 
 [services]

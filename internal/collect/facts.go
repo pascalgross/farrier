@@ -16,14 +16,17 @@ import (
 // make an exec awkward.
 const KernelReleasePath = "/proc/sys/kernel/osrelease"
 
-// Gather collects every fact a heartbeat carries.
+// Gather collects every fact a heartbeat carries, including any registered collectors.
+//
+// The collectors are passed in rather than read from a registry here, because the registry package must
+// import this one for its types and the cycle would be real. The agent supplies collector.All().
 //
 // Partial failure is normal and is handled rather than propagated. A host where needrestart is missing,
 // or where apt is momentarily locked by the distribution's own timer, still has a hostname, a kernel
 // and a unit list worth reporting — and an agent that returned an error instead would remove exactly
 // the host an operator most wants to look at from the fleet list. Every failure is logged with enough
 // detail to act on and recorded in the affected section.
-func Gather(ctx context.Context, p Platform) (Facts, error) {
+func Gather(ctx context.Context, p Platform, extra ...Collector) (Facts, error) {
 	dist, err := p.Identify()
 	if err != nil {
 		// Identity is the one fact with no useful degraded form: without it the server cannot decide
@@ -69,6 +72,22 @@ func Gather(ctx context.Context, p Platform) (Facts, error) {
 	} else {
 		facts.Services = units
 		facts.ServicesTruncated = truncated
+	}
+
+	for _, c := range extra {
+		section, err := c.Collect(ctx)
+		if err != nil {
+			// Absent rather than present-and-empty. A missing section is visibly missing; an empty one
+			// reads as an answer, and "no network interfaces" is a very different claim from "the
+			// network collector failed".
+			slog.Warn("a collector failed; its section is absent from this report",
+				"collector", c.Name(), "error", err)
+			continue
+		}
+		if facts.Extra == nil {
+			facts.Extra = map[string]any{}
+		}
+		facts.Extra[c.Name()] = section
 	}
 
 	return facts, nil

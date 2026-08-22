@@ -134,6 +134,13 @@ type RebootReport struct {
 	// Reasons names the packages that require it, truncated to MaxRebootReasons.
 	Reasons []string `json:"reasons,omitempty"`
 
+	// ReasonsTruncated reports that the list was cut short.
+	//
+	// docs/PROTOCOL.md §4.5 requires a flag on any section the agent bounds, and this one was bounded
+	// silently. A reader seeing exactly a hundred reasons should know whether that is the number or the
+	// limit.
+	ReasonsTruncated bool `json:"reasonsTruncated,omitempty"`
+
 	// Services lists units that needrestart says still hold replaced libraries.
 	//
 	// This is the more actionable half and the one most update dashboards skip: "which running
@@ -221,6 +228,13 @@ type Facts struct {
 
 	// ServicesTruncated reports that the unit list was cut short.
 	ServicesTruncated bool `json:"servicesTruncated,omitempty"`
+
+	// Extra holds the output of registered Collectors, keyed by collector name.
+	//
+	// It is a map rather than named fields because that is what makes the seam a seam: adding a fact
+	// means adding a collector and nothing else. A collector that failed leaves its key absent and its
+	// reason in the journal.
+	Extra map[string]any `json:"extra,omitempty"`
 }
 
 // Platform is the per-distribution-family behaviour fact collection depends on.

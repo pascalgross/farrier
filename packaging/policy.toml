@@ -7,10 +7,11 @@
 # ever, including the person who installed it.
 #
 # It is shipped as a dpkg conffile, so your edits survive package upgrades. If you change it, run
-# `farrier policy check` to validate before restarting the agent: a file that does not parse causes
-# the host to refuse all privileged work rather than fall back to a default, which is deliberate.
+# `farrier-agent policy check` to validate before restarting the agent: a file that does not parse
+# causes the host to refuse all privileged work rather than fall back to a default, which is deliberate
+# and is a miserable way to discover a typo.
 #
-# Full reference: /usr/share/doc/farrier-agent/policy.md, or docs/SECURITY.md in the source tree.
+# Full reference: /usr/share/doc/farrier-agent/SECURITY.md, or docs/SECURITY.md in the source tree.
 
 [updates]
 
@@ -26,6 +27,12 @@ allow = "security"
 # This is what keeps a fleet patched through a control-plane outage. It is a separate setting from
 # `allow` because the two answer different questions: `allow` bounds what the control plane may ask
 # for, `auto_apply` decides whether the host also acts unprompted.
+#
+# NOT YET IMPLEMENTED. The timer that applies updates unprompted belongs to unattended-upgrades, which
+# the distribution configures and Farrier currently does not touch, so this setting is reported to the
+# control plane and acted on by nothing. It is here from the first release because it belongs in this
+# file, and because adding a policy key later means every host in a fleet has a policy file older than
+# the software reading it.
 auto_apply = true
 
 # The maintenance window, in the timezone below. Empty means any time.
@@ -50,6 +57,11 @@ timezone = "UTC"
 #
 #   never   refuse every reboot request
 #   window  reboot only inside the maintenance window above
+#
+# "window" requires `window` above to be set. An empty window is always open, so the combination would
+# mean "reboot at any time" — which is not what anybody writing `reboot = "window"` meant, and is the
+# sort of thing discovered by a host rebooting at eleven on a Tuesday morning. There is deliberately no
+# `reboot = "always"`: if you really want that, say so in the window.
 #
 # The shipped default is "never". A fresh install should be able to report on a host and keep it
 # patched, and should be able to do nothing else until somebody decides otherwise.

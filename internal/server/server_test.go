@@ -279,6 +279,36 @@ func TestUnauthenticatedRequestsAreRefused(t *testing.T) {
 	}
 }
 
+// TestEnrolmentIsRateLimited asserts the documented 429 is actually reachable.
+//
+// docs/PROTOCOL.md §3 promises it and §11 tells agents to honour Retry-After. A status an
+// implementation documents and never returns is a status nobody's client handles correctly — and
+// enrolment is the one endpoint reachable without a client certificate, so it is the one that needs it.
+func TestEnrolmentIsRateLimited(t *testing.T) {
+	h := newHarness(t)
+	client := h.server.Client()
+
+	var limited *http.Response
+	for range 40 {
+		res, err := client.Post(h.server.URL+"/agent/v1/enroll", "application/json", http.NoBody)
+		if err != nil {
+			t.Fatalf("posting: %v", err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode == http.StatusTooManyRequests {
+			limited = res
+			break
+		}
+	}
+
+	if limited == nil {
+		t.Fatal("enrolment was never rate limited")
+	}
+	if limited.Header.Get("Retry-After") == "" {
+		t.Error("the 429 carries no Retry-After, which docs/PROTOCOL.md §11 tells agents to honour")
+	}
+}
+
 // TestRevocationTakesEffectImmediately is the whole revocation design in one test.
 //
 // Farrier uses neither CRL nor OCSP: every authenticated request looks the certificate's fingerprint up

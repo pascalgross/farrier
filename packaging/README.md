@@ -63,17 +63,20 @@ Phase 0 ships no write capability, so nothing invokes a helper and the conflict 
 must be resolved before the first executor lands. The two credible options, both of which keep the
 fixed-argv property:
 
-1. **Drop `NoNewPrivileges=yes` and keep `sudo`.** Simplest; the sudoers file still constrains the
-   agent to three fixed argv, and the helpers still re-enforce policy as root. It costs the strongest
-   single line in the unit.
-2. **Keep `NoNewPrivileges=yes` and replace `sudo` with a root-owned helper service** the agent reaches
-   over a unix socket in `/run/farrier`, authorised by the socket's peer credentials. More code, but
-   it preserves every hardening line and removes setuid from the picture entirely.
+1. **Replace `sudo` with a root-owned helper service** the agent reaches over a unix socket in
+   `/run/farrier`, authorised by the socket's peer credentials. More code, and it preserves every
+   hardening line while removing setuid from the picture entirely.
+2. **Drop enough of the sandbox that `sudo` works.** Note that deleting the `NoNewPrivileges=yes` line
+   is *not* sufficient and would be a trap for whoever tries it: systemd implies `NoNewPrivileges=yes`
+   from a long list of other directives, including `ProtectKernelTunables`, `ProtectKernelModules`,
+   `ProtectClock`, `RestrictNamespaces`, `RestrictSUIDSGID`, `MemoryDenyWriteExecute`,
+   `LockPersonality` and `SystemCallFilter` — every one of which this unit sets. Making `sudo` work
+   means dropping most of them, which is most of the hardening.
 
-Option 2 fits what this project claims better, because it leaves the agent process unable to gain
-privilege by any route at all. Whichever is chosen, `docs/SECURITY.md` §5 must be updated in the same
-change. The note is repeated in the unit file itself so that nobody meets it for the first time while
-debugging a failing helper.
+Option 1 is the one to take. Option 2 is listed so that nobody spends an afternoon on the obvious
+version of it and concludes that systemd is broken. Whichever is chosen, `docs/SECURITY.md` §5 must be
+updated in the same change; the note is repeated in the unit file so nobody meets this for the first
+time while debugging a failing helper.
 
 ## Two additions to the specified unit
 

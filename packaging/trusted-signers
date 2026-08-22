@@ -27,10 +27,14 @@
 #   ed25519     AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExample  ops-yubikey-1
 #   ecdsa-p256  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEExampleExampleExampleEx  ops-aws-kms
 #
-# Generate a key and print its line with:
+# Generate a key on your own machine — not on this host — and print the line to paste here:
 #
-#   farrier key generate --backend file --out ~/.config/farrier/signing.key --id ops-laptop
-#   farrier key show     --backend pkcs11 --id ops-yubikey-1
+#   farrier key generate --out ~/.config/farrier/signing.key --id ops-laptop
+#   farrier key show     --in  ~/.config/farrier/signing.key
+#
+# `key show` needs no passphrase: the public half of the file is stored in the clear, so you can print
+# the line for a key you cannot currently unlock — which is the situation you are in when the token is
+# at the office and you are setting up a host.
 #
 # Whichever backend you use, the audit log and the UI record which signer authorised each job:
 # "ops-laptop (file)" reads differently from "ops-yubikey-1 (PKCS#11)", and that difference is the

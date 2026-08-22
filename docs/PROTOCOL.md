@@ -146,10 +146,22 @@ The steady-state heartbeat carries **digests, not inventory**:
   "uptimeSeconds": 84231,
   "factsDigest": "sha256:5a1c...",
   "policyDigest": "sha256:77b0...",
+  "signersDigest": "sha256:4f53...",
   "clockOffsetSeconds": 0,
-  "paused": false
+  "paused": false,
+  "signers": null
 }
 ```
+
+`signersDigest` is the digest of the host's trusted key set. It exists so that an operator can see that
+hosts which should have the same signers do, **without any host transmitting its trust anchor
+anywhere**; a fleet where one machine quietly has an extra key is exactly what it makes visible.
+
+`signers` carries no `omitempty` and is `null` in the steady state. An **empty** trust anchor is the
+shipped default and the most important thing that field can say — "this host will execute nothing
+destructive" — so it must be distinguishable on the wire from "the host did not report". With
+`omitempty` the two are identical, and a server would ask for a document the agent had already sent, on
+every heartbeat, for the life of every unconfigured host in the fleet.
 
 The server compares the digests to what it has stored and replies:
 
@@ -159,9 +171,16 @@ The server compares the digests to what it has stored and replies:
   "nextHeartbeatSeconds": 60,
   "wantFullReport": false,
   "wantFacts": false,
-  "wantPolicy": false
+  "wantPolicy": false,
+  "wantSigners": false
 }
 ```
+
+A server MUST record a digest only for a document it has actually received. Recording the digest a host
+*claimed* makes the comparison compare a claim against itself: the server asks once, and if that one
+full report is lost to a network failure it concludes on the next heartbeat that it is up to date and
+never asks again — while the document it believes it holds has never existed. Nothing about that
+failure is visible from either side.
 
 When `wantFullReport` is true — or when either specific `want*` flag is set — the agent includes the
 corresponding full payload on its **next** heartbeat.
@@ -187,19 +206,45 @@ so an agent and a server that agree on the encoding agree on the digest.
   "paused": false,
   "facts": {
     "hostname": "web-01",
-    "distribution": { "id": "ubuntu", "codename": "noble", "version": "24.04" },
+    "distribution": {
+      "id": "ubuntu", "family": "ubuntu", "codename": "noble",
+      "version": "24.04", "prettyName": "Ubuntu 24.04.1 LTS", "supported": true
+    },
     "kernel": "6.8.0-40-generic",
     "architecture": "amd64",
-    "rebootRequired": true,
-    "rebootRequiredBy": ["linux-image-6.8.0-40-generic"],
-    "needrestartServices": ["ssh.service"],
+    "reboot": {
+      "required": true,
+      "reasons": ["linux-image-6.8.0-40-generic"],
+      "services": ["ssh.service"],
+      "serviceScanComplete": false,
+      "source": "/var/run/reboot-required, needrestart (KSTA 3)"
+    },
     "subscription": { "applicable": true, "attached": false, "services": {} },
     "packages": { "upgradableSecurity": 3, "upgradableTotal": 11 },
-    "services": [{ "name": "nginx.service", "activeState": "active", "subState": "running" }]
+    "services": [{
+      "name": "nginx.service", "loadState": "loaded",
+      "activeState": "active", "subState": "running"
+    }],
+    "extra": { "network": { "interfaces": [{ "name": "eth0", "mtu": 1500, "up": true }] } }
   },
-  "policy": { "...": "the effective parsed policy, for display and for min() checks server-side" }
+  "policy": { "...": "the effective parsed policy, for display and for min() checks server-side" },
+  "signers": [{ "keyId": "ops-yubikey-1", "algorithm": "ed25519", "backend": "pkcs11" }]
 }
 ```
+
+Three fields inside `reboot` are worth reading carefully. `source` names which signal produced the
+answer, because the two — the `/var/run/reboot-required` marker and `needrestart` — are present on
+different distributions and a wrong answer needs to be traceable to its input rather than argued about.
+`serviceScanComplete` reports whether the `needrestart` scan could see every process: the agent is
+deliberately unprivileged, so it usually could not, and **"no services need restarting" and "I could not
+see the services that do" must never look the same in a dashboard**.
+
+`extra` holds the output of registered collectors, keyed by collector name. It is where a fact added
+through the `collect.Collector` seam appears; see [`EXTENDING.md`](EXTENDING.md).
+
+`signers` carries key identities and algorithms only — never keys, and never the file. The control
+plane has no business holding a copy of a host's trust anchor, and rendering "ops-yubikey-1 (PKCS#11)"
+in an audit trail needs no more than this.
 
 `subscription.applicable` is `false` on Debian, where Ubuntu Pro and Livepatch do not exist. Clients
 rendering this MUST show "not applicable" rather than "unknown" or an empty amber badge; a Debian host
@@ -265,6 +310,7 @@ is available for this host. Internally the wake-up is a Postgres `LISTEN`/`NOTIF
       "intent": "packages.applySecurity",
       "params": {},
       "class": "routine",
+      "issuedAt": "2026-08-22T13:59:58Z",
       "notBefore": "2026-08-22T14:00:00Z",
       "notAfter":  "2026-08-22T14:30:00Z",
       "nonce": "b64...",
@@ -296,6 +342,11 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
 5. **Check the nonce** against the persisted nonce store; refuse replays.
 6. **Check `notBefore`/`notAfter` against the local clock** (see [§4.4](#44-servertime-and-clock-skew)).
 7. **Check job age** against the local policy's `limits.max_job_age_seconds`.
+   `issuedAt` is **not** covered by the signature (see [§8](#8-canonical-json)), so for a signed job the
+   age is measured from `notBefore`, which is. A control plane that has been taken over could otherwise
+   defeat the age limit entirely by setting `issuedAt` to the current time, which is the one thing that
+   limit exists to prevent.
+
 8. **Check the local policy** for whatever the intent needs — and then hand off to the root helper,
    **which checks the policy again itself**. The agent-side check is an optimisation and a better
    error message; the helper's check is the one that is load-bearing, because it runs as root against
@@ -420,14 +471,19 @@ could not phone home would have made the fleet less safe by being installed.
 
 ## 11. Errors
 
-| Status | Agent behaviour |
-| --- | --- |
-| `400` | Log and drop; do not retry an unparseable request |
-| `401` | Certificate rejected or revoked. Stop calling; log loudly. Do **not** attempt re-enrolment automatically — a host that re-enrols itself on `401` is a host an attacker can re-enrol |
-| `409` | Enrolment conflict; stop and require operator action |
-| `413` | Body too large. Truncate further and retry once, then drop |
-| `429` | Honour `Retry-After`, then full-jitter backoff |
-| `5xx` | Full-jitter backoff, retry indefinitely |
+| Status | Where it is returned | Agent behaviour |
+| --- | --- | --- |
+| `400` | Any endpoint, for a body that does not parse | Log and drop. An unparseable request will not become parseable on a retry |
+| `401` | Any authenticated endpoint | Certificate rejected or revoked. Stop calling; log loudly. Do **not** re-enrol automatically — a host that re-enrols itself on `401` is a host an attacker can cause to re-enrol. Keep patching from local policy |
+| `404` | `POST /jobs/{id}/result` | The job does not exist, or belongs to another host. Drop the result |
+| `409` | `POST /enroll` | A host with this `machineIdHash` is already enrolled. Stop and require operator action |
+| `413` | `POST /heartbeat`, `POST /jobs/{id}/result` | Body too large. Truncate further, set the affected section's truncated flag, retry once, then drop |
+| `429` | `POST /enroll` | Honour `Retry-After`, then full-jitter backoff. Only enrolment is rate limited: it is the one endpoint reachable without a client certificate, and throttling an authenticated fleet is a good way to break it during the incident when every host reconnects at once |
+| `5xx` | Any endpoint | Full-jitter backoff, retry indefinitely |
+
+A server MUST distinguish `400` from `413`. Returning one status for both makes a malformed body look
+like an over-size one, and an agent following this table will keep truncating and retrying something
+that will never parse.
 
 Servers SHOULD return a problem body of `{"error":"code","message":"human text"}` but agents MUST NOT
 require it, and MUST NOT parse `message` for control flow.

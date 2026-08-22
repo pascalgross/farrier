@@ -27,15 +27,17 @@ Group=farrier
 # conflict is not yet live — but it must be resolved before the first executor lands, and the resolution
 # is a design decision rather than a packaging tweak. The two credible options:
 #
-#   (a) Drop NoNewPrivileges=yes from this unit and keep sudo. Simplest, and the sudoers file still
-#       constrains the agent to three fixed argv. It costs the strongest single line in this file.
-#   (b) Keep NoNewPrivileges=yes and replace sudo with a root-owned helper service the agent reaches
-#       over a unix socket in /run/farrier, with the socket's peer credentials as the authorisation.
-#       More code, but it preserves every hardening line here and removes setuid from the picture.
+#   (a) Replace sudo with a root-owned helper service the agent reaches over a unix socket in
+#       /run/farrier, with the socket's peer credentials as the authorisation. More code, and it
+#       preserves every hardening line here while removing setuid from the picture entirely.
+#   (b) Drop enough of the sandbox that sudo works. Deleting the NoNewPrivileges line below is NOT
+#       sufficient: systemd implies NoNewPrivileges=yes from ProtectKernelTunables,
+#       ProtectKernelModules, ProtectClock, RestrictNamespaces, RestrictSUIDSGID,
+#       MemoryDenyWriteExecute, LockPersonality and SystemCallFilter, all of which this unit sets.
 #
-# Option (b) is the better fit for what this project claims, because it keeps the agent process itself
-# unable to gain privilege by any route. Whichever is chosen, docs/SECURITY.md §5 must be updated in
-# the same change.
+# Option (a) is the one to take. (b) is written down so nobody spends an afternoon on the obvious
+# version of it and concludes systemd is broken. Whichever is chosen, docs/SECURITY.md §5 must be
+# updated in the same change.
 # ---------------------------------------------------------------------------------------------------
 NoNewPrivileges=yes
 CapabilityBoundingSet=

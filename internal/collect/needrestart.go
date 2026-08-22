@@ -146,6 +146,8 @@ func RebootMarker() (bool, []string) {
 		}
 	}
 	if len(reasons) > MaxRebootReasons {
+		// The flag is set by CombineRebootSignals, which is where the bound is applied to the merged
+		// list; truncating here as well keeps a pathological marker file from being read into memory.
 		reasons = reasons[:MaxRebootReasons]
 	}
 	return true, reasons
@@ -188,6 +190,7 @@ func CombineRebootSignals(markerPresent bool, markerReasons []string, nr Needres
 
 	if len(report.Reasons) > MaxRebootReasons {
 		report.Reasons = report.Reasons[:MaxRebootReasons]
+		report.ReasonsTruncated = true
 	}
 	return report
 }

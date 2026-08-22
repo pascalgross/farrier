@@ -33,6 +33,7 @@ import (
 	"github.com/pegasusnetworks/farrier/internal/ca"
 	"github.com/pegasusnetworks/farrier/internal/canonical"
 	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pegasusnetworks/farrier/internal/collect/collector"
 	"github.com/pegasusnetworks/farrier/internal/collect/platform"
 	"github.com/pegasusnetworks/farrier/internal/policy"
 	"github.com/pegasusnetworks/farrier/internal/protocol"
@@ -259,7 +260,7 @@ func (a *Agent) cycle(ctx context.Context, wantFull bool) (bool, error) {
 func (a *Agent) buildHeartbeat(ctx context.Context, p policy.Policy, signers *signing.SignerSet,
 	wantFull bool) (protocol.HeartbeatRequest, error) {
 
-	facts, err := collect.Gather(ctx, a.platform)
+	facts, err := collect.Gather(ctx, a.platform, collector.All()...)
 	if err != nil {
 		return protocol.HeartbeatRequest{}, fmt.Errorf("agent: gathering facts: %w", err)
 	}

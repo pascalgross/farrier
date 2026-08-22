@@ -22,12 +22,18 @@ agent from source.
 // Platform is the per-distribution-family behaviour that fact collection depends on.
 type Platform interface {
     Identify() (Distribution, error)
-    UpgradablePackages() ([]Package, error)
+    UpgradablePackages(ctx context.Context) ([]Package, error)
     SecurityOrigins() []string
-    RebootRequired() (bool, []string, error)
-    SubscriptionStatus() (*Subscription, error) // Ubuntu Pro / ESM; nil where not applicable
+    RebootRequired(ctx context.Context) (RebootReport, error)
+    SubscriptionStatus(ctx context.Context) (*Subscription, error) // nil where not applicable
 }
 ```
+
+Three of these take a context, because they start a process — `apt-get`, `needrestart`, `pro` — and a
+heartbeat that could not be cancelled would hold the agent open behind a hung package manager.
+`RebootRequired` returns a `RebootReport` rather than a bare boolean and a list, because the answer has
+four parts: whether a reboot is needed, which packages need it, which services still hold replaced
+libraries, and whether the scan that produced that last list could see every process.
 
 Add a file under `internal/collect/platform/`, implement the interface, register it in that package's
 detection function. Farrier ships `ubuntu` and `debian`.
@@ -56,8 +62,16 @@ Collectors are read-only by construction and run as the unprivileged `farrier` u
 capabilities. A collector that needs root is not a collector; it is a request for a new intent, which
 is a different and much longer conversation.
 
-Register in `internal/collect/collector`. Keep the output bounded — see
-[`PROTOCOL.md` §4.5](PROTOCOL.md#45-bounds).
+Add a file under `internal/collect/collector` with a `Register` call in its `init`, and nothing else in
+the codebase learns about it. Output appears under the collector's name in the facts document's `extra`
+object. Farrier ships one, `network`, which is also what justifies `AF_NETLINK` in the systemd unit's
+`RestrictAddressFamilies`: `net.Interfaces` uses a netlink socket on Linux and returns nothing without
+it, silently.
+
+Keep the output bounded — see [`PROTOCOL.md` §4.5](PROTOCOL.md#45-bounds) — and stable. The name becomes
+a key in a document that is digested, stored and compared, so renaming one makes every host in a fleet
+look changed on the same afternoon. A collector that fails leaves its section absent rather than empty:
+"no network interfaces" is a very different claim from "the network collector failed".
 
 ### `signing.Signer` — a key backend
 
@@ -117,10 +131,15 @@ that it is not a security boundary for the guarantee: a compromised administrato
 explicitly inside the threat model of [`SECURITY.md` §1](SECURITY.md#1-the-guarantee) and still cannot
 run code on a host.
 
-### Angular UI panels
+### The Angular application
 
-Standalone components registered into the host-detail panel registry. UI extensions read the API; they
-cannot reach hosts.
+Standalone components and lazily loaded routes, in `web/src/app`. There is no panel registry: with
+three pages it would be indirection without a reader, and it can be introduced when there is a second
+thing to register. Adding a page means a component and a route.
+
+Whatever it grows into, the UI reads the API and can reach no host directly — it has no credential that
+any agent would accept, because agents authenticate the *control plane* by certificate and authorise
+work by signature.
 
 ---
 

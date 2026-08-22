@@ -120,6 +120,13 @@ type Updates struct {
 	// It is separate from Allow because the two answer different questions. Allow bounds what the
 	// control plane may ask for; AutoApply decides whether the host also does it unprompted, which is
 	// what keeps a fleet patched through a control-plane outage.
+	//
+	// **Farrier does not implement it yet.** The timer that applies updates unprompted is
+	// unattended-upgrades', configured by the distribution and not by Farrier, so in phase 0 this
+	// setting is reported to the control plane and acted on by nothing. It is here from the first
+	// release because it belongs in this file, and because adding a policy key later means every host
+	// in a fleet has a policy file older than the software reading it. Phase 1 makes it real by
+	// rendering the corresponding unattended-upgrades configuration.
 	AutoApply bool `toml:"auto_apply"`
 
 	// Window is the maintenance window, empty meaning any time.
@@ -186,7 +193,7 @@ type Policy struct {
 // the empty trusted-signers file — a freshly installed agent should be able to report on a host and to
 // keep it patched, and should be able to do nothing else until somebody decides otherwise.
 func Default() Policy {
-	return Policy{
+	p := Policy{
 		Updates: Updates{
 			Allow:     AllowSecurity,
 			AutoApply: true,
@@ -196,9 +203,15 @@ func Default() Policy {
 		},
 		Services: Services{Restartable: nil},
 		Limits:   Limits{MaxJobAgeSeconds: 900},
-		window:   Window{},
 		source:   "built-in default",
 	}
+	// Validated rather than hand-assembled, so the derived window matches the string beside it. A
+	// zero-valued Window reports itself closed at every instant while Updates.Window says "always",
+	// and the two disagreeing would be a policy whose behaviour did not match its own display.
+	if err := p.validate(); err != nil {
+		panic("policy: the built-in default does not validate: " + err.Error())
+	}
+	return p
 }
 
 // Closed returns the policy a host uses when its policy file cannot be trusted.
@@ -208,11 +221,15 @@ func Default() Policy {
 // in a hand-edited file silently widened what a host accepts. Failing closed makes that a visible
 // outage instead of an invisible one.
 func Closed() Policy {
-	return Policy{
+	p := Policy{
 		Updates: Updates{Allow: AllowNone, AutoApply: false, Timezone: "UTC", Reboot: RebootNever},
 		Limits:  Limits{MaxJobAgeSeconds: 900},
 		source:  "closed (policy could not be loaded)",
 	}
+	if err := p.validate(); err != nil {
+		panic("policy: the closed policy does not validate: " + err.Error())
+	}
+	return p
 }
 
 // Source describes where the policy came from, for logs and error messages.
@@ -298,6 +315,14 @@ func (p *Policy) validate() error {
 	}
 	if !p.Updates.Reboot.Valid() {
 		return fmt.Errorf("updates.reboot: %q is not one of never, window", p.Updates.Reboot)
+	}
+	// "window" with no window configured would mean "reboot at any time", because an empty window is
+	// always open. That is not what anybody writing `reboot = "window"` meant, and it is the kind of
+	// trap that is discovered by a host rebooting at eleven in the morning. There is deliberately no
+	// `reboot = "always"`, so the only way to say it is to say it in the window.
+	if p.Updates.Reboot == RebootWindow && strings.TrimSpace(p.Updates.Window) == "" {
+		return errors.New(`updates.reboot = "window" requires updates.window to be set; ` +
+			`an empty window is always open, which would permit a reboot at any time`)
 	}
 	if p.Updates.Timezone == "" {
 		p.Updates.Timezone = "UTC"

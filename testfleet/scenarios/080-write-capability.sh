@@ -15,7 +15,7 @@ run_sh "$INSTANCE" 'cat > /etc/farrier/policy.toml <<TOML
 [updates]
 allow = "all"
 auto_apply = true
-window = ""
+window = "daily 00:00-00:00"
 timezone = "UTC"
 reboot = "window"
 

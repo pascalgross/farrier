@@ -7,9 +7,11 @@ change.
 By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 
 > [!IMPORTANT]
-> Farrier is in **phase 0**. It ships **no write capability at all**: the intent catalogue contains
-> only the four read-only operations, and the destructive intents exist as specifications with no
-> executor behind them. Do not expect to patch a fleet with this yet.
+> Farrier is in **phase 0**. It ships **no write capability at all**. The intent catalogue is complete —
+> four read-only operations, one routine and five destructive — but only the read-only four have an
+> executor behind them; every privileged one is refused with a distinguishable error. The protocol, the
+> policy enforcement and the packaging are real and tested, so that phase 1 adds executors rather than
+> foundations. Do not expect to patch a fleet with this yet.
 
 ---
 
@@ -98,6 +100,7 @@ stable and oldstable.** Ubuntu 20.04 is excluded as ESM-only.
 
 | | |
 | --- | --- |
+| [`docs/`](docs/) | Everything below, plus a note on where the design rationale lives |
 | [`docs/INSTALL.md`](docs/INSTALL.md) | Getting a control plane and a host running, and what a fresh host will and will not do |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The guarantee, the three mechanisms, the permanently-refused list, and an honest statement of what Farrier does *not* defend against |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | The agent protocol, specified well enough to reimplement |

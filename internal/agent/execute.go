@@ -9,6 +9,7 @@ import (
 
 	"github.com/pegasusnetworks/farrier/internal/canonical"
 	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pegasusnetworks/farrier/internal/collect/collector"
 	"github.com/pegasusnetworks/farrier/internal/intent"
 	"github.com/pegasusnetworks/farrier/internal/policy"
 	"github.com/pegasusnetworks/farrier/internal/protocol"
@@ -111,7 +112,7 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 	decision := policy.Decide(p, policy.Request{
 		Intent:   spec.Name,
 		Params:   params,
-		IssuedAt: job.IssuedAt,
+		IssuedAt: effectiveIssueTime(job),
 	}, policy.Env{Now: now, Paused: policy.Paused()})
 	if !decision.Allowed {
 		status := protocol.StatusRefusedByPolicy
@@ -155,6 +156,24 @@ func verifyOfflineSignature(job protocol.Job, hostID string, signers *signing.Si
 	return nil
 }
 
+// effectiveIssueTime returns the instant the local age limit is measured from.
+//
+// issuedAt is not covered by a job's signature — the signed payload is fixed by docs/PROTOCOL.md §8 and
+// does not include it — so for a signed job it is a number the control plane chooses freely. A control
+// plane that had been taken over could defeat limits.max_job_age_seconds entirely by setting issuedAt
+// to the current time, which is the one thing that limit exists to prevent: a restart signed on Tuesday
+// executing on Friday because the agent was offline in between.
+//
+// notBefore *is* signed, and is when the signer said the job became valid. Measuring from it means the
+// age limit binds whoever holds the key rather than whoever holds the control plane. An unsigned job —
+// a read intent — has nothing to defend, so its issuedAt is taken at face value.
+func effectiveIssueTime(job protocol.Job) time.Time {
+	if job.Signature != "" && !job.NotBefore.IsZero() {
+		return job.NotBefore
+	}
+	return job.IssuedAt
+}
+
 // absDuration returns the magnitude of a duration.
 func absDuration(d time.Duration) time.Duration {
 	if d < 0 {
@@ -172,7 +191,7 @@ func absDuration(d time.Duration) time.Duration {
 func Execute(ctx context.Context, spec intent.Spec, params intent.Params, plat collect.Platform) (any, error) {
 	switch spec.Name {
 	case intent.FactsCollect:
-		return collect.Gather(ctx, plat)
+		return collect.Gather(ctx, plat, collector.All()...)
 
 	case intent.PackagesListUpgradable:
 		packages, err := plat.UpgradablePackages(ctx)

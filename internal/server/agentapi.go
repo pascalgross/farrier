@@ -21,6 +21,16 @@ import (
 // have one yet. Everything that makes it safe is therefore in the token: single-use, time-limited,
 // consumed atomically, and stored only as a hash.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	// The only endpoint reachable without a client certificate, and therefore the only one worth rate
+	// limiting. A token is 256 bits of uniform randomness, so this defends against the load of guessing
+	// rather than against its success — and against a misconfigured provisioning loop, which is the
+	// case that actually happens.
+	if !s.enrolLimiter.allow(requestSource(r), time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.enrolLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many enrolment attempts")
+		return
+	}
+
 	var req protocol.EnrollRequest
 	if err := decodeJSON(w, r, protocol.MaxEnrollBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
@@ -139,8 +149,12 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host store.Host) {
 	var req protocol.HeartbeatRequest
 	if err := decodeJSON(w, r, protocol.MaxHeartbeatBytes, &req); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "too_large",
-			"the heartbeat body exceeded the limit or could not be read")
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "too_large",
+				"the heartbeat body exceeded the limit; truncate a section and set its truncated flag")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "malformed", "the heartbeat body could not be read")
 		return
 	}
 
@@ -300,8 +314,12 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, host store
 
 	var req protocol.ResultRequest
 	if err := decodeJSON(w, r, protocol.MaxResultBytes, &req); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "too_large",
-			"the result body exceeded the limit or could not be read")
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "too_large",
+				"the result body exceeded the limit; output is truncated to its last 64 KiB")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "malformed", "the result body could not be read")
 		return
 	}
 	if req.JobID != "" && req.JobID != jobID {

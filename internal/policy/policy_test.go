@@ -69,6 +69,10 @@ func TestParseRejectsInvalidValues(t *testing.T) {
 		"bad glob":      "[services]\nrestartable = [\"[\"]\n",
 		"wrong type":    "[updates]\nauto_apply = \"yes\"\n",
 		"window fields": "[updates]\nwindow = \"Sun 03:00 05:00 07:00\"\n",
+		// "window" with no window would mean "reboot at any time", because an empty window is always
+		// open. That is not what anybody writing it meant, and there is deliberately no
+		// `reboot = "always"` — so the only way to say it is to say it in the window.
+		"reboot window with no window": "[updates]\nreboot = \"window\"\n",
 	}
 	for name, body := range cases {
 		p, err := Parse([]byte(body))
@@ -332,6 +336,29 @@ func TestWindowBehaviourAcrossDaylightSavingTransitions(t *testing.T) {
 		if !safe.Contains(instant) {
 			t.Errorf("a window clear of the transition was closed at %s (%s local)",
 				at, instant.In(time.UTC).Format("15:04"))
+		}
+	}
+}
+
+// TestTheBuiltInPoliciesAreSelfConsistent asserts Default and Closed agree with themselves.
+//
+// Both are hand-assembled and then validated, because a hand-assembled Policy leaves the derived window
+// as the zero value — which reports itself closed at every instant while Updates.Window beside it says
+// "always". The two disagreeing would be a policy whose behaviour did not match its own display, on
+// exactly the hosts nobody has configured.
+func TestTheBuiltInPoliciesAreSelfConsistent(t *testing.T) {
+	for name, p := range map[string]Policy{"default": Default(), "closed": Closed()} {
+		if p.Updates.Window == "" && !p.Window().Always() {
+			t.Errorf("the %s policy carries an empty window string but a window that is never open", name)
+		}
+		if p.Updates.Window == "" && !p.Window().Contains(time.Now()) {
+			t.Errorf("the %s policy's window is closed right now despite being unset", name)
+		}
+		if !p.Updates.Allow.Valid() || !p.Updates.Reboot.Valid() {
+			t.Errorf("the %s policy has invalid values: %+v", name, p.Updates)
+		}
+		if p.Updates.Reboot != RebootNever {
+			t.Errorf("the %s policy permits reboots; neither should", name)
 		}
 	}
 }

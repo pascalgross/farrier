@@ -89,6 +89,9 @@ type Server struct {
 
 	// hasUI reports whether a built application is actually present.
 	hasUI bool
+
+	// enrolLimiter bounds attempts against the one endpoint that needs no client certificate.
+	enrolLimiter *rateLimiter
 }
 
 // New builds a server from a configuration.
@@ -117,7 +120,13 @@ func New(cfg Config) (*Server, error) {
 	}
 	_, statErr := fs.Stat(assets, "index.html")
 
-	s := &Server{cfg: cfg, mux: http.NewServeMux(), assets: assets, hasUI: statErr == nil}
+	s := &Server{
+		cfg:          cfg,
+		mux:          http.NewServeMux(),
+		assets:       assets,
+		hasUI:        statErr == nil,
+		enrolLimiter: newRateLimiter(enrollBurst, enrollRefill),
+	}
 	s.routes()
 	return s, nil
 }
@@ -359,4 +368,15 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) er
 		return err
 	}
 	return nil
+}
+
+// isTooLarge reports whether a decode failed because the body exceeded its bound.
+//
+// The two failures want different statuses and different agent behaviour: docs/PROTOCOL.md §11 says an
+// agent drops a 400 without retrying and truncates-and-retries a 413. Returning one status for both
+// would make a malformed body look like an over-size one, and an agent would keep retrying something
+// that will never parse.
+func isTooLarge(err error) bool {
+	var maxBytes *http.MaxBytesError
+	return errors.As(err, &maxBytes)
 }
