@@ -603,10 +603,15 @@ func (p *Postgres) listenOnce() error {
 		return fmt.Errorf("store: LISTEN %s: %w", jobChannel, err)
 	}
 
-	// Waking everyone once on connect closes the gap in which a job was inserted while the listener
-	// was down. Spurious wake-ups are harmless — the caller re-checks the queue — and a missed one is
-	// a job that sits until the next poll.
-	p.wakeAll()
+	// Deliberately *not* waking every waiter here.
+	//
+	// Doing so would close the gap in which a job was inserted while the listener was down, at the cost
+	// of waking every long-poll in the fleet at the same instant — five hundred agents all re-reading
+	// the job queue in the same moment, immediately after a database that has just recovered. The gap
+	// it closes is bounded and small: an agent whose long-poll is not woken returns empty after its
+	// hold expires and polls again, so a job inserted during a listener outage starts at most one poll
+	// interval late. Twenty-five seconds of extra latency in a rare failure is a much better trade than
+	// a synchronised burst at exactly the wrong moment.
 
 	for {
 		notification, err := conn.WaitForNotification(ctx)
@@ -626,20 +631,6 @@ func (p *Postgres) wake(hostID string) {
 
 	for _, w := range waiters {
 		close(w)
-	}
-}
-
-// wakeAll releases every waiter, used after the listener reconnects.
-func (p *Postgres) wakeAll() {
-	p.mu.Lock()
-	all := p.waiters
-	p.waiters = map[string][]chan struct{}{}
-	p.mu.Unlock()
-
-	for _, waiters := range all {
-		for _, w := range waiters {
-			close(w)
-		}
 	}
 }
 

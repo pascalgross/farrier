@@ -35,6 +35,28 @@ jobs:
   go:
     name: Go
     runs-on: ubuntu-latest
+
+    services:
+      # The store tests skip without this, so that `go test ./...` works on a machine with no database.
+      # They are not optional here: the PostgreSQL behaviour the store depends on — atomic claiming,
+      # LISTEN/NOTIFY, conditional updates — is not exercised by the in-memory store at all, and a
+      # suite that only ran against Memory would prove nothing about the code that ships.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: farrier_test
+          POSTGRES_PASSWORD: farrier_test
+          POSTGRES_DB: farrier_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U farrier_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      FARRIER_TEST_DATABASE_URL: postgres://farrier_test:farrier_test@127.0.0.1:5432/farrier_test?sslmode=disable
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -51,8 +73,17 @@ jobs:
       - name: Doc comments on every type and function, exported or not
         run: make doccheck
 
-      - name: Tests
+      - name: Tests, including the store against a real PostgreSQL
         run: make test
+
+      - name: The store tests actually ran rather than skipping
+        # A skipped test is indistinguishable from a passing one in a summary, and these are the only
+        # coverage the production store has.
+        run: |
+          go test -count=1 -v -run 'TestClaimJobsDeliversEachJobExactlyOnce' ./internal/store/ \
+            | tee /tmp/store.log
+          grep -q -- '--- PASS: TestClaimJobsDeliversEachJobExactlyOnce' /tmp/store.log \
+            || { echo "the PostgreSQL store tests skipped; the database service is not reachable" >&2; exit 1; }
 
       - name: go mod tidy leaves no diff
         run: |
