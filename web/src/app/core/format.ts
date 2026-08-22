@@ -50,13 +50,18 @@ export function formatAge(instant: string | null, now: string): string {
 /**
  * Renders a clock offset with its sign, so "ahead" and "behind" are distinguishable.
  *
- * The sign matters more than the magnitude here: a host running ahead of the control plane and one
- * running behind it fail in different ways, and both are worth telling apart at a glance.
+ * The sign matters more than the magnitude: a host running ahead of the control plane and one running
+ * behind it fail in different ways, and both are worth telling apart at a glance.
+ *
+ * The agent computes the offset as its own clock minus the control plane's, so a **positive** value is
+ * a host running **ahead**. Getting this backwards is the sort of mistake that survives review — the
+ * page still renders, the number is still right, and only the word is wrong — so it is stated here and
+ * pinned by a test.
  */
 export function formatOffset(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds === 0) {
     return 'in sync';
   }
   const magnitude = formatDuration(Math.abs(seconds));
-  return seconds > 0 ? `${magnitude} behind` : `${magnitude} ahead`;
+  return seconds > 0 ? `${magnitude} ahead` : `${magnitude} behind`;
 }

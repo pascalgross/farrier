@@ -39,16 +39,20 @@ require_lxd() {
 # differently would be testing a build nobody ships.
 build_package() {
 	say "building the package"
-	make -C "$REPO" deb VERSION="${FARRIER_TEST_VERSION:-0.0.0-testfleet}" >/dev/null
-	ls "$REPO"/dist/packages/*.deb
+	local version=${FARRIER_TEST_VERSION:-0.0.0-testfleet}
+	make -C "$REPO" deb VERSION="$version" >/dev/null
+	# The path comes from the Makefile rather than a glob: `make deb` never empties dist/packages, so a
+	# glob would happily install whichever package happened to sort first from an earlier run.
+	make -s -C "$REPO" deb-path VERSION="$version"
 }
 
 # up launches every machine and installs the package on it.
 up() {
 	require_lxd
-	build_package
 	local deb
-	deb=$(ls "$REPO"/dist/packages/*.deb | head -n1)
+	deb=$(build_package)
+	[ -f "$deb" ] || { echo "the package was not built at $deb" >&2; exit 1; }
+	say "built $deb"
 
 	for release in $FARRIER_RELEASES; do
 		local instance
@@ -143,10 +147,10 @@ case "${1:-}" in
 	test) shift; test_fleet "$@" ;;
 	shell) shift; shell "$@" ;;
 	ci)
-		up
-		# The fleet is destroyed whether or not the scenarios pass, so a failing run does not leave
-		# machines behind on a shared runner.
+		# The trap is installed before `up`, not after: a failure inside up — a launch that fails, a
+		# boot that times out — would otherwise leave machines running on a shared runner.
 		trap down EXIT
+		up
 		test_fleet
 		;;
 	*)

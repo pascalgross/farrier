@@ -9,8 +9,13 @@ single binary with the interface inside it. That is the whole deployment: one bi
 ```bash
 make web        # build and copy into internal/server/assets
 make web-lint   # ESLint, including the doc-comment rule on private members
-pnpm start      # dev server on :4200, proxied to a control plane on :8443
+pnpm exec ng test --watch=false
+pnpm start      # dev server on :4200
 ```
+
+`pnpm start` serves the application alone; point it at a control plane with `proxy.conf.json` if you
+want the API alongside it. Most work on this application is faster against `farrier-server serve`
+directly, which embeds the built bundle and needs no proxy at all.
 
 ## What the pages are for
 
@@ -48,7 +53,13 @@ authentication is not a boundary the guarantee rests on — a compromised admini
 
 ## Tests
 
-There are none yet. The Angular test harness is scaffolded and works, but component tests would be
-testing rendering rather than behaviour at this stage; the behaviour that matters is on the Go side and
-is covered there. CI runs the linter and the production build, which catches the failures that actually
-happen: a template type error, a missing doc comment, a bundle that has doubled in size.
+`src/app/core/format.spec.ts` covers the formatters, which is where the one genuine defect in this
+application lived: `formatOffset` rendered a positive clock offset as "behind" when the agent reports
+local-minus-server, so a host running ahead was described as running behind. The page rendered, the
+number was right, and only the word was wrong — which is exactly the kind of thing a spec catches and a
+review does not.
+
+There are no component tests. At this stage they would be testing rendering rather than behaviour, and
+the behaviour that matters is on the Go side and covered there. CI runs the specs, the linter and the
+production build, which between them catch the failures that actually happen: a template type error, an
+input that is never bound, a missing doc comment, a bundle that has doubled in size.

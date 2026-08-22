@@ -114,6 +114,16 @@ ARCH ?= $(shell go env GOARCH)
 # nfpm insists on a semver version, and `git describe` yields v0.1.0-3-gabc1234 between tags.
 DEB_VERSION ?= $(patsubst v%,%,$(VERSION))
 
+# Debian's version ordering has no notion of a prerelease, so nfpm's semver schema encodes the hyphen
+# as a tilde — 0.1.0-rc1 becomes 0.1.0~rc1, which sorts *before* 0.1.0 exactly as a prerelease should.
+# Anything that needs to name the resulting file has to do the same substitution, and forgetting is a
+# glob that silently matches nothing.
+DEB_FILE_VERSION = $(subst -,~,$(DEB_VERSION))
+
+.PHONY: deb-path
+deb-path: ## Print the .deb path `make deb` would produce, for scripts that need to name it
+	@echo "$(DIST)/packages/farrier-agent_$(DEB_FILE_VERSION)_$(ARCH).deb"
+
 .PHONY: deb
 deb: build ## Build the farrier-agent .deb
 	@command -v nfpm >/dev/null 2>&1 || { echo "nfpm not installed; see https://nfpm.goreleaser.com/install/"; exit 1; }

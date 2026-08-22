@@ -33,6 +33,9 @@
               }
             ],
             "styles": [
+              "@fontsource/roboto/400.css",
+              "@fontsource/roboto/500.css",
+              "@fontsource/material-icons/index.css",
               "src/tailwind.css",
               "src/styles.scss"
             ],
@@ -96,8 +99,13 @@
               }
             ],
             "styles": [
+              "@fontsource/roboto/400.css",
+              "@fontsource/roboto/500.css",
+              "@fontsource/material-icons/index.css",
+              "src/tailwind.css",
               "src/styles.scss"
-            ]
+            ],
+            "karmaConfig": "karma.conf.js"
           }
         }
       }

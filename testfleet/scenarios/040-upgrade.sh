@@ -26,7 +26,10 @@ pass "the edited policy parses"
 
 say "building and installing a newer package"
 make -C "$REPO" deb VERSION=0.0.1-testfleet >/dev/null
-newer=$(ls "$REPO"/dist/packages/farrier-agent_0.0.1-testfleet_*.deb | head -n1)
+# `make deb-path` rather than a glob. Debian has no notion of a prerelease, so nfpm's semver schema
+# writes 0.0.1-testfleet as 0.0.1~testfleet, and a glob built from the version silently matches nothing.
+newer=$(make -s -C "$REPO" deb-path VERSION=0.0.1-testfleet)
+[ -f "$newer" ] || fail "the newer package was not built at $newer"
 lxc file push "$newer" "$INSTANCE/tmp/farrier-agent-newer.deb"
 run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
 	apt-get install -y -qq --allow-downgrades /tmp/farrier-agent-newer.deb'

@@ -70,13 +70,18 @@ jobs:
           sudo chmod 0666 /var/snap/lxd/common/lxd/unix.socket
 
       - name: Run the fleet
+        # `up` then `test`, rather than `ci`, so that a failure leaves the machines alive for the
+        # journal-collection step below. `ci` installs a trap that deletes them on exit, which would
+        # make that step iterate an empty list every time it mattered.
         env:
           FARRIER_RELEASES: ${{ matrix.release }}
           # GitHub's runners support nested virtualisation, so the reboot scenarios test what they
           # claim to. If that ever stops being true, setting this to 0 keeps the rest of the suite
           # running and makes 070-reboot-result skip visibly rather than pass vacuously.
           FARRIER_VM: "1"
-        run: ./testfleet/fleet.sh ci
+        run: |
+          ./testfleet/fleet.sh up
+          ./testfleet/fleet.sh test
 
       - name: Collect the journal from a failing machine
         if: failure()
@@ -86,3 +91,7 @@ jobs:
             lxc exec "$instance" -- journalctl --no-pager -n 200 || true
             echo "::endgroup::"
           done
+
+      - name: Destroy the fleet
+        if: always()
+        run: ./testfleet/fleet.sh down

@@ -6,6 +6,14 @@
 
 @use "@angular/material" as mat;
 
+// The fonts are listed in angular.json's styles array rather than imported here, because Sass's @use
+// wants a module and these are plain CSS. They are bundled rather than linked from a CDN on purpose:
+// Angular Material's mat-icon renders a ligature, so without the icon font every icon in the
+// application shows as the literal word "dns" or "logout" — and fetching from fonts.googleapis.com
+// would mean a fleet-management console that does not render in an air-gapped network and that tells a
+// third party every time an operator opens it. Neither is acceptable for this particular product, and
+// the whole set costs a few hundred kilobytes inside a binary that already embeds the application.
+
 html {
   color-scheme: light dark;
   @include mat.theme((color: mat.$azure-palette, typography: Roboto, density: 0));

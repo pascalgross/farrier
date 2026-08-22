@@ -117,6 +117,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          # Given explicitly because there is no package.json at the repository root and no
+          # packageManager field for the action to read, so without it the step fails before it starts.
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -127,6 +131,11 @@ jobs:
 
       - name: ESLint, including the doc-comment rule on private members
         run: pnpm exec eslint .
+
+      - name: Unit tests
+        # Chrome comes with the runner image. The karma launcher passes --no-sandbox because CI and
+        # containers often run as root, where Chrome refuses to start otherwise.
+        run: pnpm exec ng test --watch=false
 
       - name: Production build
         run: pnpm run build
@@ -159,8 +168,11 @@ jobs:
 
       - name: Install it, and check the agent runs and the helper refuses
         run: |
-          sudo dpkg -i dist/packages/farrier-agent_0.0.0-ci_amd64.deb
+          # `make deb-path` rather than a literal: Debian has no notion of a prerelease, so nfpm's
+          # semver schema writes 0.0.0-ci as 0.0.0~ci, and a hand-written path silently matches nothing.
+          sudo dpkg -i "$(make -s deb-path VERSION=0.0.0-ci)"
           farrier-agent version
+          farrier version
           farrier-agent policy check
           # The whole product in one command: the agent's own account, going through the only
           # privileged path that exists, being told no by a file the control plane cannot touch.
@@ -185,7 +197,7 @@ jobs:
           before_signers=$(md5sum /etc/farrier/trusted-signers | cut -d' ' -f1)
 
           make deb VERSION=0.0.1-ci
-          sudo dpkg -i dist/packages/farrier-agent_0.0.1-ci_amd64.deb
+          sudo dpkg -i "$(make -s deb-path VERSION=0.0.1-ci)"
 
           after_policy=$(md5sum /etc/farrier/policy.toml | cut -d' ' -f1)
           after_signers=$(md5sum /etc/farrier/trusted-signers | cut -d' ' -f1)
@@ -196,7 +208,7 @@ jobs:
       - name: Purge leaves nothing behind
         run: |
           sudo dpkg --purge farrier-agent
-          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier; do
+          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier /usr/bin/farrier; do
             [ ! -e "$path" ] || { echo "$path survived a purge" >&2; exit 1; }
           done
           ! getent passwd farrier
