@@ -1,0 +1,80 @@
+# golangci-lint configuration for Farrier.
+#
+# Two things here are load-bearing rather than taste. revive's `exported` rule enforces the doc-comment
+# rule on exported declarations; `tools/doccheck` extends the same rule to unexported ones, because no
+# off-the-shelf linter does that and the unexported helper is exactly where a reader most needs to know
+# why the code exists. Neither of them can check whether the "why" is real — that is code review's job,
+# and CONTRIBUTING.md says so rather than pretending a linter covers it.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - godot
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+
+  settings:
+    revive:
+      # Farrier's own rule is stricter than any of these; revive covers the exported half and the
+      # sentence shape, and doccheck covers the rest.
+      rules:
+        - name: exported
+          arguments:
+            - checkPrivateReceivers
+            - disableStutteringCheck
+        - name: package-comments
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: receiver-naming
+        - name: unexported-return
+        - name: var-declaration
+        - name: var-naming
+
+    godot:
+      # Declaration comments only. Farrier's rule is about doc comments; requiring a full stop on every
+      # inline comment inside a function would produce churn without producing clarity.
+      scope: declarations
+      capital: false
+
+    gosec:
+      excludes:
+        # G304 flags reading a file whose path is a variable. Farrier does that constantly and on
+        # purpose — policy files, trusted-signers, pending results — with paths that are package
+        # constants or derived from them, and the guarantee suite is what actually checks that.
+        - G304
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/pegasusnetworks/farrier
