@@ -169,7 +169,11 @@ jobs:
           export GNUPGHOME=$(mktemp -d)
           chmod 700 "$GNUPGHOME"
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
-          printf '%s' "$APT_SIGNING_KEY" | gpg --batch --import
+          # Carriage returns are stripped before the armour reaches gpg. The key is pasted into the
+          # secret by a person, and on Windows that paste routinely arrives CRLF-terminated — which
+          # fails to import with an error about the armour rather than about line endings, at the end
+          # of a release, which is a bad place to learn that.
+          printf '%s' "$APT_SIGNING_KEY" | tr -d '\r' | gpg --batch --import
           gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print "GPG_KEY_ID="$10; exit}' \
             >> "$GITHUB_ENV"
 

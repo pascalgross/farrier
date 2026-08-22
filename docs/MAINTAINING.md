@@ -172,13 +172,52 @@ RSA 4096 rather than an elliptic curve: this key has to be verifiable by the `gp
 release Farrier supports, and RSA is the one algorithm no version of it has ever been without.
 
 No expiry, because an expired archive key breaks `apt-get update` on every host at once, and the repair
-is a person visiting each of them. The mitigation for a key that never expires is that it lives
-offline: back the private key up somewhere that is not the machine you use, and delete it from the
-machine you generated it on once it is in the secret and the backup.
+is a person visiting each of them. The mitigation for a key that never expires is where it is kept.
 
-`%no-protection` — no passphrase — is deliberate and is the reason for the storage rules below. A
-passphrase that also has to be in CI to be usable protects nothing; it just doubles the number of
-secrets.
+`%no-protection` — no passphrase — is deliberate, and its scope is narrow. The copy CI uses cannot have
+one: a passphrase that must also be in CI to be usable protects nothing and doubles the number of
+secrets. That argument does not extend to the backup, where no automation reads anything, so the backup
+is not allowed to be a bare `.asc` file lying around.
+
+### Where the backup lives
+
+**In a password manager, as a document.** Not in a cloud-synced folder — OneDrive, Dropbox, iCloud
+Drive and their equivalents keep version history and a recycle bin, replicate to every signed-in device,
+and are exactly the kind of place a file is later found by someone who was not thinking about it. A
+passphrase-free signing key does not survive that.
+
+```bash
+gpg --armor --export-secret-keys farrier@pegasusnetworks.de \
+  | op document create - --title "Farrier archive signing key (private)" \
+      --file-name farrier-archive-key.asc --vault <company-vault>
+```
+
+Piped rather than written to a file first, so the unprotected key never touches a disk. Record the
+fingerprint in the same item; verifying which key you are holding should not require decrypting it.
+
+Choose a shared company vault rather than a personal one. The same reasoning as the domain in §4
+applies: this must outlive one person's account.
+
+If a password manager is genuinely not available, encrypt the export before it goes anywhere:
+
+```bash
+gpg --armor --export-secret-keys farrier@pegasusnetworks.de \
+  | gpg --symmetric --cipher-algo AES256 --armor > farrier-archive-key.asc.gpg
+```
+
+and keep that passphrase somewhere other than beside the file.
+
+Once the key is in the backup **and** in the GitHub secret, and you have confirmed the backup restores,
+remove it from the machine that generated it:
+
+```bash
+gpg --import-options show-only --import < backup.asc   # confirm the backup is readable first
+gpg --delete-secret-keys <FINGERPRINT>
+gpg --delete-keys <FINGERPRINT>
+```
+
+In that order. A backup that has never been read back is a belief, not a backup, and the GitHub secret
+cannot be read back to check.
 
 **Store it as an environment secret, not a repository secret.**
 
@@ -190,6 +229,9 @@ secrets.
 ```bash
 gpg --armor --export-secret-keys <KEY-ID>
 ```
+
+Paste it whole, including the `-----BEGIN` and `-----END` lines. The workflow strips carriage returns
+before importing, so a paste that arrives CRLF-terminated from a Windows clipboard still works.
 
 An environment secret with a reviewer means a compromised workflow file on a branch cannot reach the
 key, because the branch's job never gets to the environment without an approval. A repository secret
