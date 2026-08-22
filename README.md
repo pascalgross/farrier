@@ -5,6 +5,7 @@ outbound-only, runs a closed set of typed operations, and obeys a policy the con
 change.
 
 By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
+Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
 > Farrier is in **phase 0**. It ships **no write capability at all**. The intent catalogue is complete —

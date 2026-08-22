@@ -1,0 +1,93 @@
+# The published site: the documentation, and the APT repository beside it.
+#
+# One workflow deploys Pages, because a Pages deployment replaces the whole site. If the release
+# workflow deployed the APT repository and this one deployed the documentation, whichever ran second
+# would delete what the first published — and the one it would delete is the repository every host
+# updates from.
+#
+# So the split is by who holds the signing key, not by who deploys. The release workflow signs the
+# repository once and publishes it as a release asset; this workflow unpacks that asset beside the
+# documentation and deploys both. The key is therefore never present on a push to main, and the
+# documentation can be corrected without a release.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "docs/**"
+      - "tools/docsite/**"
+      - ".github/workflows/pages.yml"
+  # After a release, so the newly published repository replaces the one under /apt.
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deployment in progress. Pages serves whatever finished last, and a cancelled deploy
+# during a release is how a site ends up with new documentation and last month's packages.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    # A release that failed must not republish the site; it would deploy documentation for a version
+    # whose packages were never signed.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Render the documentation
+        # Through the Makefile, so that `make site` locally produces what is published.
+        run: make site
+
+      - name: Add the signed APT repository
+        # Downloaded from the latest release rather than rebuilt, because rebuilding would need the
+        # archive signing key on every documentation change. Before the first release there is nothing
+        # to fetch and the site publishes without /apt, which is correct: there are no packages yet.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          asset=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest" 2>/dev/null \
+            | jq -r '.assets[]? | select(.name == "apt-repository.tar.gz") | .url' || true)
+          if [ -z "$asset" ] || [ "$asset" = "null" ]; then
+            echo "No published APT repository yet; the site will not carry /apt."
+            exit 0
+          fi
+          mkdir -p public/apt
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            "$asset" -o /tmp/apt-repository.tar.gz
+          tar -xzf /tmp/apt-repository.tar.gz -C public/apt
+          echo "Unpacked the published repository:"
+          find public/apt -maxdepth 2 -type d | sort
+
+      - uses: actions/configure-pages@v5
+        # Turns Pages on if nobody has. The failure mode when it is off is a red deploy at the end of a
+        # release, which is the worst moment to discover a setting.
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+      - uses: actions/deploy-pages@v4
+        id: pages

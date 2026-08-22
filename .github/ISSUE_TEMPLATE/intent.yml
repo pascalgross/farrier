@@ -1,0 +1,67 @@
+name: Propose a new operation
+description: Ask for something Farrier cannot currently do on a host
+labels: [intent-proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Farrier's catalogue is closed at compile time. There is no plugin loader, no scripting hook and
+        no escape hatch, and there never will be — that closure is what the guarantee in
+        `docs/SECURITY.md` §1 rests on. So "Farrier cannot do X" is a normal feature request, and the
+        answer is usually a new typed intent with validated parameters.
+
+        What it is never is a general-purpose mechanism. `shell.exec`, `script.run`, arbitrary
+        `file.write`, `apt.addRepository`, `user.create`, `ssh.authorizedKeys.add` and
+        `agent.updateFromURL` are listed in `docs/SECURITY.md` §3 as permanently refused, with a reason
+        each. A proposal that reduces to one of those will be closed with a pointer to that section.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The operational problem
+      description: |
+        What you are trying to achieve on the hosts, in terms of the outcome rather than the command.
+        "I need to restart a unit after a config change" is a proposal; "I need to run a shell command"
+        is the thing this project exists not to have.
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: The shape you would expect
+      description: |
+        A name and its parameters, if you have one in mind. Parameters must be constrainable: a unit
+        name matching a pattern is a parameter, an arbitrary string that reaches a command line is not.
+      placeholder: |
+        service.reload
+          unit: string, must match ^[a-zA-Z0-9@._-]+\.(service|socket|timer)$
+    validations:
+      required: false
+
+  - type: dropdown
+    id: class
+    attributes:
+      label: Which class do you think it is
+      description: |
+        `read` observes and changes nothing. `routine` changes something an operator would not be woken
+        for. `destructive` can interrupt service and requires an offline signature from a key in the
+        host's own `trusted-signers`. See `docs/SECURITY.md` §3.
+      options:
+        - read
+        - routine
+        - destructive
+        - I am not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: policy
+    attributes:
+      label: What should a host be able to refuse
+      description: |
+        Every operation must be refusable by the machine it runs on, through `policy.toml`. If you
+        cannot describe the policy knob that switches this off, that is usually a sign the operation is
+        shaped wrongly rather than a sign it needs no knob.
+    validations:
+      required: true

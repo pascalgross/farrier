@@ -1,0 +1,364 @@
+// Command docsite renders the repository's Markdown into the static site published on GitHub Pages.
+//
+// It exists rather than a generator off the shelf for the same reason the rest of the build is one
+// toolchain: adding Python or Node to produce a documentation site would mean every contributor who
+// touches a document needs an environment they otherwise would not. goldmark is compiled into this
+// program and into nothing else — no agent or server binary imports it.
+//
+// It also refuses to publish a site with a broken internal link. The documents here are the
+// specification somebody would reimplement the protocol from, and a cross-reference that silently stops
+// resolving is the way a specification rots: nobody notices, because nobody follows every link.
+package main
+
+import (
+	"bytes"
+	"embed"
+	"flag"
+	"fmt"
+	"html/template"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/text"
+)
+
+// assets holds the page template and the stylesheet.
+//
+// Embedded rather than read from disk so that the program works from any working directory and so that
+// a deployment cannot be missing half of itself.
+//
+//go:embed page.html.tmpl site.css
+var assets embed.FS
+
+// page is one Markdown document and where it lands in the site.
+//
+// Output is a flat file rather than a directory with an index, so that every link between pages is a
+// bare file name. That survives the site being served from a repository sub-path
+// (user.github.io/farrier/) and from a custom domain root without regenerating anything, and it makes
+// the built output browsable over file:// — which is how somebody checks a documentation change
+// locally.
+type page struct {
+	// Source is the Markdown file, relative to the repository root.
+	//
+	// Exported, like the rest of these, because html/template cannot reach unexported fields and the
+	// navigation is rendered from this same list.
+	Source string
+
+	// Output is the file name written into the site directory.
+	Output string
+
+	// Title is the label in the navigation and the browser tab.
+	Title string
+
+	// Summary is the one line under the title in the navigation.
+	Summary string
+}
+
+// pages is the site, in navigation order.
+//
+// A literal rather than a directory walk. A documentation site whose contents depend on what happens to
+// be in a folder acquires pages nobody decided to publish, and loses ordering that carries meaning: the
+// guarantee comes before the protocol because nobody should read the second without the first.
+var pages = []page{
+	{Source: "README.md", Output: "index.html", Title: "Farrier",
+		Summary: "Fleet management without a remote shell"},
+	{Source: "docs/INSTALL.md", Output: "install.html", Title: "Installing",
+		Summary: "A control plane, a host, and what a fresh agent will not do"},
+	{Source: "docs/SECURITY.md", Output: "security.html", Title: "Security",
+		Summary: "The guarantee, the mechanisms, and the honest boundary"},
+	{Source: "docs/PROTOCOL.md", Output: "protocol.html", Title: "Protocol",
+		Summary: "The agent protocol, closely enough to reimplement"},
+	{Source: "docs/EXTENDING.md", Output: "extending.html", Title: "Extending",
+		Summary: "The seams that are open, and the ones closed on purpose"},
+	{Source: "docs/MAINTAINING.md", Output: "maintaining.html", Title: "Maintaining",
+		Summary: "Repository settings, releases and the signing key"},
+	{Source: "CONTRIBUTING.md", Output: "contributing.html", Title: "Contributing",
+		Summary: "How to propose a change, and what will be declined"},
+}
+
+// document is a parsed page, kept between the two passes.
+//
+// Links cannot be rewritten until every page's heading identifiers are known, because rewriting is also
+// when a reference to a heading that does not exist is caught. So each document is parsed once, its
+// anchors collected, and only then rendered.
+type document struct {
+	// page is what is being rendered.
+	page page
+
+	// source is the Markdown, after the alert blocks have been expanded.
+	source []byte
+
+	// root is the parsed tree.
+	root ast.Node
+
+	// anchors is every heading identifier on the page.
+	anchors map[string]bool
+}
+
+// main renders the site and reports the first thing that would have published a broken link.
+func main() {
+	root := flag.String("root", ".", "repository root")
+	out := flag.String("out", "public", "directory to write the site into")
+	repo := flag.String("repo", "https://github.com/pascalgross/farrier", "repository URL for source links")
+	ref := flag.String("ref", "main", "git ref that source links point at")
+	flag.Parse()
+
+	if err := build(*root, *out, *repo, *ref); err != nil {
+		fmt.Fprintln(os.Stderr, "docsite:", err)
+		os.Exit(1)
+	}
+}
+
+// build renders every page into the output directory.
+func build(root, out, repo, ref string) error {
+	md := newMarkdown()
+
+	docs := make([]*document, 0, len(pages))
+	for _, p := range pages {
+		doc, err := parsePage(md, root, p)
+		if err != nil {
+			return err
+		}
+		docs = append(docs, doc)
+	}
+
+	// 0755 and 0644 throughout: this writes a public website. gosec is right that most output should be
+	// narrower and wrong about this one — a file the web server cannot read is a page nobody can load.
+	if err := os.MkdirAll(out, 0o755); err != nil { //nolint:gosec // G301: a directory of public web pages.
+		return fmt.Errorf("creating %s: %w", out, err)
+	}
+	tmpl, err := template.ParseFS(assets, "page.html.tmpl")
+	if err != nil {
+		return fmt.Errorf("parsing the page template: %w", err)
+	}
+	css, err := assets.ReadFile("site.css")
+	if err != nil {
+		return fmt.Errorf("reading the stylesheet: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "site.css"), css, 0o644); err != nil { //nolint:gosec // G306: a public stylesheet.
+		return fmt.Errorf("writing the stylesheet: %w", err)
+	}
+
+	for _, doc := range docs {
+		if err := renderPage(md, tmpl, doc, docs, root, out, repo, ref); err != nil {
+			return err
+		}
+	}
+
+	// .nojekyll stops GitHub Pages running Jekyll over the output. Without it, Jekyll silently drops
+	// every path beginning with an underscore, and the APT repository unpacked beside this site has
+	// directories it would be free to decide it does not like.
+	if err := os.WriteFile(filepath.Join(out, ".nojekyll"), nil, 0o644); err != nil { //nolint:gosec // G306: a public marker file.
+		return fmt.Errorf("writing .nojekyll: %w", err)
+	}
+	fmt.Printf("docsite: wrote %d pages to %s\n", len(docs), out)
+	return nil
+}
+
+// newMarkdown builds the Markdown parser the site is rendered with.
+//
+// Raw HTML is permitted because every input is a file in this repository written by somebody with
+// commit access; the usual reason to forbid it — untrusted authors — does not apply, and forbidding it
+// would break the alert blocks this program itself generates.
+func newMarkdown() goldmark.Markdown {
+	return goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+		goldmark.WithRendererOptions(html.WithUnsafe()),
+	)
+}
+
+// parsePage reads one document, expands its alerts and collects its heading identifiers.
+func parsePage(md goldmark.Markdown, root string, p page) (*document, error) {
+	raw, err := os.ReadFile(filepath.Join(root, p.Source))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", p.Source, err)
+	}
+	source := expandAlerts(raw)
+	node := md.Parser().Parse(text.NewReader(source))
+
+	anchors := map[string]bool{}
+	err = ast.Walk(node, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		if _, ok := n.(*ast.Heading); ok {
+			if id, found := n.AttributeString("id"); found {
+				anchors[string(id.([]byte))] = true
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking %s: %w", p.Source, err)
+	}
+	return &document{page: p, source: source, root: node, anchors: anchors}, nil
+}
+
+// renderPage rewrites one document's links and writes its HTML.
+func renderPage(md goldmark.Markdown, tmpl *template.Template, doc *document, all []*document,
+	root, out, repo, ref string) error {
+	if err := rewriteLinks(doc, all, root, repo, ref); err != nil {
+		return err
+	}
+
+	var body bytes.Buffer
+	if err := md.Renderer().Render(&body, doc.source, doc.root); err != nil {
+		return fmt.Errorf("rendering %s: %w", doc.page.Source, err)
+	}
+
+	var out2 bytes.Buffer
+	data := struct {
+		Title   string
+		Summary string
+		Body    template.HTML
+		Nav     []page
+		Current string
+		Source  string
+		Repo    string
+		Ref     string
+	}{
+		Title:   doc.page.Title,
+		Summary: doc.page.Summary,
+		Body:    template.HTML(body.String()), //nolint:gosec // G203: the input is this repository's own documents, rendered by goldmark.
+		Nav:     pages,
+		Current: doc.page.Output,
+		Source:  doc.page.Source,
+		Repo:    repo,
+		Ref:     ref,
+	}
+	if err := tmpl.Execute(&out2, data); err != nil {
+		return fmt.Errorf("templating %s: %w", doc.page.Source, err)
+	}
+	return os.WriteFile(filepath.Join(out, doc.page.Output), out2.Bytes(), 0o644) //nolint:gosec // G306: a public web page.
+}
+
+// rewriteLinks turns repository-relative links into site links, and fails on one that does not resolve.
+//
+// Three outcomes, and the third is the point. A link to another published page becomes a site link; a
+// link to a file that exists but is not published — the licence, a packaging script, a Go source file —
+// becomes a link to that file on the forge, so it still works for a reader who has no checkout; a link
+// to something that is neither is an error, because it is a cross-reference that has already rotted.
+func rewriteLinks(doc *document, all []*document, root, repo, ref string) error {
+	byOutput := map[string]*document{}
+	for _, d := range all {
+		byOutput[d.page.Source] = d
+	}
+
+	var broken []string
+	err := ast.Walk(doc.root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		link, ok := n.(*ast.Link)
+		if !ok || !entering {
+			return ast.WalkContinue, nil
+		}
+		dest := string(link.Destination)
+		if isExternal(dest) {
+			return ast.WalkContinue, nil
+		}
+
+		target, fragment, _ := strings.Cut(dest, "#")
+		if target == "" {
+			// A same-page anchor. It still has to exist.
+			if fragment != "" && !doc.anchors[fragment] {
+				broken = append(broken, fmt.Sprintf("%s links to #%s, which is not a heading on that page",
+					doc.page.Source, fragment))
+			}
+			return ast.WalkContinue, nil
+		}
+
+		resolved := path.Clean(path.Join(path.Dir(doc.page.Source), target))
+		if other, published := byOutput[resolved]; published {
+			if fragment != "" && !other.anchors[fragment] {
+				broken = append(broken, fmt.Sprintf("%s links to %s#%s, which is not a heading in %s",
+					doc.page.Source, resolved, fragment, resolved))
+				return ast.WalkContinue, nil
+			}
+			link.Destination = []byte(withFragment(other.page.Output, fragment))
+			return ast.WalkContinue, nil
+		}
+
+		// A failed Stat is the finding, not an error to propagate: the walk keeps going so that one run
+		// reports every broken link rather than the first, which is the difference between one fix and
+		// one fix per push.
+		info, statErr := os.Stat(filepath.Join(root, resolved))
+		if statErr != nil {
+			broken = append(broken, fmt.Sprintf("%s links to %s, which does not exist",
+				doc.page.Source, resolved))
+			return ast.WalkContinue, nil //nolint:nilerr // the failure is collected and reported below.
+		}
+		kind := "blob"
+		if info.IsDir() {
+			kind = "tree"
+		}
+		link.Destination = []byte(withFragment(
+			fmt.Sprintf("%s/%s/%s/%s", strings.TrimRight(repo, "/"), kind, ref, resolved), fragment))
+		return ast.WalkContinue, nil
+	})
+	if err != nil {
+		return fmt.Errorf("walking %s: %w", doc.page.Source, err)
+	}
+	if len(broken) > 0 {
+		sort.Strings(broken)
+		return fmt.Errorf("the documentation has %d broken link(s):\n  %s",
+			len(broken), strings.Join(broken, "\n  "))
+	}
+	return nil
+}
+
+// withFragment reattaches an anchor to a rewritten destination.
+func withFragment(dest, fragment string) string {
+	if fragment == "" {
+		return dest
+	}
+	return dest + "#" + fragment
+}
+
+// isExternal reports whether a link destination points outside the repository.
+func isExternal(dest string) bool {
+	return strings.HasPrefix(dest, "http://") || strings.HasPrefix(dest, "https://") ||
+		strings.HasPrefix(dest, "mailto:") || strings.HasPrefix(dest, "//")
+}
+
+// alertPattern matches the first line of a GitHub alert blockquote.
+var alertPattern = regexp.MustCompile(`^> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$`)
+
+// expandAlerts turns GitHub's alert blockquotes into callouts the stylesheet can style.
+//
+// GitHub renders `> [!IMPORTANT]` as a coloured callout; every other Markdown renderer, goldmark
+// included, renders the literal text inside an ordinary quote. The documents use them for the things a
+// reader must not skim past, so losing them on the published site would flatten exactly the emphasis
+// that was placed deliberately.
+func expandAlerts(source []byte) []byte {
+	lines := strings.Split(string(source), "\n")
+	var out []string
+	for i := 0; i < len(lines); i++ {
+		match := alertPattern.FindStringSubmatch(lines[i])
+		if match == nil {
+			out = append(out, lines[i])
+			continue
+		}
+		kind := strings.ToLower(match[1])
+		var body []string
+		for i+1 < len(lines) && strings.HasPrefix(lines[i+1], ">") {
+			body = append(body, strings.TrimPrefix(strings.TrimPrefix(lines[i+1], ">"), " "))
+			i++
+		}
+		out = append(out,
+			fmt.Sprintf(`<div class="callout callout-%s">`, kind),
+			"",
+			fmt.Sprintf(`<p class="callout-label">%s</p>`, strings.ToUpper(kind[:1])+kind[1:]),
+			"")
+		out = append(out, body...)
+		out = append(out, "", "</div>", "")
+	}
+	return []byte(strings.Join(out, "\n"))
+}

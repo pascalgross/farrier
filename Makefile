@@ -76,6 +76,10 @@ fuzz: ## Fuzz both guarantee targets for longer than CI does
 	go test -run '^$$' -fuzz 'FuzzGuarantee' -fuzztime 10m ./internal/intent/
 	go test -run '^$$' -fuzz 'FuzzNormalize' -fuzztime 10m ./internal/canonical/
 
+.PHONY: site
+site: ## Render the documentation site into public/
+	go run ./tools/docsite -root . -out public
+
 .PHONY: lint
 lint: vet doccheck golangci ## Run every Go linter
 

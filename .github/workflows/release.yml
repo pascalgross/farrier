@@ -18,10 +18,11 @@ on:
         required: true
         type: string
 
+# No pages or id-token permission: this workflow no longer deploys the site. It signs the repository
+# and attaches it to the release; `pages.yml` is the only thing that deploys, which is what keeps the
+# two publications from overwriting each other.
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: release
@@ -142,12 +143,10 @@ jobs:
     name: Publish
     needs: build
     runs-on: ubuntu-latest
-    # github-pages, not a name of our choosing: actions/deploy-pages requires this exact environment and
-    # fails at deploy time with anything else, which is the last step of a release and the worst place
-    # to discover it.
+    # The environment is what gates the signing key: APT_SIGNING_KEY is an environment secret, so a run
+    # that reaches this job waits for the reviewers configured on it. See docs/MAINTAINING.md §5.
     environment:
       name: github-pages
-      url: ${{ steps.pages.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -191,12 +190,12 @@ jobs:
           ./packaging/apt/mkapt.sh dist/packages ./public
           cp dist/SHA256SUMS ./public/
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./public
-      - uses: actions/deploy-pages@v4
-        id: pages
+      - name: Pack the repository for publication
+        # Published as a release asset rather than deployed here. A Pages deployment replaces the whole
+        # site, so if this job deployed the repository and the pages workflow deployed the
+        # documentation, whichever ran second would delete the other. Handing the signed tree over as an
+        # asset keeps one deployer, and keeps the signing key out of every documentation change.
+        run: tar -czf apt-repository.tar.gz -C public .
 
       - name: GitHub release
         uses: softprops/action-gh-release@v2
@@ -204,6 +203,7 @@ jobs:
           files: |
             dist/packages/*.deb
             dist/SHA256SUMS
+            apt-repository.tar.gz
           generate_release_notes: true
           body: |
             ## Installing
@@ -224,3 +224,7 @@ jobs:
 
             The binaries are built with `-trimpath` and a pinned `SOURCE_DATE_EPOCH`, so rebuilding this
             tag reproduces them byte for byte. `SHA256SUMS` is attached.
+
+            `apt-repository.tar.gz` is the signed repository exactly as published. The `pages` workflow
+            unpacks it under `/apt`; it is attached so that the published tree can be verified against
+            this release rather than taken on trust.

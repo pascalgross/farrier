@@ -6,6 +6,7 @@
 | [`SECURITY.md`](SECURITY.md) | The guarantee, the three mechanisms, the permanently refused operations, and an honest statement of what Farrier does *not* defend against |
 | [`PROTOCOL.md`](PROTOCOL.md) | The agent protocol, specified closely enough to reimplement |
 | [`EXTENDING.md`](EXTENDING.md) | The seams that are open, and the ones that are closed on purpose |
+| [`MAINTAINING.md`](MAINTAINING.md) | The repository settings, the release procedure and the archive signing key — everything that is a decision somebody makes once rather than a file |
 
 ## `PROPOSAL.md`
 

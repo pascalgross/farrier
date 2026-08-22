@@ -1,0 +1,292 @@
+/* Farrier documentation site.
+ *
+ * One stylesheet, no fonts fetched, no scripts. A documentation site that pulls a font from a third
+ * party makes every reader's browser announce that they are reading it, which for a security document
+ * is a slightly absurd thing to arrange. The system stack is also the fastest thing available.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #fbfaf8;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f2efea;
+  --ink: #23201c;
+  --ink-soft: #5c554c;
+  --ink-faint: #8a8177;
+  --rule: #e3ded6;
+  --accent: #9a5b2c;
+  --accent-soft: #f4e9df;
+  --bad: #a12d2d;
+  --good: #2f6b3f;
+  --warn: #8a6100;
+  --sidebar: 19rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16150f;
+    --bg-raised: #1e1c16;
+    --bg-sunken: #100f0a;
+    --ink: #ece7dd;
+    --ink-soft: #b3aa9c;
+    --ink-faint: #8a8177;
+    --rule: #35312a;
+    --accent: #e0a06a;
+    --accent-soft: #2b2319;
+    --bad: #e58b8b;
+    --good: #8fc99f;
+    --warn: #dbb45e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+.skip:focus {
+  left: 1rem;
+  top: 1rem;
+  z-index: 10;
+  padding: 0.5rem 0.75rem;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 4px;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  gap: 0;
+  max-width: 78rem;
+  margin: 0 auto;
+}
+
+/* Navigation */
+
+.sidebar {
+  border-right: 1px solid var(--rule);
+  padding: 2rem 1.5rem 3rem;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+.brand {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand-sub {
+  margin: 0.35rem 0 1.75rem;
+  font-size: 0.83rem;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0 0 1.75rem;
+  padding: 0;
+}
+
+.sidebar li { margin: 0 0 0.15rem; }
+
+.sidebar li a {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--ink-soft);
+}
+
+.sidebar li a:hover { background: var(--bg-sunken); }
+
+.sidebar li a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.nav-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.nav-sub {
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+
+.sidebar .external {
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+  font-size: 0.85rem;
+}
+
+.sidebar .external a { color: var(--ink-soft); }
+
+/* Content */
+
+main {
+  padding: 2.5rem 3rem 6rem;
+  min-width: 0;
+}
+
+main > :first-child { margin-top: 0; }
+
+h1, h2, h3, h4 {
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  margin: 2.4rem 0 0.8rem;
+}
+
+h1 { font-size: 2.1rem; margin-top: 0; }
+h2 { font-size: 1.45rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.12rem; }
+h4 { font-size: 1rem; color: var(--ink-soft); }
+
+p, ul, ol { margin: 0 0 1.1rem; }
+
+a { color: var(--accent); text-underline-offset: 2px; }
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 2.5rem 0;
+}
+
+blockquote {
+  margin: 1.2rem 0;
+  padding: 0.1rem 1.1rem;
+  border-left: 3px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+/* Alerts, expanded from GitHub's > [!IMPORTANT] blocks. */
+
+.callout {
+  margin: 1.4rem 0;
+  padding: 1rem 1.2rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid var(--rule);
+  background: var(--bg-raised);
+  border-left-width: 4px;
+}
+
+.callout-label {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.callout-important, .callout-warning { border-left-color: var(--warn); }
+.callout-important .callout-label, .callout-warning .callout-label { color: var(--warn); }
+.callout-caution { border-left-color: var(--bad); }
+.callout-caution .callout-label { color: var(--bad); }
+.callout-note, .callout-tip { border-left-color: var(--good); }
+.callout-note .callout-label, .callout-tip .callout-label { color: var(--good); }
+
+/* Code */
+
+code, pre, kbd {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+code {
+  font-size: 0.875em;
+  background: var(--bg-sunken);
+  padding: 0.12em 0.36em;
+  border-radius: 4px;
+}
+
+pre {
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Tables. The protocol document is mostly tables, and several are wider than a phone. */
+
+.table-scroll, table { display: block; overflow-x: auto; max-width: 100%; }
+
+table {
+  border-collapse: collapse;
+  margin: 1.3rem 0;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+th, td {
+  border: 1px solid var(--rule);
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+th { background: var(--bg-sunken); font-weight: 600; }
+
+/* Footer */
+
+footer {
+  margin-top: 4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.83rem;
+  color: var(--ink-faint);
+}
+
+footer a { color: var(--ink-soft); }
+
+/* Narrow screens: the navigation becomes a header rather than a column. */
+
+@media (max-width: 60rem) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: static;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    padding: 1.5rem 1.25rem;
+  }
+  .nav-sub { display: none; }
+  .sidebar ul { margin-bottom: 1rem; }
+  main { padding: 2rem 1.25rem 4rem; }
+  h1 { font-size: 1.7rem; }
+}

@@ -1,0 +1,45 @@
+name: Documentation is wrong
+description: The documents describe something the code does not do, or the other way round
+labels: [documentation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth its own template because in this project it is worth its own category. `docs/SECURITY.md`
+        and `docs/PROTOCOL.md` are the specification a reimplementation would be built from and the
+        basis on which somebody decides to trust the guarantee. A document that has drifted from the
+        code is not a typo — it is a claim that is no longer true.
+
+  - type: input
+    id: where
+    attributes:
+      label: Which document, and which section
+      placeholder: docs/PROTOCOL.md §5.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: says
+    attributes:
+      label: What it says
+    validations:
+      required: true
+
+  - type: textarea
+    id: does
+    attributes:
+      label: What the code does
+      description: A file and line is ideal, but a description of the observed behaviour is enough.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: which
+    attributes:
+      label: Which one do you think is wrong
+      options:
+        - The document — the code behaves correctly
+        - The code — the document describes the intended behaviour
+        - I am not sure
+    validations:
+      required: true

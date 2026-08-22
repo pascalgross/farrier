@@ -51,9 +51,9 @@ let its holder enrol hosts. It is single-use and expires in a day by default.
 
 ```bash
 # On the host:
-curl -fsSL https://apt.example.org/farrier-archive-keyring.gpg \
+curl -fsSL https://farrier.tools/apt/farrier-archive-keyring.gpg \
   | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg > /dev/null
-curl -fsSL https://apt.example.org/farrier.sources \
+curl -fsSL https://farrier.tools/apt/farrier.sources \
   | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
 sudo apt-get update && sudo apt-get install farrier-agent
 

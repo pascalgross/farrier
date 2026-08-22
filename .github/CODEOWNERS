@@ -1,0 +1,36 @@
+# Review ownership.
+#
+# The point of this file is not gatekeeping in general — it is that a handful of paths decide whether
+# the guarantee in docs/SECURITY.md §1 still holds, and a change to one of them must never be merged
+# because a reviewer who was looking at something else approved the pull request it was in.
+#
+# Everything, by default.
+*                               @pascalgross
+
+# The guarantee's own machinery. The catalogue is closed at compile time, internal/run is the only place
+# in the tree that starts a process, and the tests in internal/intent are what prove both.
+/internal/intent/               @pascalgross
+/internal/run/                  @pascalgross
+
+# Local policy sovereignty. The helpers run as root and must not trust their caller; the sudoers file is
+# what bounds them. A widened sudoers entry is indistinguishable from a remote shell.
+/internal/policy/               @pascalgross
+/internal/helper/               @pascalgross
+/helpers/                       @pascalgross
+/packaging/sudoers              @pascalgross
+/packaging/policy.toml          @pascalgross
+/packaging/farrier-agent.service @pascalgross
+
+# Signature verification and canonical encoding. Every authorisation decision on a host is downstream of
+# these two, and a subtle change here is not visible in the behaviour of anything else.
+/internal/signing/              @pascalgross
+/internal/canonical/            @pascalgross
+
+# The documents that are the specification rather than a description of it.
+/docs/SECURITY.md               @pascalgross
+/docs/PROTOCOL.md               @pascalgross
+
+# The supply chain. Whoever controls the release workflow and the packaging controls the agent binary on
+# every host that updates from the repository — a different adversary from the one in §1, and a real one.
+/.github/workflows/             @pascalgross
+/packaging/                     @pascalgross

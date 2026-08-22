@@ -95,7 +95,7 @@ serves one perfectly well. GitHub Packages has no APT registry. Pages limits are
 and 100 GB of bandwidth a month, public repositories only, which is ample for a few-megabyte agent.
 
 ```bash
-FARRIER_APT_URL=https://apt.example.org GPG_KEY_ID=<fingerprint> \
+FARRIER_APT_URL=https://farrier.tools/apt GPG_KEY_ID=<fingerprint> \
   ./apt/mkapt.sh dist/packages ./public
 ```
 
@@ -118,7 +118,13 @@ unmakeable-by-accident is the point.
 
 **Use a custom domain, CNAME'd to GitHub Pages, from the very first release.** This URL is written
 into `/etc/apt/sources.list.d/farrier.sources` on every host that ever installs the agent — including
-fleets nobody will be able to contact later. A bare `*.github.io` URL can never be migrated.
+fleets nobody will be able to contact later.
+
+The project publishes to `https://farrier.tools/apt`, rather than to
+`pascalgross.github.io/farrier/apt`, which would tie a permanent URL to an account name and a
+repository name that may both change. The cost of a project domain is that renewing it is now a
+permanent obligation; see [`../docs/MAINTAINING.md`](../docs/MAINTAINING.md) §4 for what follows from
+that.
 
 ## Verifying a build by hand
 

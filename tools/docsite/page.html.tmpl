@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ if eq .Current "index.html" }}Farrier — fleet management without a remote shell{{ else }}{{ .Title }} — Farrier{{ end }}</title>
+<meta name="description" content="{{ .Summary }}">
+<link rel="stylesheet" href="site.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>&#9874;</text></svg>">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<div class="shell">
+  <nav class="sidebar" aria-label="Documentation">
+    <a class="brand" href="index.html">Farrier</a>
+    <p class="brand-sub">Fleet management for Ubuntu and Debian, without a remote shell.</p>
+    <ul>
+      {{ range .Nav }}
+      <li><a href="{{ .Output }}"{{ if eq .Output $.Current }} aria-current="page"{{ end }}>
+        <span class="nav-title">{{ .Title }}</span>
+        <span class="nav-sub">{{ .Summary }}</span>
+      </a></li>
+      {{ end }}
+    </ul>
+    <ul class="external">
+      <li><a href="apt/">APT repository</a></li>
+      <li><a href="{{ .Repo }}">Source on GitHub</a></li>
+      <li><a href="{{ .Repo }}/security/advisories/new">Report a vulnerability</a></li>
+    </ul>
+  </nav>
+  <main id="content">
+    {{ .Body }}
+    <footer>
+      <p>
+        <a href="{{ .Repo }}/blob/{{ .Ref }}/{{ .Source }}">Edit this page</a> ·
+        Licensed Apache-2.0 · &ldquo;Farrier&rdquo; is a trademark of Pegasus Networks
+      </p>
+    </footer>
+  </main>
+</div>
+</body>
+</html>

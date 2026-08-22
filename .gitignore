@@ -1,5 +1,6 @@
 # Build output
 /dist/
+/public/
 /web/dist/
 /internal/server/webassets/dist/
 
