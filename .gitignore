@@ -1,0 +1,28 @@
+# Build output
+/dist/
+/web/dist/
+/internal/server/webassets/dist/
+
+# Go
+*.test
+*.out
+/coverage.txt
+
+# Node
+node_modules/
+.angular/
+*.tsbuildinfo
+
+# Local development state
+*.local.yaml
+/testfleet/.state/
+/.env
+*.pem
+*.key
+!/testfleet/**/*.example.pem
+
+# Editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
