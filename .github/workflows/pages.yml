@@ -48,8 +48,8 @@ jobs:
       name: github-pages
       url: ${{ steps.pages.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -81,13 +81,13 @@ jobs:
           echo "Unpacked the published repository:"
           find public/apt -maxdepth 2 -type d | sort
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         # Turns Pages on if nobody has. The failure mode when it is off is a red deploy at the end of a
         # release, which is the worst moment to discover a setting.
         with:
           enablement: true
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: ./public
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5
         id: pages
