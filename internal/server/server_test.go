@@ -14,6 +14,8 @@ import (
 	"github.com/pegasusnetworks/farrier/internal/agent"
 	"github.com/pegasusnetworks/farrier/internal/auth"
 	"github.com/pegasusnetworks/farrier/internal/ca"
+	"github.com/pegasusnetworks/farrier/internal/canonical"
+	"github.com/pegasusnetworks/farrier/internal/collect"
 	"github.com/pegasusnetworks/farrier/internal/protocol"
 	"github.com/pegasusnetworks/farrier/internal/server"
 	"github.com/pegasusnetworks/farrier/internal/store"
@@ -369,6 +371,92 @@ func TestHeartbeatIsDigestFirst(t *testing.T) {
 	}
 	if !res.WantFacts {
 		t.Error("the server did not ask for facts after the digest changed")
+	}
+}
+
+// TestGuaranteeDigestFirstWorksWithRealFacts is the invariant the whole design rests on.
+//
+// The agent computes a digest over its own collect.Facts value; the server recomputes one over the same
+// document after it has been through JSON. If those two encodings disagree by so much as a byte, every
+// host in the fleet re-sends its entire inventory on every heartbeat, forever — and nothing looks
+// broken. The numbers are right, the hosts are online, and the control plane's database is taking
+// hundreds of kilobytes per host per minute that it does not need.
+//
+// TestHeartbeatIsDigestFirst proves the *logic* with a synthetic digest. This proves the *encodings
+// agree*, which is a different failure and the one that would actually happen.
+func TestGuaranteeDigestFirstWorksWithRealFacts(t *testing.T) {
+	h := newHarness(t)
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+	client := h.agentClient(t, state)
+	ctx := context.Background()
+
+	facts := collect.Facts{
+		Hostname: "web-01",
+		Distribution: collect.Distribution{
+			ID: "ubuntu", Family: collect.FamilyUbuntu, Codename: "noble",
+			Version: "24.04", PrettyName: "Ubuntu 24.04.1 LTS", Supported: true,
+		},
+		Kernel:       "6.8.0-51-generic",
+		Architecture: "amd64",
+		Reboot: collect.RebootReport{
+			Required: true,
+			Reasons:  []string{"linux-image-generic"},
+			Services: []string{"ssh.service"},
+			Source:   "/var/run/reboot-required",
+		},
+		Subscription: collect.Subscription{
+			Applicable: true,
+			Services:   map[string]string{"esm-apps": "enabled", "livepatch": "disabled"},
+		},
+		Packages: collect.PackageReport{
+			UpgradableSecurity: 3,
+			UpgradableTotal:    11,
+			Packages: []collect.Package{
+				{Name: "libssl3t64", CurrentVersion: "3.0.13-0ubuntu3.4",
+					CandidateVersion: "3.0.13-0ubuntu3.5", Security: true, Architecture: "amd64"},
+			},
+		},
+		Services: []collect.Unit{
+			{Name: "nginx.service", LoadState: "loaded", ActiveState: "active", SubState: "running"},
+		},
+	}
+
+	digest, err := canonical.Digest(facts)
+	if err != nil {
+		t.Fatalf("digesting facts: %v", err)
+	}
+
+	res, err := client.Heartbeat(ctx, protocol.HeartbeatRequest{AgentVersion: "test", FactsDigest: digest})
+	if err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if !res.WantFacts {
+		t.Fatal("the server did not ask for a document it has never seen")
+	}
+
+	if _, err := client.Heartbeat(ctx, protocol.HeartbeatRequest{
+		AgentVersion: "test", FactsDigest: digest, Facts: facts,
+	}); err != nil {
+		t.Fatalf("heartbeat with facts: %v", err)
+	}
+
+	stored, err := h.store.GetHost(ctx, state.HostID)
+	if err != nil {
+		t.Fatalf("reading the host: %v", err)
+	}
+	if stored.FactsDigest != digest {
+		t.Fatalf("the server recomputed a different digest from the same facts:\n"+
+			"  agent:  %s\n  server: %s\n"+
+			"Every host would re-send its whole inventory on every heartbeat, and nothing would look "+
+			"broken.", digest, stored.FactsDigest)
+	}
+
+	res, err = client.Heartbeat(ctx, protocol.HeartbeatRequest{AgentVersion: "test", FactsDigest: digest})
+	if err != nil {
+		t.Fatalf("steady-state heartbeat: %v", err)
+	}
+	if res.WantFacts || res.WantFullReport {
+		t.Error("the server asked again for a document it had just stored: digest-first is not working")
 	}
 }
 
