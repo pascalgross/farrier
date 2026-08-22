@@ -103,11 +103,18 @@ tidy: ## go mod tidy
 web: ## Build the Angular bundle into the location farrier-server embeds
 	cd web && pnpm install --frozen-lockfile && pnpm run build
 
+ARCH ?= $(shell go env GOARCH)
+# nfpm insists on a semver version, and `git describe` yields v0.1.0-3-gabc1234 between tags.
+DEB_VERSION ?= $(patsubst v%,%,$(VERSION))
+
 .PHONY: deb
 deb: build ## Build the farrier-agent .deb
 	@command -v nfpm >/dev/null 2>&1 || { echo "nfpm not installed; see https://nfpm.goreleaser.com/install/"; exit 1; }
+	@command -v visudo >/dev/null 2>&1 && visudo -c -f packaging/sudoers >/dev/null || true
 	mkdir -p $(DIST)/packages
-	cd packaging && VERSION=$(VERSION:v%=%) nfpm package --packager deb --target ../$(DIST)/packages
+	cd packaging && \
+	  VERSION="$(DEB_VERSION)" ARCH="$(ARCH)" \
+	  nfpm package --packager deb --target "../$(DIST)/packages"
 
 .PHONY: clean
 clean: ## Remove build output

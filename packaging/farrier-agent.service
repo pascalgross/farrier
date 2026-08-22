@@ -1,0 +1,75 @@
+[Unit]
+Description=Farrier fleet management agent
+Documentation=https://github.com/pegasusnetworks/farrier
+Documentation=file:///usr/share/doc/farrier-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/farrier-agent run
+Restart=always
+RestartSec=5s
+
+# The agent connects outbound only and holds no listening socket, so there is no reason for it to run
+# with any privilege at all. Everything below is what "zero capabilities" means in practice; the three
+# root helpers in /usr/libexec/farrier are the only privileged operations that exist, and each of them
+# re-reads and re-enforces /etc/farrier/policy.toml itself.
+User=farrier
+Group=farrier
+
+# ---------------------------------------------------------------------------------------------------
+# NOTE FOR PHASE 1, WHEN THE ROOT HELPERS GAIN EXECUTORS
+#
+# NoNewPrivileges=yes and calling the helpers through sudo(8) are mutually exclusive: with the no-new-
+# privileges bit set, execve silently drops the setuid bit, so sudo cannot become root and fails with
+# "effective uid is not 0". Phase 0 ships no write capability, so nothing here calls a helper and the
+# conflict is not yet live — but it must be resolved before the first executor lands, and the resolution
+# is a design decision rather than a packaging tweak. The two credible options:
+#
+#   (a) Drop NoNewPrivileges=yes from this unit and keep sudo. Simplest, and the sudoers file still
+#       constrains the agent to three fixed argv. It costs the strongest single line in this file.
+#   (b) Keep NoNewPrivileges=yes and replace sudo with a root-owned helper service the agent reaches
+#       over a unix socket in /run/farrier, with the socket's peer credentials as the authorisation.
+#       More code, but it preserves every hardening line here and removes setuid from the picture.
+#
+# Option (b) is the better fit for what this project claims, because it keeps the agent process itself
+# unable to gain privilege by any route. Whichever is chosen, docs/SECURITY.md §5 must be updated in
+# the same change.
+# ---------------------------------------------------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Incompatible with any JIT runtime, which is one of the reasons the agent is written in Go. Choosing a
+# JIT language would have silently cost this line.
+MemoryDenyWriteExecute=yes
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# AF_UNIX is required to reach the systemd D-Bus interface, which is how unit state is read — systemctl
+# has no machine-readable output mode. AF_NETLINK is required by net.Interfaces() on Linux: without it,
+# network fact collection returns nothing and does so quietly, which is exactly the class of failure
+# this project tries not to ship.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+ReadWritePaths=/var/lib/farrier /var/log/farrier
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

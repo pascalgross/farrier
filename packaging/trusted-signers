@@ -1,0 +1,37 @@
+# Farrier trusted signers.
+#
+# This file is the trust anchor for every destructive operation on this host: applying all updates,
+# starting, stopping or restarting a unit, and rebooting. A job for any of those is executed only if it
+# carries a valid signature from a key listed here.
+#
+# IT IS EMPTY ON PURPOSE. A freshly installed agent will execute nothing destructive until an
+# administrator deliberately places a public key below. The keys are NOT shipped in the package: if
+# they were, the trust chain would run APT signing key -> package -> job signing key, which quietly
+# promotes whoever controls APT signing to ultimate authority over this host — and in a hosted
+# deployment would hand the provider a route around your own control plane.
+#
+# The control plane does not hold these keys and cannot add to this file. Nothing in Farrier's intent
+# catalogue modifies it. It is a dpkg conffile, so your edits survive package upgrades.
+#
+# Format, one key per line, deliberately close to authorized_keys:
+#
+#   <algorithm>  <base64 public key>  <comment>
+#
+# Algorithms:
+#   ed25519      the default; use this unless something in your chain cannot
+#   ecdsa-p256   for YubiKey PIV before firmware 5.7.0, and for cloud KMS offerings
+#                that do not offer Ed25519
+#
+# Example (do not use these; they are not real keys):
+#
+#   ed25519     AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExample  ops-yubikey-1
+#   ecdsa-p256  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEExampleExampleExampleEx  ops-aws-kms
+#
+# Generate a key and print its line with:
+#
+#   farrier key generate --backend file --out ~/.config/farrier/signing.key --id ops-laptop
+#   farrier key show     --backend pkcs11 --id ops-yubikey-1
+#
+# Whichever backend you use, the audit log and the UI record which signer authorised each job:
+# "ops-laptop (file)" reads differently from "ops-yubikey-1 (PKCS#11)", and that difference is the
+# point.

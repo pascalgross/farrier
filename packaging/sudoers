@@ -1,0 +1,18 @@
+# Farrier root helpers.
+#
+# The agent runs as the unprivileged `farrier` user with no capabilities. These three helpers are the
+# only privileged operations it can reach, and each of them re-reads and re-enforces
+# /etc/farrier/policy.toml itself, as root, without trusting its caller. That placement is what keeps
+# docs/SECURITY.md §1 true even when the agent process is fully compromised.
+#
+# None of the three accepts a command to run, a path to execute, or a shell fragment. There is
+# deliberately no fourth helper that "runs the configured command"; see docs/EXTENDING.md.
+#
+# The environment is reset and the search path fixed so that nothing the caller controls influences
+# what the helper resolves. The helpers themselves invoke every external program by absolute path, and
+# a test in internal/intent walks the source to prove it.
+Defaults!/usr/libexec/farrier/* env_reset, secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
+
+farrier ALL=(root) NOPASSWD: /usr/libexec/farrier/apply-updates, \
+                             /usr/libexec/farrier/restart-unit, \
+                             /usr/libexec/farrier/reboot-host

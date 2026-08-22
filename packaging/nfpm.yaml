@@ -1,0 +1,153 @@
+# nfpm configuration for the farrier-agent Debian package.
+#
+# Packaging is built in phase 0, before there is anything to carry, because it is where greenfield
+# agent projects lose weeks. Proving the .deb installs, the user is created, the hardened unit starts,
+# the conffiles survive an upgrade and the repository signs correctly is much cheaper against a binary
+# that only logs than against one that also has a protocol to debug.
+#
+# Environment: VERSION, ARCH and DIST. `make deb` sets all three.
+
+name: farrier-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+version_schema: semver
+section: admin
+priority: optional
+maintainer: Pegasus Networks <farrier@pegasusnetworks.de>
+vendor: Pegasus Networks
+homepage: https://github.com/pegasusnetworks/farrier
+license: Apache-2.0
+
+description: |
+  Fleet management agent for Ubuntu and Debian servers, without a remote shell.
+  .
+  Farrier reports inventory, systemd service state and pending package updates to a
+  control plane, and applies updates within a policy this host controls. The agent
+  connects outbound only and has no listening port.
+  .
+  It runs a closed, enumerated set of typed operations: there is no command channel,
+  no script execution and no plugin loader. Every privileged operation is bounded by
+  /etc/farrier/policy.toml, which the control plane cannot modify, and every
+  destructive one requires a signature from a key listed in
+  /etc/farrier/trusted-signers, which the control plane does not hold. Both files are
+  conffiles and are empty of permissions by default: a freshly installed agent will
+  report on this host and keep it patched, and will do nothing else until an
+  administrator says otherwise.
+
+depends:
+  - adduser
+  - systemd
+recommends:
+  # unattended-upgrades is what actually applies updates, and its origin filtering is
+  # correct on both distribution families. Farrier wraps it rather than reimplementing
+  # it, because a second implementation would be wrong on exactly the release nobody
+  # tested.
+  - unattended-upgrades
+  # needrestart answers "which running services still hold the replaced library",
+  # which is more actionable than reboot-required and is what most update dashboards
+  # skip. On Debian it is also the reliable source for whether a reboot is needed at
+  # all, since /var/run/reboot-required is an Ubuntu update-notifier convention.
+  - needrestart
+suggests:
+  # apt-check lives here and is absent from minimal images of both families. Farrier
+  # treats it as an optimisation: the simulated-upgrade parse is the primary path,
+  # because a host without this package must not silently report zero updates.
+  - update-notifier-common
+
+contents:
+  - src: ../dist/farrier-agent
+    dst: /usr/bin/farrier-agent
+    file_info:
+      mode: 0755
+
+  # The three root helpers. There is no fourth, and none of them accepts a command to
+  # run. Each re-reads and re-enforces /etc/farrier/policy.toml itself, as root, which
+  # is what bounds a fully compromised agent process.
+  - src: ../dist/apply-updates
+    dst: /usr/libexec/farrier/apply-updates
+    file_info:
+      mode: 0755
+  - src: ../dist/restart-unit
+    dst: /usr/libexec/farrier/restart-unit
+    file_info:
+      mode: 0755
+  - src: ../dist/reboot-host
+    dst: /usr/libexec/farrier/reboot-host
+    file_info:
+      mode: 0755
+
+  - src: ./farrier-agent.service
+    dst: /usr/lib/systemd/system/farrier-agent.service
+    file_info:
+      mode: 0644
+
+  # Both of these are conffiles. dpkg must never replace a local edit, and testfleet/
+  # asserts it does not — for trusted-signers that is a security test, not a
+  # convenience test.
+  - src: ./policy.toml
+    dst: /etc/farrier/policy.toml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: ./trusted-signers
+    dst: /etc/farrier/trusted-signers
+    type: config|noreplace
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # sudo refuses to read a sudoers file that is group- or world-writable, and a
+  # syntactically invalid one can break sudo for the whole system. CI validates this
+  # file with visudo before the package is built.
+  - src: ./sudoers
+    dst: /etc/sudoers.d/farrier
+    type: config|noreplace
+    file_info:
+      mode: 0440
+      owner: root
+      group: root
+
+  - src: ../LICENSE
+    dst: /usr/share/doc/farrier-agent/copyright
+  - src: ../docs/SECURITY.md
+    dst: /usr/share/doc/farrier-agent/SECURITY.md
+  - src: ../docs/PROTOCOL.md
+    dst: /usr/share/doc/farrier-agent/PROTOCOL.md
+  - src: ../README.md
+    dst: /usr/share/doc/farrier-agent/README.md
+
+  - dst: /var/lib/farrier
+    type: dir
+    file_info:
+      mode: 0750
+      owner: farrier
+      group: farrier
+  # Job results are written here and fsynced before a reboot is invoked, then
+  # delivered on next start. Without that ordering, host.reboot completes by the host
+  # disappearing and reports nothing at all.
+  - dst: /var/lib/farrier/pending-results
+    type: dir
+    file_info:
+      mode: 0750
+      owner: farrier
+      group: farrier
+  - dst: /var/log/farrier
+    type: dir
+    file_info:
+      mode: 0750
+      owner: farrier
+      group: farrier
+
+scripts:
+  preinstall: ./scripts/preinst.sh
+  postinstall: ./scripts/postinst.sh
+  preremove: ./scripts/prerm.sh
+  postremove: ./scripts/postrm.sh
+
+deb:
+  fields:
+    Bugs: https://github.com/pegasusnetworks/farrier/issues

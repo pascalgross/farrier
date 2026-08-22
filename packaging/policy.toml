@@ -1,0 +1,76 @@
+# Farrier local policy.
+#
+# This file is the authority on this host. It is owned root:root, the farrier agent cannot write it,
+# and no operation in Farrier's intent catalogue can modify it. Effective permission for any job is
+# min(what the control plane asked for, what this file allows) — never the maximum. A host set to
+# allow = "none" cannot be made to apply updates by anyone in the control plane holding any role,
+# ever, including the person who installed it.
+#
+# It is shipped as a dpkg conffile, so your edits survive package upgrades. If you change it, run
+# `farrier policy check` to validate before restarting the agent: a file that does not parse causes
+# the host to refuse all privileged work rather than fall back to a default, which is deliberate.
+#
+# Full reference: /usr/share/doc/farrier-agent/policy.md, or docs/SECURITY.md in the source tree.
+
+[updates]
+
+# How far this host will go in applying package updates.
+#
+#   none      refuse every update application, from anyone
+#   security  apply updates from the distribution's security origins only
+#   all       apply every available update
+allow = "security"
+
+# Whether this host applies permitted updates on its own timer, without being asked.
+#
+# This is what keeps a fleet patched through a control-plane outage. It is a separate setting from
+# `allow` because the two answer different questions: `allow` bounds what the control plane may ask
+# for, `auto_apply` decides whether the host also acts unprompted.
+auto_apply = true
+
+# The maintenance window, in the timezone below. Empty means any time.
+#
+# Accepted forms:
+#   ""                      always open
+#   "Sun 03:00-05:00"       one day
+#   "Mon-Fri 02:00-04:00"   a range of days
+#   "Sat,Sun 00:00-06:00"   a list of days
+#   "Sat 22:00-02:00"       crossing midnight, into Sunday morning
+#   "daily 03:00-05:00"     every day
+window = ""
+
+# The IANA timezone the window above is expressed in.
+#
+# It is explicit rather than inherited from the host clock, because in a fleet spanning regions
+# "03:00" silently meaning two different hours on two hosts is discovered during the outage rather
+# than before it.
+timezone = "UTC"
+
+# Whether and when this host will reboot on request.
+#
+#   never   refuse every reboot request
+#   window  reboot only inside the maintenance window above
+#
+# The shipped default is "never". A fresh install should be able to report on a host and keep it
+# patched, and should be able to do nothing else until somebody decides otherwise.
+reboot = "never"
+
+[services]
+
+# Units this host will start, stop or restart on request.
+#
+# Entries are matched with shell-style globbing, so "farrier-*.service" covers instances without
+# enumerating them. The shipped default is empty: nothing is restartable until you say what is.
+#
+# Example:
+#   restartable = ["nginx.service", "docker.service", "farrier-*.service"]
+restartable = []
+
+[limits]
+
+# How long after issue a job may still be executed.
+#
+# It bounds the damage of a job that sat in a queue across an outage: a restart signed on Tuesday
+# should not execute on Friday because this host was offline in between. It is enforced here, locally,
+# so that it holds even when the control plane is the thing that went wrong.
+max_job_age_seconds = 900

@@ -1,0 +1,345 @@
+// Package policy parses and evaluates /etc/farrier/policy.toml, the file a host uses to bound what the
+// control plane may ask of it.
+//
+// It is the second of the three mechanisms behind docs/SECURITY.md §1. The rule it implements is one
+// line — effective permission is min(central request, local policy), never the max — and the reason
+// this package exists separately from the agent is where that rule has to run. The agent's own check
+// saves a round trip and produces a better error message; the check that matters runs as root inside
+// the helpers in helpers/, re-reading the root-owned file from disk, because that is what keeps the
+// guarantee true when the agent process itself is compromised.
+//
+// Two consequences shape the API. Load always returns a usable Policy, falling closed on any parse
+// error, because a host whose policy file is unreadable must refuse privileged work rather than run
+// unbounded. And Decide takes the current time explicitly rather than calling time.Now, so that
+// maintenance-window behaviour is testable without waiting for Sunday.
+package policy
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Path is where the policy file lives on a managed host.
+//
+// It is a constant rather than a configurable path because a policy file whose location the agent
+// chooses is a policy file the agent can point somewhere it controls. The helpers hard-code this same
+// constant, which is the point.
+const Path = "/etc/farrier/policy.toml"
+
+// PausedPath is the kill-switch marker a local administrator can create.
+//
+// Together with `systemctl stop farrier-agent` it is a stop the control plane cannot override, which is
+// why there is deliberately no agent.resume intent: an off switch that something else can flip back on
+// is not an off switch.
+const PausedPath = "/etc/farrier/paused"
+
+// Allow is how far a host will go in applying package updates.
+//
+// The three values are ordered, and that ordering is the whole of the clamping rule: the effective
+// permission for a job is the lower of what the control plane asked for and what the host allows.
+type Allow string
+
+// The update permission levels, in increasing order of what they permit.
+const (
+	// AllowNone refuses every update application, from anyone, in any role.
+	AllowNone Allow = "none"
+
+	// AllowSecurity permits updates from the distribution's security origins only.
+	AllowSecurity Allow = "security"
+
+	// AllowAll permits every available update.
+	AllowAll Allow = "all"
+)
+
+// rank returns the ordering position of an update permission level.
+//
+// It exists so that Min below is a comparison rather than a nested switch, and so that an unrecognised
+// value ranks below AllowNone and therefore clamps everything to nothing. Failing closed on a typo in
+// a hand-edited file is the only acceptable behaviour for this particular field.
+func (a Allow) rank() int {
+	switch a {
+	case AllowNone:
+		return 0
+	case AllowSecurity:
+		return 1
+	case AllowAll:
+		return 2
+	default:
+		return -1
+	}
+}
+
+// Valid reports whether the value is one of the three defined levels.
+func (a Allow) Valid() bool { return a.rank() >= 0 }
+
+// Min returns the lower of two update permission levels.
+//
+// This one function is the entire "never the max" rule from docs/SECURITY.md §2.2. It is exported and
+// separately tested because every privileged path in the agent and in the helpers must go through it,
+// and a second implementation of the same comparison somewhere else is precisely how a rule like this
+// stops being true.
+func Min(a, b Allow) Allow {
+	if b.rank() < a.rank() {
+		a = b
+	}
+	if !a.Valid() {
+		return AllowNone
+	}
+	return a
+}
+
+// RebootMode is whether and when a host will reboot on request.
+type RebootMode string
+
+// The reboot modes. There is deliberately no "always": a reboot outside a window is a reboot during
+// business hours, and a host that permits that has no maintenance window at all.
+const (
+	// RebootNever refuses every reboot request.
+	RebootNever RebootMode = "never"
+
+	// RebootWindow permits a reboot only inside the configured maintenance window.
+	RebootWindow RebootMode = "window"
+)
+
+// Valid reports whether the value is one of the defined modes.
+func (r RebootMode) Valid() bool { return r == RebootNever || r == RebootWindow }
+
+// Updates is the [updates] section of the policy file.
+type Updates struct {
+	// Allow is how far this host will go in applying updates.
+	Allow Allow `toml:"allow"`
+
+	// AutoApply is whether the host applies permitted updates on its own timer.
+	//
+	// It is separate from Allow because the two answer different questions. Allow bounds what the
+	// control plane may ask for; AutoApply decides whether the host also does it unprompted, which is
+	// what keeps a fleet patched through a control-plane outage.
+	AutoApply bool `toml:"auto_apply"`
+
+	// Window is the maintenance window, empty meaning any time.
+	Window string `toml:"window"`
+
+	// Timezone is the IANA zone the window is expressed in.
+	//
+	// It is explicit rather than inherited from the host because a fleet spanning regions has hosts
+	// whose local time is not the time the operator means, and "03:00" silently meaning two different
+	// hours on two hosts is the kind of thing discovered during the outage rather than before it.
+	Timezone string `toml:"timezone"`
+
+	// Reboot is whether and when this host will reboot on request.
+	Reboot RebootMode `toml:"reboot"`
+}
+
+// Services is the [services] section of the policy file.
+type Services struct {
+	// Restartable lists the units this host will start, stop or restart on request.
+	//
+	// Entries are matched with shell-style globbing so that a fleet-wide policy can name
+	// "farrier-*.service" without enumerating instances. The list is empty in the shipped default:
+	// like trusted-signers, a fresh host permits nothing until an administrator says otherwise.
+	Restartable []string `toml:"restartable"`
+}
+
+// Limits is the [limits] section of the policy file.
+type Limits struct {
+	// MaxJobAgeSeconds is how long after issue a job may still be executed.
+	//
+	// It bounds the damage of a job that sat in a queue across an outage: a restart signed on Tuesday
+	// should not execute on Friday because the agent was offline in between. It is enforced locally so
+	// that it holds even when the control plane is the thing that went wrong.
+	MaxJobAgeSeconds int `toml:"max_job_age_seconds"`
+}
+
+// Policy is a parsed and validated /etc/farrier/policy.toml.
+//
+// It is a value type with no pointers into the file it came from, so a helper can load it, use it and
+// let it go without worrying about aliasing. Loading is cheap and happens per invocation on purpose:
+// the helper must act on what the file says now, not on what it said when some long-running process
+// started.
+type Policy struct {
+	// Updates bounds package update application.
+	Updates Updates `toml:"updates"`
+
+	// Services bounds which units may be acted on.
+	Services Services `toml:"services"`
+
+	// Limits bounds job age.
+	Limits Limits `toml:"limits"`
+
+	// window is the parsed form of Updates.Window, resolved against Updates.Timezone.
+	window Window
+
+	// source records where this policy was loaded from, for error messages.
+	source string
+}
+
+// Default returns the policy a host uses when no file has been read.
+//
+// The defaults are deliberately the most restrictive ones that still leave the product useful: security
+// updates only, no automatic reboot, and nothing restartable. That matches the shipped policy.toml and
+// the empty trusted-signers file — a freshly installed agent should be able to report on a host and to
+// keep it patched, and should be able to do nothing else until somebody decides otherwise.
+func Default() Policy {
+	return Policy{
+		Updates: Updates{
+			Allow:     AllowSecurity,
+			AutoApply: true,
+			Window:    "",
+			Timezone:  "UTC",
+			Reboot:    RebootNever,
+		},
+		Services: Services{Restartable: nil},
+		Limits:   Limits{MaxJobAgeSeconds: 900},
+		window:   Window{},
+		source:   "built-in default",
+	}
+}
+
+// Closed returns the policy a host uses when its policy file cannot be trusted.
+//
+// It permits nothing at all. Load returns it alongside an error when the file exists but does not
+// parse, because the alternative — carrying on with the built-in default — would mean a syntax error
+// in a hand-edited file silently widened what a host accepts. Failing closed makes that a visible
+// outage instead of an invisible one.
+func Closed() Policy {
+	return Policy{
+		Updates: Updates{Allow: AllowNone, AutoApply: false, Timezone: "UTC", Reboot: RebootNever},
+		Limits:  Limits{MaxJobAgeSeconds: 900},
+		source:  "closed (policy could not be loaded)",
+	}
+}
+
+// Source describes where the policy came from, for logs and error messages.
+func (p Policy) Source() string { return p.source }
+
+// Window returns the parsed maintenance window.
+func (p Policy) Window() Window { return p.window }
+
+// ErrNoPolicyFile reports that no policy file exists at the expected path.
+//
+// It is distinguished from a parse failure because the two mean opposite things: a missing file is a
+// host that has not been configured, which takes the built-in default; an unparseable file is a host
+// whose administrator meant something the agent could not read, which takes the closed policy.
+var ErrNoPolicyFile = errors.New("policy: no policy file")
+
+// Load reads and validates the policy at Path.
+//
+// It always returns a usable Policy. On a missing file it returns Default and ErrNoPolicyFile; on any
+// other failure it returns Closed and the error. Callers are expected to log the error and carry on
+// with the returned policy rather than to treat it as fatal, because an agent that exits on a bad
+// policy file is an agent that stops reporting on the host that most needs looking at.
+func Load() (Policy, error) { return LoadFrom(Path) }
+
+// LoadFrom reads and validates a policy from an explicit path.
+//
+// It exists so that tests, the helpers' --policy flag and `farrier policy check` all exercise the same
+// code as production rather than a parallel implementation that happens to agree today.
+func LoadFrom(path string) (Policy, error) {
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		p := Default()
+		p.source = fmt.Sprintf("%s (absent)", path)
+		return p, fmt.Errorf("%w at %s", ErrNoPolicyFile, path)
+	case err != nil:
+		return Closed(), fmt.Errorf("policy: reading %s: %w", path, err)
+	}
+	p, err := Parse(raw)
+	if err != nil {
+		return Closed(), fmt.Errorf("policy: parsing %s: %w", path, err)
+	}
+	p.source = path
+	return p, nil
+}
+
+// Parse decodes and validates policy TOML.
+//
+// Unknown keys are rejected rather than ignored. A policy file is edited by hand under time pressure,
+// and "allow_updates = all" silently doing nothing while the operator believes it took effect is worse
+// than an error at load, which is at least visible in the journal before anything depends on it.
+func Parse(raw []byte) (Policy, error) {
+	p := Default()
+	md, err := toml.Decode(string(raw), &p)
+	if err != nil {
+		return Closed(), err
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, 0, len(undecoded))
+		for _, k := range undecoded {
+			keys = append(keys, k.String())
+		}
+		return Closed(), fmt.Errorf("unknown key(s): %s", strings.Join(keys, ", "))
+	}
+	if err := p.validate(); err != nil {
+		return Closed(), err
+	}
+	return p, nil
+}
+
+// validate checks a decoded policy and resolves its derived fields.
+//
+// It resolves the maintenance window here, at load, rather than at each evaluation, so that a
+// misspelled timezone or an unparseable window is an error the administrator sees when the file is
+// read — not a silent refusal at 03:00 on the one night the window mattered.
+func (p *Policy) validate() error {
+	if !p.Updates.Allow.Valid() {
+		return fmt.Errorf("updates.allow: %q is not one of none, security, all", p.Updates.Allow)
+	}
+	if !p.Updates.Reboot.Valid() {
+		return fmt.Errorf("updates.reboot: %q is not one of never, window", p.Updates.Reboot)
+	}
+	if p.Updates.Timezone == "" {
+		p.Updates.Timezone = "UTC"
+	}
+	loc, err := time.LoadLocation(p.Updates.Timezone)
+	if err != nil {
+		return fmt.Errorf("updates.timezone: %w", err)
+	}
+	w, err := ParseWindow(p.Updates.Window, loc)
+	if err != nil {
+		return fmt.Errorf("updates.window: %w", err)
+	}
+	p.window = w
+
+	if p.Limits.MaxJobAgeSeconds <= 0 {
+		return fmt.Errorf("limits.max_job_age_seconds: %d must be positive", p.Limits.MaxJobAgeSeconds)
+	}
+	for _, pattern := range p.Services.Restartable {
+		if _, err := filepath.Match(pattern, "probe.service"); err != nil {
+			return fmt.Errorf("services.restartable: %q is not a valid pattern: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
+// Paused reports whether a local administrator has stopped this host from acting on jobs.
+//
+// It is checked on every privileged evaluation rather than cached, because the point of the marker is
+// that creating it takes effect immediately and without the agent's cooperation.
+func Paused() bool { return pausedAt(PausedPath) }
+
+// pausedAt reports whether the marker file exists at an explicit path.
+func pausedAt(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// RestartableAllows reports whether a unit name is on the restartable list.
+//
+// Matching is by shell-style glob so a policy can name "farrier-*.service" without enumerating
+// instances. An empty list matches nothing, which is the shipped default: a host permits no service
+// operations at all until an administrator writes down which ones it permits.
+func (p Policy) RestartableAllows(unit string) bool {
+	for _, pattern := range p.Services.Restartable {
+		if ok, err := filepath.Match(pattern, unit); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
