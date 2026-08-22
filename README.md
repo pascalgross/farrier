@@ -98,6 +98,7 @@ stable and oldstable.** Ubuntu 20.04 is excluded as ESM-only.
 
 | | |
 | --- | --- |
+| [`docs/INSTALL.md`](docs/INSTALL.md) | Getting a control plane and a host running, and what a fresh host will and will not do |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The guarantee, the three mechanisms, the permanently-refused list, and an honest statement of what Farrier does *not* defend against |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | The agent protocol, specified well enough to reimplement |
 | [`docs/EXTENDING.md`](docs/EXTENDING.md) | The seams that are open, and the ones that are closed on purpose |
