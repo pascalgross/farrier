@@ -352,6 +352,9 @@ func (a *Authority) EnsureServerCertificate(dir string, dnsNames []string, ips [
 		return "", "", fmt.Errorf("ca: encoding the server key: %w", err)
 	}
 
+	// 0644 for the certificate and 0600 for the key, as for the CA itself: a certificate is a public
+	// document that every client is shown on every connection.
+	//nolint:gosec // G306: a public certificate is meant to be readable.
 	if err := os.WriteFile(certPath,
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
 		return "", "", fmt.Errorf("ca: writing %s: %w", ServerCertFile, err)
