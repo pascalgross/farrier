@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pegasusnetworks/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/canonical"
 )
 
 // TrustedSignersPath is where the trust anchor lives on a managed host.

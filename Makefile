@@ -16,8 +16,8 @@ DIST    := dist
 # reason for it to be larger than it needs to be. The version is stamped rather than compiled in from a
 # constant so that a build from a tag and a build from a branch are distinguishable in a heartbeat.
 LDFLAGS := -s -w \
-	-X github.com/pegasusnetworks/farrier/internal/buildinfo.Version=$(VERSION) \
-	-X github.com/pegasusnetworks/farrier/internal/buildinfo.Commit=$(COMMIT)
+	-X github.com/pascalgross/farrier/internal/buildinfo.Version=$(VERSION) \
+	-X github.com/pascalgross/farrier/internal/buildinfo.Commit=$(COMMIT)
 
 GO_PACKAGES := ./...
 

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
-	"github.com/pegasusnetworks/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // stubPlatform is a collect.Platform whose answers the test controls.

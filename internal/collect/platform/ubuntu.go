@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
-	"github.com/pegasusnetworks/farrier/internal/run"
+	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/run"
 )
 
 // Ubuntu implements collect.Platform for the Ubuntu LTS releases in standard support.

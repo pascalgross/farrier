@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pegasusnetworks/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/signing"
 )
 
 // newSigner generates a key file in a temporary directory and returns the unlocked signer.

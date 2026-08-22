@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect"
 )
 
 // Debian implements collect.Platform for Debian stable and oldstable.

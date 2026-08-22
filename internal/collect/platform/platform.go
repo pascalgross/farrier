@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect"
 )
 
 // Detect identifies the host and returns the matching platform implementation.

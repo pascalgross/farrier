@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/intent"
 )
 
 // Request is what the control plane asked a host to do.

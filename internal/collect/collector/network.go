@@ -5,7 +5,7 @@ import (
 	"net"
 	"sort"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect"
 )
 
 // maxAddresses caps the addresses reported for one interface.

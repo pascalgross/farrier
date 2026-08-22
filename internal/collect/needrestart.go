@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pegasusnetworks/farrier/internal/run"
+	"github.com/pascalgross/farrier/internal/run"
 )
 
 // UbuntuRebootMarker is update-notifier's reboot-required file.

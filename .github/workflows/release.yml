@@ -98,14 +98,14 @@ jobs:
             for cmd in farrier-agent farrier-server farrier; do
               GOARCH=$arch go build -trimpath \
                 -ldflags "-s -w -buildid= \
-                  -X github.com/pegasusnetworks/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }} \
-                  -X github.com/pegasusnetworks/farrier/internal/buildinfo.Commit=$(git rev-parse --short HEAD)" \
+                  -X github.com/pascalgross/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }} \
+                  -X github.com/pascalgross/farrier/internal/buildinfo.Commit=$(git rev-parse --short HEAD)" \
                 -o "dist/$arch/$cmd" "./cmd/$cmd"
             done
             for helper in apply-updates restart-unit reboot-host; do
               GOARCH=$arch go build -trimpath \
                 -ldflags "-s -w -buildid= \
-                  -X github.com/pegasusnetworks/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }}" \
+                  -X github.com/pascalgross/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }}" \
                 -o "dist/$arch/$helper" "./helpers/$helper"
             done
           done

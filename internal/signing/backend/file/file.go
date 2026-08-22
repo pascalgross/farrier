@@ -31,7 +31,7 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/scrypt"
 
-	"github.com/pegasusnetworks/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/signing"
 )
 
 // envelopeVersion is the format version written into every key file.

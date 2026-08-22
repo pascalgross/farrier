@@ -23,14 +23,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/agent"
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/canonical"
-	"github.com/pegasusnetworks/farrier/internal/collect"
-	"github.com/pegasusnetworks/farrier/internal/collect/collector"
-	"github.com/pegasusnetworks/farrier/internal/collect/platform"
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/agent"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect/collector"
+	"github.com/pascalgross/farrier/internal/collect/platform"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/policy"
 )
 
 // StateDir is where the agent keeps everything it writes.

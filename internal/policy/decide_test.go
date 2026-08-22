@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/intent"
 )
 
 // mustDecode builds validated intent parameters or fails the test.

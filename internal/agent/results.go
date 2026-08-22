@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/pegasusnetworks/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // SpoolResult writes a job result to disk durably, before it is sent.

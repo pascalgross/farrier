@@ -15,10 +15,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/canonical"
-	"github.com/pegasusnetworks/farrier/internal/protocol"
-	"github.com/pegasusnetworks/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/signing"
 )
 
 // EnrollOptions are the inputs to enrolling a host.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // databaseEnv names the environment variable holding a PostgreSQL URL for these tests.

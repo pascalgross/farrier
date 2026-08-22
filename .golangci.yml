@@ -77,4 +77,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/pegasusnetworks/farrier
+        - github.com/pascalgross/farrier

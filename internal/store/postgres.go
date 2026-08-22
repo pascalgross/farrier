@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/pegasusnetworks/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // migrationFiles holds the schema, embedded so the binary is self-contained.

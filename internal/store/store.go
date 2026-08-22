@@ -18,7 +18,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // Sentinel errors every implementation returns for the same conditions.

@@ -28,12 +28,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/auth"
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/ca"
-	"github.com/pegasusnetworks/farrier/internal/notify"
-	"github.com/pegasusnetworks/farrier/internal/protocol"
-	"github.com/pegasusnetworks/farrier/internal/store"
+	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/ca"
+	"github.com/pascalgross/farrier/internal/notify"
+	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/store"
 )
 
 // webAssets holds the built Angular application.

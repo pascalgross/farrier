@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/canonical"
-	"github.com/pegasusnetworks/farrier/internal/collect"
-	"github.com/pegasusnetworks/farrier/internal/collect/collector"
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
-	"github.com/pegasusnetworks/farrier/internal/protocol"
-	"github.com/pegasusnetworks/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect/collector"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/signing"
 )
 
 // acceptance is the outcome of checking whether a job may run.

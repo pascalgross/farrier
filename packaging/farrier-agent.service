@@ -1,6 +1,6 @@
 [Unit]
 Description=Farrier fleet management agent
-Documentation=https://github.com/pegasusnetworks/farrier
+Documentation=https://github.com/pascalgross/farrier
 Documentation=file:///usr/share/doc/farrier-agent/README.md
 After=network-online.target
 Wants=network-online.target

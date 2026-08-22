@@ -19,9 +19,9 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/helper"
-	"github.com/pegasusnetworks/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/helper"
+	"github.com/pascalgross/farrier/internal/intent"
 )
 
 // main parses the fixed command line, enforces local policy, and would then reboot the host.

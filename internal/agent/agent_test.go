@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/canonical"
-	"github.com/pegasusnetworks/farrier/internal/policy"
-	"github.com/pegasusnetworks/farrier/internal/protocol"
-	"github.com/pegasusnetworks/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/signing"
 )
 
 // testHostID is the host identity every job in these tests is addressed to.

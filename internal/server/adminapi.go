@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/auth"
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/store"
+	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/store"
 )
 
 // hostView is one host as the API renders it.

@@ -13,7 +13,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect"
 )
 
 // registry holds the registered collectors by name.

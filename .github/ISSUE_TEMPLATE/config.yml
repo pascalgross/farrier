@@ -1,13 +1,13 @@
 blank_issues_enabled: true
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/pegasusnetworks/farrier/security/advisories/new
+    url: https://github.com/pascalgross/farrier/security/advisories/new
     about: >-
       Report privately. A way to violate the guarantee in docs/SECURITY.md §1 is the most serious class
       of bug this project recognises, however difficult it is to reach.
 
   - name: Proposing a new operation
-    url: https://github.com/pegasusnetworks/farrier/discussions
+    url: https://github.com/pascalgross/farrier/discussions
     about: >-
       Describe the operational problem rather than the mechanism you want. The usual outcome is a new
       typed intent with validated parameters, which is a normal reviewable change; a general-purpose

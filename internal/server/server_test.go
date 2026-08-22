@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/agent"
-	"github.com/pegasusnetworks/farrier/internal/auth"
-	"github.com/pegasusnetworks/farrier/internal/ca"
-	"github.com/pegasusnetworks/farrier/internal/canonical"
-	"github.com/pegasusnetworks/farrier/internal/collect"
-	"github.com/pegasusnetworks/farrier/internal/protocol"
-	"github.com/pegasusnetworks/farrier/internal/server"
-	"github.com/pegasusnetworks/farrier/internal/store"
+	"github.com/pascalgross/farrier/internal/agent"
+	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/farrier/internal/ca"
+	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/server"
+	"github.com/pascalgross/farrier/internal/store"
 )
 
 // harness is a running control plane with an in-memory store, for end-to-end tests.

@@ -24,13 +24,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/auth"
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/ca"
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/notify"
-	"github.com/pegasusnetworks/farrier/internal/server"
-	"github.com/pegasusnetworks/farrier/internal/store"
+	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/ca"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/notify"
+	"github.com/pascalgross/farrier/internal/server"
+	"github.com/pascalgross/farrier/internal/store"
 )
 
 // usage prints the command list.

@@ -17,9 +17,9 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/helper"
-	"github.com/pegasusnetworks/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/helper"
+	"github.com/pascalgross/farrier/internal/intent"
 )
 
 // actions maps the helper's --action flag to the catalogue member it corresponds to.

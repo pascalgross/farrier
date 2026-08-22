@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/policy"
 )
 
 // writePolicy writes a policy file into a temporary directory and returns its path.

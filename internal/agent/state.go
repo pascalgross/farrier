@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/canonical"
 )
 
 // DefaultStateDir is where the agent keeps everything it writes.

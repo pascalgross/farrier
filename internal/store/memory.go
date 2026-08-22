@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // Memory is an in-memory Store.

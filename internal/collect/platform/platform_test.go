@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pegasusnetworks/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/collect"
 )
 
 // fixture reads captured command output from the collect package's testdata.

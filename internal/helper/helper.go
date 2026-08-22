@@ -20,9 +20,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/policy"
 )
 
 // Exit codes. They are part of the interface between the agent and the helpers, so they are named

@@ -16,7 +16,7 @@ section: admin
 priority: optional
 maintainer: Pegasus Networks <farrier@pegasusnetworks.de>
 vendor: Pegasus Networks
-homepage: https://github.com/pegasusnetworks/farrier
+homepage: https://github.com/pascalgross/farrier
 license: Apache-2.0
 
 description: |
@@ -163,4 +163,4 @@ scripts:
 
 deb:
   fields:
-    Bugs: https://github.com/pegasusnetworks/farrier/issues
+    Bugs: https://github.com/pascalgross/farrier/issues

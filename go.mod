@@ -1,4 +1,4 @@
-module github.com/pegasusnetworks/farrier
+module github.com/pascalgross/farrier
 
 go 1.25.0
 

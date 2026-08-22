@@ -26,11 +26,11 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/pegasusnetworks/farrier/internal/agent"
-	"github.com/pegasusnetworks/farrier/internal/buildinfo"
-	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/signing"
-	"github.com/pegasusnetworks/farrier/internal/signing/backend/file"
+	"github.com/pascalgross/farrier/internal/agent"
+	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/signing/backend/file"
 )
 
 // usage prints the command list.
