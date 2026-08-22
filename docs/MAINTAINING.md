@@ -12,6 +12,11 @@ setting that lives only in somebody's memory is a setting that will be wrong aft
 
 ## 1. Repository basics
 
+**The default branch must be `main`.** Every workflow keyed to a push — `ci`, `guarantee`, `security`
+and `pages` — names it, so a repository whose default branch is something else looks healthy and runs
+none of them. This is worth checking rather than assuming: a repository created empty takes its default
+from the name of the first branch pushed to it, which is rarely the one anybody intended.
+
 **Settings → General.**
 
 | Setting | Value |
@@ -27,6 +32,11 @@ setting that lives only in somebody's memory is a setting that will be wrong aft
 | Allow squash merging | On, with the default message set to *pull request title and description* |
 | Allow rebase merging | Off |
 | Automatically delete head branches | On |
+| Require contributors to sign off on web-based commits | On |
+
+Web-based sign-off matters because the DCO check is not advisory: without it, a typo fixed through
+GitHub's editor produces a commit with no `Signed-off-by` line, and the contributor discovers this from
+a red required check rather than from the editor that could have prevented it.
 
 Squash-only is not a style preference. Every commit on `main` has to carry a `Signed-off-by` line, and
 a squash merge whose message is composed from the pull request is the one merge mode where the DCO
@@ -79,7 +89,10 @@ still worth doing, because the failure mode when it is off is a red deploy at th
 
 - Apex: four `A` records to `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
   `185.199.111.153`, and the four matching `AAAA` records for `2606:50c0:8000::153` through
-  `2606:50c0:8003::153`.
+  `2606:50c0:8003::153`. **Those eight and nothing else.** A leftover record for some other server
+  stays in the rotation, so roughly one request in five reaches the wrong machine — including one
+  `apt-get update` in five. An intermittent repository failure is considerably harder to diagnose than
+  a total one, and it also blocks GitHub from issuing the certificate.
 - `www.farrier.tools`: a `CNAME` to `pascalgross.github.io`.
 - Enter `farrier.tools` in the Pages settings, wait for the certificate, then tick *Enforce HTTPS*.
 
