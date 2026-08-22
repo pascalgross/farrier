@@ -129,6 +129,10 @@ systemd-analyze verify packaging/farrier-agent.service
 sudo dpkg -i dist/packages/farrier-agent_0.1.0_amd64.deb
 sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit --action restart --unit nginx.service
 #   -> refused by local policy (unit_not_restartable), exit 3, on a default install
+#
+# The helper takes no --policy flag. Its path is the packaged constant, because the sudoers entry pins
+# the program and not its arguments and the agent can write /var/lib/farrier — so a caller-supplied
+# path would let a compromised agent choose the policy that gets enforced.
 farrier-agent policy check
 sudo dpkg --purge farrier-agent
 ```

@@ -238,8 +238,13 @@ func Load() (Policy, error) { return LoadFrom(Path) }
 
 // LoadFrom reads and validates a policy from an explicit path.
 //
-// It exists so that tests, the helpers' --policy flag and `farrier policy check` all exercise the same
-// code as production rather than a parallel implementation that happens to agree today.
+// It exists so that tests and `farrier-agent policy check` exercise the same code as production rather
+// than a parallel implementation that happens to agree today.
+//
+// The root helpers deliberately do not expose it. A helper that took a policy path from its command
+// line would be one a compromised agent could point at a file it had just written — the sudoers entry
+// pins the program and not its arguments, and the agent can write /var/lib/farrier — so the enforcement
+// would still run as root, against exactly the policy the attacker chose.
 func LoadFrom(path string) (Policy, error) {
 	raw, err := os.ReadFile(path)
 	switch {

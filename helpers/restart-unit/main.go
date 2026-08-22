@@ -20,7 +20,6 @@ import (
 	"github.com/pegasusnetworks/farrier/internal/buildinfo"
 	"github.com/pegasusnetworks/farrier/internal/helper"
 	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
 )
 
 // actions maps the helper's --action flag to the catalogue member it corresponds to.
@@ -36,13 +35,12 @@ var actions = map[string]intent.Name{
 // main parses the fixed command line, enforces local policy, and would then act on the unit.
 func main() {
 	var (
-		action     = flag.String("action", "", "start, stop or restart")
-		unit       = flag.String("unit", "", "systemd unit name, for example nginx.service")
-		jobID      = flag.String("job-id", "", "control-plane job id, recorded in the audit log")
-		issuedAt   = flag.String("issued-at", "", "RFC 3339 time the job was issued")
-		policyPath = flag.String("policy", policy.Path, "policy file to enforce")
-		dryRun     = flag.Bool("dry-run", false, "evaluate policy and print the decision, changing nothing")
-		version    = flag.Bool("version", false, "print the version and exit")
+		action   = flag.String("action", "", "start, stop or restart")
+		unit     = flag.String("unit", "", "systemd unit name, for example nginx.service")
+		jobID    = flag.String("job-id", "", "control-plane job id, recorded in the audit log")
+		issuedAt = flag.String("issued-at", "", "RFC 3339 time the job was issued")
+		dryRun   = flag.Bool("dry-run", false, "evaluate policy and print the decision, changing nothing")
+		version  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
 
@@ -65,7 +63,7 @@ func main() {
 		Intent:   name,
 		Params:   helper.ParamsJSON(map[string]any{"unit": *unit}),
 		IssuedAt: helper.ParseIssuedAt(*issuedAt),
-	}, *policyPath, *dryRun)
+	}, *dryRun)
 
 	// Phase 1 replaces this with a systemd D-Bus call using the validated unit name from params, not
 	// from the flag. Going through the decoded value is what guarantees the name that reaches systemd

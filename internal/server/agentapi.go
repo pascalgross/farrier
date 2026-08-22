@@ -151,9 +151,6 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 		UptimeSeconds:      req.UptimeSeconds,
 		ClockOffsetSeconds: req.ClockOffsetSeconds,
 		Paused:             req.Paused,
-		FactsDigest:        req.FactsDigest,
-		PolicyDigest:       req.PolicyDigest,
-		SignersDigest:      req.SignersDigest,
 		LastSeen:           now,
 	}); err != nil {
 		slog.Error("could not record a heartbeat", "error", err, "host", host.ID)
@@ -169,8 +166,12 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 		s.storeDocumentIfPresent(r.Context(), host.ID, "signers", req.Signers, req.SignersDigest)
 	}
 
-	// What the host now holds, after any documents in this beat were applied. Comparing against the
-	// values from before the update would ask for a document that has just arrived.
+	// host carries the digests of the documents the server actually holds, read before this beat was
+	// applied; the store never records a digest a host merely claimed. A mismatch therefore means "I do
+	// not have this document", and it keeps meaning that until one arrives — which is what makes a lost
+	// full report recoverable rather than permanent. Recording the claim instead would make the server
+	// ask exactly once, and if that one report were lost to a network failure it would compare the next
+	// heartbeat against its own stored claim, conclude it was up to date, and never ask again.
 	wantFacts := req.FactsDigest != "" && req.FactsDigest != host.FactsDigest && req.Facts == nil
 	wantPolicy := req.PolicyDigest != "" && req.PolicyDigest != host.PolicyDigest && req.Policy == nil
 	wantSigners := req.SignersDigest != "" && req.SignersDigest != host.SignersDigest && req.Signers == nil
@@ -310,7 +311,15 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, host store
 	req.JobID = jobID
 	req.Output, req.OutputTruncated = protocol.TruncateOutput(req.Output)
 
-	if err := s.cfg.Store.RecordResult(r.Context(), host.ID, req); err != nil {
+	switch err := s.cfg.Store.RecordResult(r.Context(), host.ID, req); {
+	case errors.Is(err, store.ErrNotFound):
+		// Either the job never existed or it belongs to a different host. The two are one response, as
+		// everywhere else: distinguishing them would let an enrolled host enumerate other hosts' jobs.
+		slog.Warn("a host reported a result for a job that is not its own",
+			"host", host.ID, "job", jobID)
+		writeError(w, http.StatusNotFound, "unknown_job", "no such job for this host")
+		return
+	case err != nil:
 		slog.Error("could not record a job result", "error", err, "host", host.ID, "job", jobID)
 		writeError(w, http.StatusInternalServerError, "internal", "could not record the result")
 		return

@@ -460,6 +460,52 @@ func TestGuaranteeDigestFirstWorksWithRealFacts(t *testing.T) {
 	}
 }
 
+// TestGuaranteeALostFullReportIsAskedForAgain is the failure the digest columns exist to avoid.
+//
+// The server asks for a document once. If that one full report is lost — a dropped connection, an agent
+// killed mid-beat — it must ask again on the next heartbeat. It only can if the digest it compares
+// against is the digest of a document it actually holds, rather than one a host claimed: recording the
+// claim would make the server conclude it was up to date and stop asking, permanently, while the
+// document it believed it had never existed.
+//
+// Nothing about that failure is visible. The host is online, the heartbeats are fine, and the fleet
+// list simply has no inventory for one machine.
+func TestGuaranteeALostFullReportIsAskedForAgain(t *testing.T) {
+	h := newHarness(t)
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+	client := h.agentClient(t, state)
+	ctx := context.Background()
+
+	const digest = "sha256:neverdelivered"
+
+	// Several digest-only beats, standing in for an agent whose full report never got through.
+	for i := range 4 {
+		res, err := client.Heartbeat(ctx, protocol.HeartbeatRequest{
+			AgentVersion: "test", FactsDigest: digest, PolicyDigest: digest,
+		})
+		if err != nil {
+			t.Fatalf("heartbeat %d: %v", i+1, err)
+		}
+		if !res.WantFacts {
+			t.Fatalf("heartbeat %d: the server stopped asking for a document it never received", i+1)
+		}
+		if !res.WantPolicy {
+			t.Fatalf("heartbeat %d: the server stopped asking for a policy it never received", i+1)
+		}
+	}
+
+	stored, err := h.store.GetHost(ctx, state.HostID)
+	if err != nil {
+		t.Fatalf("reading the host: %v", err)
+	}
+	if stored.FactsDigest != "" {
+		t.Errorf("the server recorded a digest for a document it never received: %q", stored.FactsDigest)
+	}
+	if len(stored.Facts) != 0 {
+		t.Error("the server has a facts document it was never sent")
+	}
+}
+
 // TestHeartbeatPacingIsServerSet asserts the agent is told how often to call.
 //
 // The point of server-set pacing is that a control plane can spread load across the minute, or back a
@@ -544,6 +590,13 @@ func TestResultsAreIdempotent(t *testing.T) {
 	client := h.agentClient(t, state)
 	ctx := context.Background()
 
+	h.store.Enqueue(state.HostID, protocol.Job{
+		ID: "01JTESTJOB", Intent: "facts.collect", Class: "read", IssuedAt: time.Now(),
+	})
+	if _, err := client.PollJobs(ctx, 0); err != nil {
+		t.Fatalf("claiming the job: %v", err)
+	}
+
 	result := protocol.ResultRequest{
 		JobID:      "01JTESTJOB",
 		Status:     protocol.StatusSucceeded,
@@ -562,6 +615,51 @@ func TestResultsAreIdempotent(t *testing.T) {
 	}
 	if stored.Status != protocol.StatusSucceeded {
 		t.Errorf("the stored result is %+v", stored)
+	}
+}
+
+// TestGuaranteeAHostCannotReportAnotherHostsJob asserts enrolled does not mean trusted.
+//
+// Every host that reaches this endpoint is authenticated, and none of them is trusted. Recording is
+// idempotent, so a forged result is not merely noise: it is recorded first and then suppresses the real
+// one when the host that actually ran the job reports it. An operator would see a job that succeeded on
+// a host where nothing happened.
+func TestGuaranteeAHostCannotReportAnotherHostsJob(t *testing.T) {
+	h := newHarness(t)
+	victim := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+	attacker := h.enrolHost(t, "web-02", h.issueToken(t, "web-prod"))
+	ctx := context.Background()
+
+	h.store.Enqueue(victim.HostID, protocol.Job{
+		ID: "01JVICTIMJOB", Intent: "facts.collect", Class: "read", IssuedAt: time.Now(),
+	})
+
+	forged := protocol.ResultRequest{
+		JobID: "01JVICTIMJOB", Status: protocol.StatusSucceeded,
+		StartedAt: time.Now(), FinishedAt: time.Now(),
+		Output: "nothing actually ran here",
+	}
+	if err := h.agentClient(t, attacker).ReportResult(ctx, forged); err == nil {
+		t.Fatal("a host reported a result for another host's job")
+	}
+	if _, recorded := h.store.Result("01JVICTIMJOB"); recorded {
+		t.Fatal("the forged result was recorded")
+	}
+
+	// The host the job actually belongs to must still be able to report it, or this check would have
+	// broken the endpoint rather than secured it.
+	victimClient := h.agentClient(t, victim)
+	if _, err := victimClient.PollJobs(ctx, 0); err != nil {
+		t.Fatalf("the owning host could not claim its job: %v", err)
+	}
+	genuine := forged
+	genuine.Output = "collected"
+	if err := victimClient.ReportResult(ctx, genuine); err != nil {
+		t.Fatalf("the owning host could not report its own result: %v", err)
+	}
+	stored, recorded := h.store.Result("01JVICTIMJOB")
+	if !recorded || stored.Output != "collected" {
+		t.Errorf("the genuine result was not recorded: %+v", stored)
 	}
 }
 

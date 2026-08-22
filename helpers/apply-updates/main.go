@@ -22,7 +22,6 @@ import (
 	"github.com/pegasusnetworks/farrier/internal/buildinfo"
 	"github.com/pegasusnetworks/farrier/internal/helper"
 	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
 )
 
 // main parses the fixed command line, enforces local policy, and would then apply updates.
@@ -32,7 +31,6 @@ func main() {
 		jobID      = flag.String("job-id", "", "control-plane job id, recorded in the audit log")
 		issuedAt   = flag.String("issued-at", "", "RFC 3339 time the job was issued")
 		reboot     = flag.Bool("reboot-if-required", false, "reboot afterwards if the update needs it")
-		policyPath = flag.String("policy", policy.Path, "policy file to enforce")
 		dryRun     = flag.Bool("dry-run", false, "evaluate policy and print the decision, changing nothing")
 		version    = flag.Bool("version", false, "print the version and exit")
 	)
@@ -58,7 +56,7 @@ func main() {
 		Intent:   name,
 		Params:   helper.ParamsJSON(map[string]any{"rebootIfRequired": *reboot}),
 		IssuedAt: helper.ParseIssuedAt(*issuedAt),
-	}, *policyPath, *dryRun)
+	}, *dryRun)
 
 	// Phase 1 replaces this with a wrapper around unattended-upgrade, invoked by absolute path with a
 	// fixed argv. It will not reimplement origin filtering: unattended-upgrades already does that

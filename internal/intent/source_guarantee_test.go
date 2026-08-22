@@ -315,3 +315,82 @@ func resolveStringExpr(e ast.Expr, consts map[string]string) (string, bool) {
 		return "", false
 	}
 }
+
+// TestGuaranteeRootHelpersTakeNoPolicyPath is local policy sovereignty at the command line.
+//
+// The sudoers entry pins the program and not its arguments, and the agent can write /var/lib/farrier.
+// A helper that accepted --policy would therefore be a helper a compromised agent could point at a file
+// it had just written itself, and local policy would end there: the enforcement would still run, as
+// root, against exactly the policy the attacker chose.
+//
+// The check is on the source rather than on behaviour because the failure is a flag somebody adds back
+// for testing and forgets to remove. internal/helper.Authorise still takes a path, which is what tests
+// and `farrier-agent policy check` use; nothing reachable through sudo does.
+func TestGuaranteeRootHelpersTakeNoPolicyPath(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	helperDir := filepath.Join(root, "helpers")
+	entries, err := os.ReadDir(helperDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", helperDir, err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("there are %d root helpers, expected exactly 3. There is deliberately no fourth, "+
+			"and certainly not one that runs a configured command.", len(entries))
+	}
+
+	forbidden := map[string]string{
+		"policy": "a caller-chosen policy file defeats local policy sovereignty entirely",
+		"config": "a caller-chosen configuration file is a policy file with a different name",
+		"exec":   "a helper never takes a program to run",
+		"cmd":    "a helper never takes a command",
+		"script": "a helper never takes a script",
+		"shell":  "a helper never takes a shell fragment",
+		"path":   "a helper never takes a path to act on; parameters are typed and validated",
+		"file":   "a helper never takes a file to act on",
+		"url":    "a helper never fetches anything",
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		main := filepath.Join(helperDir, entry.Name(), "main.go")
+		f, err := parser.ParseFile(fset, main, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", main, err)
+		}
+
+		ast.Inspect(f, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			pkg, fn, ok := selectorParts(call.Fun)
+			if !ok || pkg != "flag" || len(call.Args) == 0 {
+				return true
+			}
+			if !strings.HasPrefix(fn, "String") && !strings.HasPrefix(fn, "Int") &&
+				!strings.HasPrefix(fn, "Bool") && !strings.HasPrefix(fn, "Duration") {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			name, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			for fragment, reason := range forbidden {
+				if strings.Contains(strings.ToLower(name), fragment) {
+					pos := fset.Position(call.Pos())
+					t.Errorf("%s/main.go:%d: the root helper defines a --%s flag: %s",
+						entry.Name(), pos.Line, name, reason)
+				}
+			}
+			return true
+		})
+	}
+}

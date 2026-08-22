@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -358,9 +357,14 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 		if ctx.Err() != nil {
 			return
 		}
-		result := Run(ctx, job, a.state.HostID, p, signers, a.nonces, a.platform, a.clockOffset)
+		spool := func(provisional protocol.ResultRequest) error {
+			return SpoolResult(a.state.Dir(), provisional)
+		}
+		result := Run(ctx, job, a.state.HostID, p, signers, a.nonces, a.platform, a.clockOffset, spool)
 		slog.Info("job finished", "job", job.ID, "intent", job.Intent, "status", result.Status)
 
+		// Written again, unconditionally: for an operation that may not return this replaces the
+		// provisional record, and for everything else it is the only one.
 		if err := SpoolResult(a.state.Dir(), result); err != nil {
 			slog.Error("could not spool a job result; it may be lost if this host restarts",
 				"job", job.ID, "error", err)
@@ -370,9 +374,15 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 				"job", job.ID, "error", err)
 			continue
 		}
-		spool := filepath.Join(a.state.Dir(), PendingResultsDir, result.JobID+".json")
-		if err := os.Remove(spool); err != nil && !errors.Is(err, os.ErrNotExist) {
-			slog.Warn("reported a result but could not remove its spool file", "path", spool, "error", err)
+		spoolFile, pathErr := SpoolPath(a.state.Dir(), result.JobID)
+		if pathErr != nil {
+			slog.Warn("a job id that is not an identifier reached the spool path",
+				"job", result.JobID, "error", pathErr)
+			continue
+		}
+		if err := os.Remove(spoolFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("reported a result but could not remove its spool file",
+				"path", spoolFile, "error", err)
 		}
 	}
 }

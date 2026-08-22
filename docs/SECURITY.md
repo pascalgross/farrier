@@ -82,6 +82,12 @@ placement is what makes the guarantee survive a *fully compromised agent process
 arbitrary code execution as `farrier` still cannot exceed the policy, because the helper does not
 trust its caller.
 
+"Does not trust its caller" includes not taking the policy's location from it. The helpers accept no
+`--policy` flag: the path is the packaged constant, always. The sudoers entry pins the program and not
+its arguments, and the agent can write `/var/lib/farrier`, so a helper that read a caller-supplied path
+would enforce — carefully, as root — whatever policy the attacker had just written. A test in
+`internal/intent` parses each helper's source and fails if one grows such a flag.
+
 `systemctl stop farrier-agent` and the presence of `/etc/farrier/paused` are a kill switch that the
 control plane cannot override. There is deliberately **no `agent.resume` intent** — an off switch that
 something else can flip back on is not an off switch.

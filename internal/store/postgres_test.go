@@ -195,8 +195,7 @@ func TestHeartbeatDoesNotClobberFieldsItDoesNotCarry(t *testing.T) {
 	}
 
 	if err := pg.RecordHeartbeat(ctx, host.ID, HeartbeatUpdate{
-		AgentVersion: "0.1.0", BootID: "boot-1", UptimeSeconds: 4242,
-		FactsDigest: "sha256:facts", LastSeen: time.Now(),
+		AgentVersion: "0.1.0", BootID: "boot-1", UptimeSeconds: 4242, LastSeen: time.Now(),
 	}); err != nil {
 		t.Fatalf("recording a heartbeat: %v", err)
 	}
@@ -216,6 +215,11 @@ func TestHeartbeatDoesNotClobberFieldsItDoesNotCarry(t *testing.T) {
 	}
 	if after.AgentVersion != "0.1.0" || after.UptimeSeconds != 4242 {
 		t.Errorf("the heartbeat did not apply its own fields: %+v", after)
+	}
+	// The digest columns record what the server holds and are written only when a document arrives, so
+	// the one stored above must survive a heartbeat untouched.
+	if after.FactsDigest != "sha256:facts" {
+		t.Errorf("the heartbeat changed the stored facts digest to %q", after.FactsDigest)
 	}
 
 	if err := pg.RecordHeartbeat(ctx, "01JNOSUCHHOST", HeartbeatUpdate{}); !errors.Is(err, ErrNotFound) {

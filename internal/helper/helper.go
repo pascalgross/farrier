@@ -192,12 +192,20 @@ func ParseIssuedAt(s string) time.Time {
 // that logs a refusal and carries on regardless, which is a mistake that reviews miss because the
 // refusal is right there in the journal.
 //
+// **The policy path is not a parameter.** It is the packaged constant, always. A helper that accepted
+// a path from its command line would be a helper a compromised agent could point at a file it wrote
+// itself: the agent can write /var/lib/farrier, the sudoers entry pins the program and not its
+// arguments, and local policy sovereignty would end there. Authorise takes a path because tests and
+// `farrier-agent policy check` need one; nothing reachable through sudo does.
+//
 // The clock is read here and nowhere else in a helper. A job's validity window is checked against it,
 // and accepting a caller-supplied time would let whoever invoked the helper extend that window.
 //
 // In dryRun the same decision is evaluated and printed, and the process exits without acting. It is a
-// diagnostic path, not a privilege path: it never runs the operation, so it does not require root.
-func Dispatch(req Request, policyPath string, dryRun bool) intent.Params {
+// diagnostic path, not a privilege path: it never runs the operation, so it does not require root —
+// and it reads the same packaged policy file, so it cannot be used to preview a different one.
+func Dispatch(req Request, dryRun bool) intent.Params {
+	const policyPath = policy.Path
 	if !dryRun {
 		RequireRoot()
 	}

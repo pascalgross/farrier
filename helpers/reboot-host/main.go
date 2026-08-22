@@ -22,19 +22,17 @@ import (
 	"github.com/pegasusnetworks/farrier/internal/buildinfo"
 	"github.com/pegasusnetworks/farrier/internal/helper"
 	"github.com/pegasusnetworks/farrier/internal/intent"
-	"github.com/pegasusnetworks/farrier/internal/policy"
 )
 
 // main parses the fixed command line, enforces local policy, and would then reboot the host.
 func main() {
 	var (
-		delay      = flag.Int("delay-seconds", 0, "seconds to wait before rebooting, 0 to 3600")
-		message    = flag.String("message", "", "wall message shown to logged-in users")
-		jobID      = flag.String("job-id", "", "control-plane job id, recorded in the audit log")
-		issuedAt   = flag.String("issued-at", "", "RFC 3339 time the job was issued")
-		policyPath = flag.String("policy", policy.Path, "policy file to enforce")
-		dryRun     = flag.Bool("dry-run", false, "evaluate policy and print the decision, changing nothing")
-		version    = flag.Bool("version", false, "print the version and exit")
+		delay    = flag.Int("delay-seconds", 0, "seconds to wait before rebooting, 0 to 3600")
+		message  = flag.String("message", "", "wall message shown to logged-in users")
+		jobID    = flag.String("job-id", "", "control-plane job id, recorded in the audit log")
+		issuedAt = flag.String("issued-at", "", "RFC 3339 time the job was issued")
+		dryRun   = flag.Bool("dry-run", false, "evaluate policy and print the decision, changing nothing")
+		version  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
 
@@ -55,7 +53,7 @@ func main() {
 			"message":      *message,
 		}),
 		IssuedAt: helper.ParseIssuedAt(*issuedAt),
-	}, *policyPath, *dryRun)
+	}, *dryRun)
 
 	// Phase 1 replaces this with an absolute-path invocation of the distribution's shutdown binary,
 	// with the delay and message taken from the decoded params rather than from the flags.

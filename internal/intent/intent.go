@@ -175,6 +175,15 @@ type Spec struct {
 	// refuses an unimplemented intent the same way it refuses an unknown one.
 	Implemented bool
 
+	// MayNotReturn reports that the operation can complete by the host disappearing.
+	//
+	// It exists as a property of the catalogue rather than a name the agent checks for, because the
+	// consequence of forgetting it is silent: host.reboot completes by the machine going away, so an
+	// agent that wrote its result afterwards would write nothing at all, and the job would sit in the
+	// queue looking like a host that had gone quiet. The agent fsyncs a provisional result before
+	// invoking anything marked this way, and the guarantee suite pins which members are.
+	MayNotReturn bool
+
 	// Decode parses and validates the intent's parameters.
 	//
 	// It is a required field — the guarantee suite fails if any member leaves it nil — because "this
@@ -255,11 +264,12 @@ var catalogue = map[Name]Spec{
 		Decode:      decodeUnit(ServiceRestart),
 	},
 	HostReboot: {
-		Name:        HostReboot,
-		Class:       ClassDestructive,
-		Summary:     "Reboot the host, subject to the policy's reboot rule",
-		Implemented: false,
-		Decode:      decodeReboot(HostReboot),
+		Name:         HostReboot,
+		Class:        ClassDestructive,
+		Summary:      "Reboot the host, subject to the policy's reboot rule",
+		Implemented:  false,
+		MayNotReturn: true,
+		Decode:       decodeReboot(HostReboot),
 	},
 }
 

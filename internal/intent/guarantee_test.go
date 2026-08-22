@@ -170,6 +170,25 @@ func TestGuaranteePhaseZeroShipsNoWriteCapability(t *testing.T) {
 	}
 }
 
+// TestGuaranteeIntentsThatMayNotReturnArePinned asserts the set is exactly what the agent handles.
+//
+// An operation marked MayNotReturn gets its result fsynced to disk before it starts, because it can
+// complete by the host disappearing. Forgetting the flag on a future intent is silent: the operation
+// works, and its result is simply never reported, so the job sits in the queue looking like a host that
+// has gone quiet.
+func TestGuaranteeIntentsThatMayNotReturnArePinned(t *testing.T) {
+	expected := map[Name]bool{HostReboot: true}
+
+	for _, s := range All() {
+		if s.MayNotReturn != expected[s.Name] {
+			t.Errorf("intent %q has MayNotReturn=%v, expected %v.\n"+
+				"If a new operation can take the host away mid-execution, add it here — the agent "+
+				"fsyncs a provisional result before starting anything marked this way, and an "+
+				"unmarked one reports nothing at all.", s.Name, s.MayNotReturn, expected[s.Name])
+		}
+	}
+}
+
 // safeParamCharacters is the only character set any decoded string parameter may contain.
 //
 // It is checked generically, over every string field of every decoded Params value, rather than

@@ -103,7 +103,7 @@ func TestRunExecutesReadIntentsAndProducesAResult(t *testing.T) {
 
 	t.Run("packages.listUpgradable", func(t *testing.T) {
 		result := Run(ctx, readJob("01JA", "packages.listUpgradable"), testHostID, policy,
-			signers.set, newNonceStore(t), plat, 0)
+			signers.set, newNonceStore(t), plat, 0, nil)
 		if result.Status != protocol.StatusSucceeded {
 			t.Fatalf("status %q: %s", result.Status, result.Error)
 		}
@@ -119,7 +119,7 @@ func TestRunExecutesReadIntentsAndProducesAResult(t *testing.T) {
 
 	t.Run("reboot.checkRequired", func(t *testing.T) {
 		result := Run(ctx, readJob("01JB", "reboot.checkRequired"), testHostID, policy,
-			signers.set, newNonceStore(t), plat, 0)
+			signers.set, newNonceStore(t), plat, 0, nil)
 		if result.Status != protocol.StatusSucceeded {
 			t.Fatalf("status %q: %s", result.Status, result.Error)
 		}
@@ -134,7 +134,7 @@ func TestRunExecutesReadIntentsAndProducesAResult(t *testing.T) {
 
 	t.Run("facts.collect", func(t *testing.T) {
 		result := Run(ctx, readJob("01JC", "facts.collect"), testHostID, policy,
-			signers.set, newNonceStore(t), plat, 0)
+			signers.set, newNonceStore(t), plat, 0, nil)
 		if result.Status != protocol.StatusSucceeded {
 			t.Fatalf("status %q: %s", result.Status, result.Error)
 		}
@@ -167,7 +167,7 @@ func TestRunReportsAFailureRatherThanReturningNothing(t *testing.T) {
 	signers := newSignerFixture(t, "ops-laptop")
 
 	result := Run(context.Background(), readJob("01JD", "packages.listUpgradable"), testHostID,
-		permissivePolicy(t), signers.set, newNonceStore(t), plat, 0)
+		permissivePolicy(t), signers.set, newNonceStore(t), plat, 0, nil)
 
 	if result.Status != protocol.StatusFailed {
 		t.Fatalf("status %q, want %q", result.Status, protocol.StatusFailed)
@@ -193,7 +193,7 @@ func TestRunRefusesAnIntentOutsideTheCatalogue(t *testing.T) {
 
 	for _, name := range []string{"shell.exec", "facts.collect.extra", "", "FACTS.COLLECT"} {
 		result := Run(context.Background(), readJob("01JE", name), testHostID,
-			permissivePolicy(t), signers.set, newNonceStore(t), newStubPlatform(), 0)
+			permissivePolicy(t), signers.set, newNonceStore(t), newStubPlatform(), 0, nil)
 		if result.Status != protocol.StatusUnsupportedIntent {
 			t.Errorf("intent %q produced status %q, want %q",
 				name, result.Status, protocol.StatusUnsupportedIntent)
@@ -218,7 +218,7 @@ func TestRunDoesNotGateReadIntentsOnTheJobAgeLimit(t *testing.T) {
 	stale.IssuedAt = time.Now().Add(-time.Hour)
 
 	result := Run(context.Background(), stale, testHostID, strict, signers.set,
-		newNonceStore(t), newStubPlatform(), 0)
+		newNonceStore(t), newStubPlatform(), 0, nil)
 
 	if result.Status != protocol.StatusSucceeded {
 		t.Errorf("an hour-old read intent produced %q under a one-second age limit: %s",

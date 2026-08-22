@@ -317,14 +317,17 @@ func (p *Postgres) ListHosts(ctx context.Context) ([]Host, error) {
 // Only the columns a heartbeat carries are written. Updating the whole row would let a heartbeat
 // overwrite the enrolment group or the stored facts document with a zero value, which is the kind of
 // bug that shows up as data quietly disappearing.
+//
+// The digest columns are not among them, deliberately: they record what the server holds and are
+// written only when a document arrives. See the note beside HeartbeatUpdate.
 func (p *Postgres) RecordHeartbeat(ctx context.Context, hostID string, u HeartbeatUpdate) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE hosts
 		   SET agent_version = $2, boot_id = $3, uptime_seconds = $4, clock_offset_seconds = $5,
-		       paused = $6, facts_digest = $7, policy_digest = $8, signers_digest = $9, last_seen = $10
+		       paused = $6, last_seen = $7
 		 WHERE id = $1`,
 		hostID, u.AgentVersion, u.BootID, u.UptimeSeconds, u.ClockOffsetSeconds,
-		u.Paused, u.FactsDigest, u.PolicyDigest, u.SignersDigest, u.LastSeen)
+		u.Paused, u.LastSeen)
 	if err != nil {
 		return wrap(err, "recording a heartbeat")
 	}
@@ -464,7 +467,7 @@ func (p *Postgres) ClaimJobs(ctx context.Context, hostID string, limit int) ([]p
 	return out, wrap(rows.Err(), "claiming jobs")
 }
 
-// RecordResult stores a job result idempotently, keyed by job id.
+// RecordResult stores a job result idempotently, for a job that belongs to the reporting host.
 func (p *Postgres) RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) error {
 	resultJSON := []byte("null")
 	if r.Result != nil {
@@ -480,6 +483,20 @@ func (p *Postgres) RecordResult(ctx context.Context, hostID string, r protocol.R
 		return wrap(err, "recording a job result")
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The job must belong to the reporting host. Every enrolled host is authenticated and none is
+	// trusted: without this, any host could post a result for another host's job, and because recording
+	// is idempotent the forged result would then suppress the real one when it arrived.
+	var owned bool
+	err = tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND host_id = $2)`, r.JobID, hostID,
+	).Scan(&owned)
+	if err != nil {
+		return wrap(err, "checking job ownership")
+	}
+	if !owned {
+		return ErrNotFound
+	}
 
 	// DO NOTHING rather than DO UPDATE. A repeated result means the first response was lost, not that
 	// the work happened twice, and overwriting would replace a genuine record with a retry's view of

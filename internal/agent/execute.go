@@ -206,7 +206,7 @@ func Execute(ctx context.Context, spec intent.Spec, params intent.Params, plat c
 // looking like a host that had gone quiet, which is the least useful thing a fleet tool can do.
 func Run(ctx context.Context, job protocol.Job, hostID string, p policy.Policy,
 	signers *signing.SignerSet, nonces *NonceStore, plat collect.Platform,
-	clockOffset time.Duration) protocol.ResultRequest {
+	clockOffset time.Duration, beforeExecute func(protocol.ResultRequest) error) protocol.ResultRequest {
 
 	started := time.Now()
 	result := protocol.ResultRequest{JobID: job.ID, StartedAt: started}
@@ -217,6 +217,28 @@ func Run(ctx context.Context, job protocol.Job, hostID string, p policy.Policy,
 		result.Error = decision.reason
 		result.FinishedAt = time.Now()
 		return result
+	}
+
+	// An operation that can complete by the host disappearing needs its result on disk *before* it
+	// starts. host.reboot is the case: an agent that wrote the result afterwards would write nothing at
+	// all, and the job would sit in the queue looking like a host that had gone quiet. The provisional
+	// record is replaced by the real one below if this process is still here to write it.
+	if decision.spec.MayNotReturn && beforeExecute != nil {
+		provisional := result
+		provisional.Status = protocol.StatusSucceeded
+		provisional.FinishedAt = started
+		provisional.Output = "This result was written and fsynced before the operation began, because " +
+			decision.spec.Name.String() + " can complete by the host disappearing. If the host came " +
+			"back and the operation had failed, a later result replaced this one."
+		if err := beforeExecute(provisional); err != nil {
+			// Refused rather than attempted. An operation that may take the host away, whose result
+			// cannot be written down first, is one whose outcome nobody would ever learn.
+			result.Status = protocol.StatusFailed
+			result.Error = "refusing to start an operation that may not return, because its result " +
+				"could not be recorded first: " + err.Error()
+			result.FinishedAt = time.Now()
+			return result
+		}
 	}
 
 	output, err := Execute(ctx, decision.spec, decision.params, plat)

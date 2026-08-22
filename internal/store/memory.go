@@ -41,6 +41,12 @@ type Memory struct {
 	// results are recorded results by job id, which is what makes recording idempotent.
 	results map[string]protocol.ResultRequest
 
+	// jobHost records which host each job was issued to, so a result can be checked against it.
+	//
+	// It outlives the job in m.jobs, which is emptied on claim: a result arrives after the claim, and a
+	// forged one must still be refused.
+	jobHost map[string]string
+
 	// waiters are channels to wake per host, standing in for LISTEN/NOTIFY.
 	waiters map[string][]chan struct{}
 }
@@ -53,6 +59,7 @@ func NewMemory() *Memory {
 		certs:   map[string]Certificate{},
 		jobs:    map[string][]protocol.Job{},
 		results: map[string]protocol.ResultRequest{},
+		jobHost: map[string]string{},
 		waiters: map[string][]chan struct{}{},
 	}
 }
@@ -184,9 +191,6 @@ func (m *Memory) RecordHeartbeat(_ context.Context, hostID string, u HeartbeatUp
 	h.UptimeSeconds = u.UptimeSeconds
 	h.ClockOffsetSeconds = u.ClockOffsetSeconds
 	h.Paused = u.Paused
-	h.FactsDigest = u.FactsDigest
-	h.PolicyDigest = u.PolicyDigest
-	h.SignersDigest = u.SignersDigest
 	h.LastSeen = u.LastSeen
 	m.hosts[hostID] = h
 	return nil
@@ -281,6 +285,7 @@ func (m *Memory) RevokeHost(_ context.Context, hostID string) error {
 func (m *Memory) Enqueue(hostID string, job protocol.Job) {
 	m.mu.Lock()
 	m.jobs[hostID] = append(m.jobs[hostID], job)
+	m.jobHost[job.ID] = hostID
 	waiters := m.waiters[hostID]
 	m.waiters[hostID] = nil
 	m.mu.Unlock()
@@ -310,11 +315,17 @@ func (m *Memory) ClaimJobs(_ context.Context, hostID string, limit int) ([]proto
 	return pending, nil
 }
 
-// RecordResult stores a job result idempotently, keyed by job id.
-func (m *Memory) RecordResult(_ context.Context, _ string, r protocol.ResultRequest) error {
+// RecordResult stores a job result idempotently, for a job that belongs to the reporting host.
+func (m *Memory) RecordResult(_ context.Context, hostID string, r protocol.ResultRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Every enrolled host is authenticated and none is trusted. A result for somebody else's job is
+	// refused rather than stored, because recording is idempotent and a forged result would otherwise
+	// suppress the real one when it arrived.
+	if owner, known := m.jobHost[r.JobID]; !known || owner != hostID {
+		return ErrNotFound
+	}
 	if _, exists := m.results[r.JobID]; exists {
 		// Already recorded. A repeated result changes nothing and is not an error: the agent retries
 		// until it gets a 2xx, and a second delivery means the first response was lost, not that the

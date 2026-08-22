@@ -190,14 +190,17 @@ type HeartbeatUpdate struct {
 	// Paused reports the host's kill-switch state.
 	Paused bool
 
-	// FactsDigest, PolicyDigest and SignersDigest are what the host reported.
-	FactsDigest   string
-	PolicyDigest  string
-	SignersDigest string
-
 	// LastSeen is the server's clock reading for this heartbeat.
 	LastSeen time.Time
 }
+
+// Note that a heartbeat deliberately carries no digests.
+//
+// The digest columns on a host record what the *server holds*, and are written only by StoreFacts,
+// StorePolicy and StoreSigners — that is, only when a document actually arrives. Recording the digest a
+// host claimed would make the server believe it held a document it had never received: it would ask
+// once, and if that one full report were lost to a network failure it would compare the next heartbeat
+// against the claim it had stored, conclude it was up to date, and never ask again.
 
 // Store is the control plane's persistence.
 //
@@ -267,6 +270,11 @@ type Store interface {
 	// A repeated result for a job that already has one changes nothing and does not error. Work that
 	// succeeded but whose result was lost must never re-execute: that is how a retry turns one reboot
 	// into a reboot loop.
+	//
+	// A result for a job that does not belong to hostID returns ErrNotFound. Every enrolled host is
+	// authenticated but none of them is trusted: without this check any host could post a result for
+	// another host's job, and because recording is idempotent the forged result would then suppress the
+	// real one when it arrived.
 	RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) error
 
 	// WaitForJob blocks until a job may be available for a host, or the context ends.
