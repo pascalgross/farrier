@@ -1,0 +1,8 @@
+NEEDRESTART-VER: 3.6
+NEEDRESTART-KCUR: 6.8.0-49-generic
+NEEDRESTART-KEXP: 6.8.0-51-generic
+NEEDRESTART-KSTA: 3
+NEEDRESTART-SVC: cron.service
+NEEDRESTART-SVC: ssh.service
+NEEDRESTART-SVC: systemd-journald.service
+NEEDRESTART-SESS: root @ user manager service

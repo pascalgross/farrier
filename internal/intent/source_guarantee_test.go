@@ -37,6 +37,19 @@ var interpreterBasenames = map[string]bool{
 	"curl": true, "wget": true,
 }
 
+// execChokepoint is the one file permitted to execute a program named by a variable.
+//
+// internal/run replaces the compile-time property this test enforces everywhere else with a stronger
+// run-time one: it holds a closed allowlist of absolute program paths and refuses anything else before
+// reaching exec. Concentrating process execution in one audited file is better security design than
+// scattering exec calls across the tree, and it is only an exemption from *this* check, not from the
+// rule — TestGuaranteeOnlyAllowlistedProgramsCanRun in that package asserts the allowlist is actually
+// enforced, and TestGuaranteeTheAllowlistHoldsNoInterpreters asserts what is in it.
+//
+// It is a single named path rather than a pattern on purpose. A second entry here would need its own
+// justification in this comment, which is exactly the friction that should exist.
+const execChokepoint = "internal/run/run.go"
+
 // shellTextFragments are substrings that indicate an assembled shell command line.
 //
 // The AST check above already establishes what programs get run, so this textual pass only has to
@@ -115,6 +128,13 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 	root := repoRoot(t)
 	fset := token.NewFileSet()
 
+	// The exemption must name a file that exists. Without this, deleting or renaming internal/run
+	// would silently turn the exemption into a dead constant and leave the check looking satisfied.
+	if _, err := os.Stat(filepath.Join(root, execChokepoint)); err != nil {
+		t.Fatalf("the exec chokepoint %s does not exist: %v.\nIf process execution has moved, move the "+
+			"exemption with it and move the allowlist tests too.", execChokepoint, err)
+	}
+
 	for _, files := range goFilesUnder(t, root) {
 		consts := map[string]string{}
 		parsed := map[string]*ast.File{}
@@ -166,6 +186,9 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 				}
 
 				pos := fset.Position(call.Pos())
+				if rel == execChokepoint {
+					return true
+				}
 				if programArg == nil {
 					t.Errorf("%s:%d: %s.%s called with no program argument", rel, pos.Line, pkg, fn)
 					return true

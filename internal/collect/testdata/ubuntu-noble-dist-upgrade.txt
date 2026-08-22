@@ -1,0 +1,21 @@
+NOTE: This is only a simulation!
+      apt-get needs root privileges for real execution.
+      Keep also in mind that locking is deactivated,
+      so don't depend on the relevance to the real current situation!
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following NEW packages will be installed:
+  linux-image-6.8.0-51-generic
+The following packages will be upgraded:
+  base-files libssl3t64 openssh-client
+3 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.
+Inst base-files [13ubuntu10.1] (13ubuntu10.2 Ubuntu:24.04/noble-updates [amd64])
+Conf base-files (13ubuntu10.2 Ubuntu:24.04/noble-updates [amd64])
+Inst libssl3t64 [3.0.13-0ubuntu3.4] (3.0.13-0ubuntu3.5 Ubuntu:24.04/noble-security [amd64])
+Conf libssl3t64 (3.0.13-0ubuntu3.5 Ubuntu:24.04/noble-security [amd64])
+Inst openssh-client [1:9.6p1-3ubuntu13.5] (1:9.6p1-3ubuntu13.6 Ubuntu:24.04/noble-security, Ubuntu:24.04/noble-updates [amd64])
+Conf openssh-client (1:9.6p1-3ubuntu13.6 Ubuntu:24.04/noble-security, Ubuntu:24.04/noble-updates [amd64])
+Inst linux-image-6.8.0-51-generic (6.8.0-51.52 Ubuntu:24.04/noble-updates [amd64])
+Conf linux-image-6.8.0-51-generic (6.8.0-51.52 Ubuntu:24.04/noble-updates [amd64])
