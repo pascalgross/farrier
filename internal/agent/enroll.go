@@ -163,10 +163,7 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
-	if err := WriteFileAtomic(filepath.Join(opts.StateDir, KeyFile), keyPEM, 0o600); err != nil {
-		return nil, err
-	}
-	if err := WriteFileAtomic(filepath.Join(opts.StateDir, CertFile), []byte(res.Certificate), 0o644); err != nil {
+	if err := WriteCredential(opts.StateDir, []byte(res.Certificate), keyPEM); err != nil {
 		return nil, err
 	}
 	if res.CABundle != "" {

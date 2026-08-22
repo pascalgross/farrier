@@ -223,13 +223,21 @@ type Store interface {
 	// ListEnrollmentTokens returns tokens for the UI, newest first.
 	ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken, error)
 
-	// CreateHost records a newly enrolled host.
-	CreateHost(ctx context.Context, h Host) error
+	// CreateEnrolledHost records a newly enrolled host and its first certificate together.
+	//
+	// The two are one operation because half of it is worse than neither. A host row without its
+	// certificate is a machine that cannot authenticate and, because its machine-id hash is taken,
+	// cannot enrol again either — permanently stuck on a failure that happened once, in a fraction of a
+	// second, on the server.
+	CreateEnrolledHost(ctx context.Context, h Host, c Certificate) error
 
 	// GetHost returns one host by id, or ErrNotFound.
 	GetHost(ctx context.Context, id string) (Host, error)
 
-	// GetHostByMachineID returns the host with a machine-id hash, or ErrNotFound.
+	// GetHostByMachineID returns the live host with a machine-id hash, or ErrNotFound.
+	//
+	// Revoked hosts are excluded, which is what makes a revoked machine able to enrol again. Its old row
+	// stays for the audit trail; what it loses is its claim on the machine id.
 	GetHostByMachineID(ctx context.Context, hash string) (Host, error)
 
 	// ListHosts returns every host, ordered by hostname.
@@ -257,6 +265,14 @@ type Store interface {
 
 	// RevokeHost marks a host and all its certificates as revoked, taking effect on the next request.
 	RevokeHost(ctx context.Context, hostID string) error
+
+	// DeleteHost removes a host and everything that references it.
+	//
+	// Revocation is the ordinary answer and this is not a substitute for it: a revoked host keeps its
+	// history, which is what an audit needs. Deletion exists for the row that should never have been
+	// there — an enrolment abandoned midway, a test host, a machine that has been decommissioned and
+	// whose facts nobody will ever read again.
+	DeleteHost(ctx context.Context, hostID string) error
 
 	// ClaimJobs atomically takes up to limit jobs for a host.
 	//

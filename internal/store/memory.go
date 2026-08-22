@@ -114,8 +114,12 @@ func (m *Memory) ListEnrollmentTokens(_ context.Context) ([]EnrollmentToken, err
 	return out, nil
 }
 
-// CreateHost records a newly enrolled host.
-func (m *Memory) CreateHost(_ context.Context, h Host) error {
+// CreateEnrolledHost records a newly enrolled host and its first certificate together.
+//
+// Both or neither, matching the transaction the PostgreSQL store runs. A host row without its
+// certificate claims the machine-id hash while being unable to authenticate, which is a machine that
+// cannot enrol again either.
+func (m *Memory) CreateEnrolledHost(_ context.Context, h Host, c Certificate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -123,11 +127,35 @@ func (m *Memory) CreateHost(_ context.Context, h Host) error {
 		return ErrConflict
 	}
 	for _, existing := range m.hosts {
-		if h.MachineIDHash != "" && existing.MachineIDHash == h.MachineIDHash {
+		if h.MachineIDHash != "" && !existing.Revoked && existing.MachineIDHash == h.MachineIDHash {
 			return ErrConflict
 		}
 	}
 	m.hosts[h.ID] = h
+	m.certs[c.Fingerprint] = c
+	return nil
+}
+
+// DeleteHost removes a host and everything that references it.
+func (m *Memory) DeleteHost(_ context.Context, hostID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.hosts[hostID]; !ok {
+		return ErrNotFound
+	}
+	delete(m.hosts, hostID)
+	for fp, c := range m.certs {
+		if c.HostID == hostID {
+			delete(m.certs, fp)
+		}
+	}
+	delete(m.jobs, hostID)
+	for id, host := range m.jobHost {
+		if host == hostID {
+			delete(m.jobHost, id)
+		}
+	}
 	return nil
 }
 
@@ -143,13 +171,16 @@ func (m *Memory) GetHost(_ context.Context, id string) (Host, error) {
 	return h, nil
 }
 
-// GetHostByMachineID returns the host with a machine-id hash, or ErrNotFound.
+// GetHostByMachineID returns the live host with a machine-id hash, or ErrNotFound.
+//
+// Revoked hosts are skipped, matching the partial unique index in the schema: revoking a host is what
+// releases its machine for re-enrolment.
 func (m *Memory) GetHostByMachineID(_ context.Context, hash string) (Host, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, h := range m.hosts {
-		if h.MachineIDHash == hash && hash != "" {
+		if h.MachineIDHash == hash && hash != "" && !h.Revoked {
 			return h, nil
 		}
 	}

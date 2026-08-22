@@ -42,13 +42,16 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The machine-id check comes before the token is consumed, so that a host retrying an enrolment it
-	// has already completed does not burn a second token in the process of being told no.
+	// has already completed does not burn a second token in the process of being told no. Revoked hosts
+	// are not matched, so revoking one is the operator action that lets its machine enrol again — which
+	// the message says, because a bare 409 on a machine somebody is trying to rebuild is a dead end.
 	if req.MachineIDHash != "" {
 		existing, err := s.cfg.Store.GetHostByMachineID(r.Context(), req.MachineIDHash)
 		switch {
 		case err == nil:
 			writeError(w, http.StatusConflict, "already_enrolled",
-				"a host with this machine id is already enrolled as "+existing.ID)
+				"a host with this machine id is already enrolled as "+existing.ID+
+					"; revoke or delete it to enrol this machine again")
 			return
 		case !errors.Is(err, store.ErrNotFound):
 			slog.Error("machine id lookup failed", "error", err)
@@ -64,10 +67,13 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The certificate request is checked before the token is consumed. A token is single-use, so a
-	// malformed CSR would otherwise burn one and leave an operator to work out why their second attempt
-	// says the token is unusable — which reads exactly like the token having been stolen.
-	if _, _, err := s.cfg.Authority.Issue([]byte(req.CSR), hostID); err != nil {
+	// The certificate is issued before the token is consumed. A token is single-use, so a malformed CSR
+	// would otherwise burn one and leave an operator to work out why their second attempt says the
+	// token is unusable — which reads exactly like the token having been stolen. Nothing trusts a
+	// certificate that was never recorded: authentication is a fingerprint lookup, so an issued
+	// certificate that the enrolment then abandons authenticates nothing.
+	certPEM, cert, err := s.cfg.Authority.Issue([]byte(req.CSR), hostID)
+	if err != nil {
 		slog.Warn("rejected a certificate request before consuming the token", "error", err)
 		writeError(w, http.StatusBadRequest, "bad_csr", "the certificate request could not be signed")
 		return
@@ -95,31 +101,22 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		AgentVersion:  req.AgentVersion,
 		EnrolledAt:    now,
 	}
-	if err := s.cfg.Store.CreateHost(r.Context(), host); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "already_enrolled", "this host is already enrolled")
-			return
-		}
-		slog.Error("could not create a host", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not record the host")
-		return
-	}
-
-	certPEM, cert, err := s.cfg.Authority.Issue([]byte(req.CSR), hostID)
-	if err != nil {
-		slog.Warn("rejected a certificate request", "error", err, "host", hostID)
-		writeError(w, http.StatusBadRequest, "bad_csr", "the certificate request could not be signed")
-		return
-	}
-	if err := s.cfg.Store.AddCertificate(r.Context(), store.Certificate{
+	// The host and its certificate land together or not at all. A host row without a certificate holds
+	// the machine-id hash while being unable to authenticate, so the machine could neither talk nor
+	// enrol again — a permanent wedge caused by a failure that lasted a fraction of a second.
+	if err := s.cfg.Store.CreateEnrolledHost(r.Context(), host, store.Certificate{
 		Fingerprint: Fingerprint(cert),
 		HostID:      hostID,
 		Serial:      cert.SerialNumber.Text(16),
 		IssuedAt:    now,
 		NotAfter:    cert.NotAfter,
 	}); err != nil {
-		slog.Error("could not record a certificate", "error", err, "host", hostID)
-		writeError(w, http.StatusInternalServerError, "internal", "could not record the certificate")
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "already_enrolled", "this host is already enrolled")
+			return
+		}
+		slog.Error("could not record an enrolment", "error", err, "host", hostID)
+		writeError(w, http.StatusInternalServerError, "internal", "could not record the host")
 		return
 	}
 

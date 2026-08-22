@@ -28,9 +28,15 @@ jobs:
           # The whole range between base and head is checked, so the history has to be there.
           fetch-depth: 0
       - name: Every commit is signed off
-        run: |
-          .github/scripts/dco-check.sh \
-            "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+        # Through the environment rather than through ${{ }}: an interpolated value is pasted into the
+        # script before bash reads it, and a git branch name may legally contain a semicolon or a
+        # backtick. Nothing here is attacker-chosen today — a pull request can only target a branch that
+        # already exists — but "not exploitable because of a fact about GitHub" is a worse reason to be
+        # safe than "the value never reaches the parser".
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/dco-check.sh "origin/$BASE_REF" "$HEAD_SHA"
 
   go:
     name: Go

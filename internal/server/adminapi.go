@@ -164,6 +164,31 @@ func (s *Server) handleRevokeHost(w http.ResponseWriter, r *http.Request, who au
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
+// handleDeleteHost removes a host and its history.
+//
+// Revocation is the ordinary answer and this is not a gentler version of it: deleting a host discards
+// its facts, its jobs and its results, which is exactly what an audit would have wanted. It exists for
+// the row that should not be there — an enrolment that failed halfway, a test host, a machine that has
+// been decommissioned. Like revocation it releases the machine-id hash, so the machine can enrol again.
+//
+// It does not reach the host. Nothing in Farrier does: a deleted host keeps running and keeps applying
+// its local policy, and simply has nowhere to report. Uninstalling the agent is a separate, local act.
+func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+	hostID := r.PathValue("id")
+	err := s.cfg.Store.DeleteHost(r.Context(), hostID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "no such host")
+		return
+	}
+	if err != nil {
+		slog.Error("could not delete a host", "error", err, "host", hostID)
+		writeError(w, http.StatusInternalServerError, "internal", "could not delete the host")
+		return
+	}
+	slog.Warn("host deleted", "host", hostID, "operator", who.Subject, "provider", who.Provider)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // tokenView is one enrolment token as the API renders it.
 //
 // The token itself is absent, because only its hash was ever stored. That is worth being visible in the

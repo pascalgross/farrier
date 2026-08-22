@@ -95,6 +95,12 @@ to misconfigure.
 install time and stored in `/var/lib/farrier/machine-id-salt`. The raw `/etc/machine-id` value is
 documented by systemd as confidential and MUST NOT be transmitted.
 
+A `machineIdHash` is claimed by at most one host that has not been revoked. Revoking a host, or
+deleting it, releases the claim and lets that machine enrol again under a new host id; a revoked host
+keeps its row and its history, so releasing the machine does not cost the audit trail. A server MUST
+record the host and its first certificate atomically — a host row whose certificate failed to record
+would hold the claim while being unable to authenticate, wedging that machine permanently.
+
 `requestedBootstrap` is present only when the operator passed `--bootstrap NAME`, and is subject to
 every guardrail in [`SECURITY.md` §6](SECURITY.md#6-provisioning-and-the-enrolment-time-exception).
 
@@ -143,7 +149,7 @@ approves another.
 | --- | --- |
 | `400` | Malformed body or CSR |
 | `401` | Token unknown, expired, or already used |
-| `409` | A host with this `machineIdHash` is already enrolled and not marked for re-enrolment |
+| `409` | A host with this `machineIdHash` is already enrolled |
 | `429` | Rate limited; honour `Retry-After` |
 
 ## 4. `POST /agent/v1/heartbeat`
@@ -501,7 +507,7 @@ could not phone home would have made the fleet less safe by being installed.
 | `400` | Any endpoint, for a body that does not parse | Log and drop. An unparseable request will not become parseable on a retry |
 | `401` | Any authenticated endpoint | Certificate rejected or revoked. Stop calling; log loudly. Do **not** re-enrol automatically — a host that re-enrols itself on `401` is a host an attacker can cause to re-enrol. Keep patching from local policy |
 | `404` | `POST /jobs/{id}/result` | The job does not exist, or belongs to another host. Drop the result |
-| `409` | `POST /enroll` | A host with this `machineIdHash` is already enrolled. Stop and require operator action |
+| `409` | `POST /enroll` | A host with this `machineIdHash` is already enrolled. Stop and require operator action: revoking or deleting the existing host releases the machine |
 | `413` | `POST /heartbeat`, `POST /jobs/{id}/result` | Body too large. Truncate further, set the affected section's truncated flag, retry once, then drop |
 | `429` | `POST /enroll` | Honour `Retry-After`, then full-jitter backoff. Only enrolment is rate limited: it is the one endpoint reachable without a client certificate, and throttling an authenticated fleet is a good way to break it during the incident when every host reconnects at once |
 | `5xx` | Any endpoint | Full-jitter backoff, retry indefinitely |

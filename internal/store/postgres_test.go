@@ -59,7 +59,10 @@ func enrolTestHost(t *testing.T, s Store, id, hostname string) Host {
 		AgentVersion:  "0.0.0-test",
 		EnrolledAt:    time.Now().UTC().Truncate(time.Microsecond),
 	}
-	if err := s.CreateHost(context.Background(), host); err != nil {
+	if err := s.CreateEnrolledHost(context.Background(), host, Certificate{
+		Fingerprint: "fp-" + id, HostID: id, Serial: "01",
+		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
+	}); err != nil {
 		t.Fatalf("creating host %s: %v", id, err)
 	}
 	return host
@@ -163,8 +166,17 @@ func TestDuplicateMachineIDIsAConflict(t *testing.T) {
 	second := first
 	second.ID = "01JHOSTB"
 
-	if err := pg.CreateHost(ctx, second); !errors.Is(err, ErrConflict) {
+	if err := pg.CreateEnrolledHost(ctx, second, Certificate{
+		Fingerprint: "fp-second", HostID: second.ID, Serial: "01",
+		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
+	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a second host with the same machine id produced %v, want ErrConflict", err)
+	}
+
+	// The rejected enrolment left nothing behind. A certificate recorded for a host that was never
+	// created would authenticate a request the fingerprint lookup then could not attribute.
+	if _, err := pg.LookupCertificate(ctx, "fp-second"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the refused enrolment recorded a certificate anyway: %v", err)
 	}
 
 	found, err := pg.GetHostByMachineID(ctx, first.MachineIDHash)
@@ -532,4 +544,74 @@ func waiterCount(pg *Postgres) int {
 		total += len(waiters)
 	}
 	return total
+}
+
+// TestRevokingAHostReleasesItsMachineForReEnrolment is the recovery path out of a 409.
+//
+// A machine-id hash held for ever by a row nobody can authenticate as is a wedge: the machine cannot
+// talk, and enrolling it again is refused because it is "already enrolled". Revocation has to be the
+// way out, and it has to leave the old row in place — an audit asking what that host reported before it
+// was revoked is exactly the question revocation exists to make answerable.
+func TestRevokingAHostReleasesItsMachineForReEnrolment(t *testing.T) {
+	pg := newPostgres(t)
+	ctx := context.Background()
+
+	first := enrolTestHost(t, pg, "01JHOSTM", "web-01")
+	if err := pg.RevokeHost(ctx, first.ID); err != nil {
+		t.Fatalf("revoking: %v", err)
+	}
+
+	// The machine no longer resolves to a live host, which is what the enrolment handler checks.
+	if _, err := pg.GetHostByMachineID(ctx, first.MachineIDHash); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a revoked host still claims its machine id: %v", err)
+	}
+
+	second := first
+	second.ID = "01JHOSTN"
+	if err := pg.CreateEnrolledHost(ctx, second, Certificate{
+		Fingerprint: "fp-rejoin", HostID: second.ID, Serial: "02",
+		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("re-enrolling a revoked machine: %v", err)
+	}
+
+	found, err := pg.GetHostByMachineID(ctx, first.MachineIDHash)
+	if err != nil {
+		t.Fatalf("looking up the re-enrolled host: %v", err)
+	}
+	if found.ID != second.ID {
+		t.Errorf("the machine id resolves to %s, want the re-enrolled %s", found.ID, second.ID)
+	}
+
+	// The revoked row is still there, with its history.
+	if _, err := pg.GetHost(ctx, first.ID); err != nil {
+		t.Errorf("re-enrolment erased the revoked host: %v", err)
+	}
+}
+
+// TestDeleteHostTakesItsDependentRowsWithIt covers the operator's other way out of a wedge.
+//
+// Revocation keeps the history; deletion is for the row that should not exist at all. Either way the
+// machine must be able to enrol again, and nothing may be left pointing at a host that is gone — a
+// certificate outliving its host would be a fingerprint that authenticates and resolves to nobody.
+func TestDeleteHostTakesItsDependentRowsWithIt(t *testing.T) {
+	pg := newPostgres(t)
+	ctx := context.Background()
+
+	host := enrolTestHost(t, pg, "01JHOSTP", "web-01")
+	if err := pg.DeleteHost(ctx, host.ID); err != nil {
+		t.Fatalf("deleting: %v", err)
+	}
+	if _, err := pg.GetHost(ctx, host.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the deleted host is still readable: %v", err)
+	}
+	if _, err := pg.LookupCertificate(ctx, "fp-"+host.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a certificate outlived the host it was issued to: %v", err)
+	}
+	if _, err := pg.GetHostByMachineID(ctx, host.MachineIDHash); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the deleted host still claims its machine id: %v", err)
+	}
+	if err := pg.DeleteHost(ctx, "01JNOSUCHHOST"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleting an unknown host produced %v, want ErrNotFound", err)
+	}
 }

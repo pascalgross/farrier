@@ -240,13 +240,48 @@ func (p *Postgres) ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken,
 	return out, wrap(rows.Err(), "listing enrolment tokens")
 }
 
-// CreateHost records a newly enrolled host.
-func (p *Postgres) CreateHost(ctx context.Context, h Host) error {
-	_, err := p.pool.Exec(ctx, `
+// CreateEnrolledHost records a newly enrolled host and its first certificate together.
+//
+// One transaction, because half an enrolment wedges the machine: the host row claims the machine-id
+// hash, so a certificate that failed to record leaves a host that can neither authenticate nor enrol
+// again. Rolling both back turns that into a retry the agent makes by itself.
+func (p *Postgres) CreateEnrolledHost(ctx context.Context, h Host, c Certificate) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return wrap(err, "recording an enrolment")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO hosts (id, hostname, machine_id_hash, fleet_group, agent_version, enrolled_at)
 		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6)`,
-		h.ID, h.Hostname, h.MachineIDHash, h.Group, h.AgentVersion, h.EnrolledAt)
-	return wrap(err, "creating a host")
+		h.ID, h.Hostname, h.MachineIDHash, h.Group, h.AgentVersion, h.EnrolledAt,
+	); err != nil {
+		return wrap(err, "creating a host")
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO certificates (fingerprint, host_id, serial, issued_at, not_after)
+		VALUES ($1, $2, $3, $4, $5)`,
+		c.Fingerprint, c.HostID, c.Serial, c.IssuedAt, c.NotAfter,
+	); err != nil {
+		return wrap(err, "recording a certificate")
+	}
+	return wrap(tx.Commit(ctx), "recording an enrolment")
+}
+
+// DeleteHost removes a host and everything that references it.
+//
+// The dependent rows go with it through the schema's ON DELETE CASCADE rather than through statements
+// here, so that a table added later cannot be forgotten by this function.
+func (p *Postgres) DeleteHost(ctx context.Context, hostID string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM hosts WHERE id = $1`, hostID)
+	if err != nil {
+		return wrap(err, "deleting a host")
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // hostColumns is the column list every host query selects, in the order scanHost expects.
@@ -281,13 +316,17 @@ func (p *Postgres) GetHost(ctx context.Context, id string) (Host, error) {
 	return scanHost(p.pool.QueryRow(ctx, `SELECT `+hostColumns+` FROM hosts WHERE id = $1`, id))
 }
 
-// GetHostByMachineID returns the host with a machine-id hash, or ErrNotFound.
+// GetHostByMachineID returns the live host with a machine-id hash, or ErrNotFound.
+//
+// `NOT revoked` matches the partial unique index the schema puts on the same column: a machine id is
+// claimed by at most one host that has not been revoked, and revoking a host is therefore what releases
+// its machine for re-enrolment without erasing the row an audit would want.
 func (p *Postgres) GetHostByMachineID(ctx context.Context, hash string) (Host, error) {
 	if hash == "" {
 		return Host{}, ErrNotFound
 	}
 	return scanHost(p.pool.QueryRow(ctx,
-		`SELECT `+hostColumns+` FROM hosts WHERE machine_id_hash = $1`, hash))
+		`SELECT `+hostColumns+` FROM hosts WHERE machine_id_hash = $1 AND NOT revoked`, hash))
 }
 
 // ListHosts returns every host, ordered by hostname then id.

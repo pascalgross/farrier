@@ -101,8 +101,7 @@ func New(opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := NewClient(state.ServerURL,
-		state.Path(CertFile), state.Path(KeyFile), state.Path(CABundleFile))
+	client, err := NewClient(state.ServerURL, opts.StateDir, state.Path(CABundleFile))
 	if err != nil {
 		return nil, err
 	}
@@ -394,19 +393,9 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 // same minute ninety days later. That stampede arrives exactly once, which is another way of saying it
 // is never load-tested.
 func (a *Agent) maybeRenew(ctx context.Context) {
-	certPEM, err := os.ReadFile(a.state.Path(CertFile))
+	cert, err := CredentialLeaf(a.state.Dir())
 	if err != nil {
 		slog.Error("could not read the client certificate", "error", err)
-		return
-	}
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		slog.Error("the client certificate is not a PEM block")
-		return
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		slog.Error("could not parse the client certificate", "error", err)
 		return
 	}
 
@@ -441,24 +430,14 @@ func (a *Agent) maybeRenew(ctx context.Context) {
 		return
 	}
 
-	// The certificate first, then the key. Both orderings leave a window in which the two on disk do not
-	// match, and the two windows are not equally bad: a new certificate beside the old key fails to
-	// authenticate and is retried for the thirty days the old certificate still has to run, whereas a
-	// new key beside the old certificate is the same failure with no way back — the private key that
-	// matched the working certificate is gone. Given a crash, the recoverable half should be the one
-	// already written.
-	//
-	// The client loads the pair from disk on each request, so a mismatch is one failed request rather
-	// than a process that has to be restarted.
-	if err := WriteFileAtomic(a.state.Path(CertFile), []byte(res.Certificate), 0o644); err != nil {
-		slog.Error("could not write the renewed certificate; the current one is unchanged", "error", err)
-		return
-	}
-	if err := WriteFileAtomic(a.state.Path(KeyFile),
-		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		slog.Error("could not write the renewed private key; the certificate on disk no longer matches "+
-			"it and the next request will fail. Renewal happens with a third of the certificate's life "+
-			"remaining, so this retries.", "error", err)
+	// One file, one rename. The key and the certificate are promoted together, so there is no instant at
+	// which the pair on disk belongs to two different key pairs — the failure that used to be
+	// unrecoverable, because the private key matching the working certificate would already be gone.
+	// The client loads the pair from disk on each request, so the new one takes effect without a
+	// restart, and the superseded pair stays beside it as a fallback.
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := WriteCredential(a.state.Dir(), []byte(res.Certificate), keyPEM); err != nil {
+		slog.Error("could not promote the renewed credential; the current one is unchanged", "error", err)
 		return
 	}
 	if res.CABundle != "" {

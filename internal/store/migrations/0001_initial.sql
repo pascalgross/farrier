@@ -29,8 +29,9 @@ CREATE TABLE IF NOT EXISTS hosts (
     -- certificate subject and never this.
     hostname             text        NOT NULL DEFAULT '',
     -- A salted hash. The raw /etc/machine-id is documented by systemd as confidential and is never
-    -- transmitted or stored.
-    machine_id_hash      text UNIQUE,
+    -- transmitted or stored. Uniqueness is enforced by a partial index over live hosts only, so that
+    -- revoking a host releases its machine for re-enrolment while its row stays for the audit trail.
+    machine_id_hash      text,
     fleet_group          text        NOT NULL DEFAULT '',
     agent_version        text        NOT NULL DEFAULT '',
     enrolled_at          timestamptz NOT NULL,
@@ -55,6 +56,14 @@ CREATE TABLE IF NOT EXISTS hosts (
     signers              jsonb,
     revoked              boolean     NOT NULL DEFAULT false
 );
+
+-- One live host per machine. Partial rather than a plain UNIQUE constraint: a decommissioned or
+-- compromised machine is revoked, not deleted, and a plain constraint would mean its old row held the
+-- machine id for ever — a host that could neither authenticate nor enrol again, recoverable only by
+-- somebody editing the database by hand.
+CREATE UNIQUE INDEX IF NOT EXISTS hosts_live_machine_id
+    ON hosts (machine_id_hash)
+    WHERE machine_id_hash IS NOT NULL AND NOT revoked;
 
 CREATE INDEX IF NOT EXISTS hosts_facts_gin ON hosts USING gin (facts jsonb_path_ops);
 CREATE INDEX IF NOT EXISTS hosts_group ON hosts (fleet_group);

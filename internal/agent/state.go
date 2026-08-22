@@ -25,12 +25,6 @@ const (
 	// StateFile records what the agent learned at enrolment.
 	StateFile = "agent.json"
 
-	// KeyFile is the agent's private key. It never leaves the host.
-	KeyFile = "agent.key"
-
-	// CertFile is the client certificate issued by the control plane.
-	CertFile = "agent.crt"
-
 	// CABundleFile is the control plane's CA chain, for verifying agent certificates on renewal.
 	CABundleFile = "ca.crt"
 

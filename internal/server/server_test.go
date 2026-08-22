@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -139,8 +140,7 @@ func (h *harness) enrolHost(t *testing.T, name, token string) *agent.State {
 func (h *harness) agentClient(t *testing.T, state *agent.State) *agent.Client {
 	t.Helper()
 
-	client, err := agent.NewClient(h.server.URL,
-		state.Path(agent.CertFile), state.Path(agent.KeyFile), h.caFile)
+	client, err := agent.NewClient(h.server.URL, state.Dir(), h.caFile)
 	if err != nil {
 		t.Fatalf("building an agent client: %v", err)
 	}
@@ -176,8 +176,12 @@ func TestEnrolmentIssuesAWorkingCertificate(t *testing.T) {
 	}
 
 	// The private key must have stayed on the host: what went to the server was a CSR.
-	if _, err := os.Stat(state.Path(agent.KeyFile)); err != nil {
-		t.Errorf("the agent has no private key on disk: %v", err)
+	credential, err := os.ReadFile(state.Path(agent.CredentialFile))
+	if err != nil {
+		t.Fatalf("the agent has no credential on disk: %v", err)
+	}
+	if !bytes.Contains(credential, []byte("PRIVATE KEY")) {
+		t.Error("the agent's credential holds no private key")
 	}
 }
 
@@ -767,5 +771,83 @@ func TestAdminAPINeedsACredential(t *testing.T) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("the host list returned %d with a valid token, want 200", res.StatusCode)
+	}
+}
+
+// TestARevokedMachineCanEnrolAgain is the way out of a permanent 409.
+//
+// A machine-id hash is claimed by the host row, and the enrolment handler refuses a machine that
+// already has one. Without a release, any host row that outlives its usefulness — a revoked host, an
+// enrolment that failed after the row committed — wedges that physical machine for ever: it cannot
+// authenticate and it cannot enrol again, and the only repair is somebody editing the database. This
+// asserts the two operator actions that release it, and that neither needs a hand-written UPDATE.
+func TestARevokedMachineCanEnrolAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// The same state directory means the same machine-id salt, and therefore the same hash — which is
+	// what one physical machine enrolling twice looks like to the server.
+	first := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+
+	_, err := agent.Enroll(ctx, agent.EnrollOptions{
+		ServerURL: h.server.URL,
+		Token:     h.issueToken(t, "web-prod"),
+		StateDir:  first.Dir(),
+		CABundle:  h.caFile,
+		Hostname:  "web-01",
+	})
+	if err == nil {
+		t.Fatal("a machine that is already enrolled enrolled a second time")
+	}
+
+	if err := h.store.RevokeHost(ctx, first.HostID); err != nil {
+		t.Fatalf("revoking: %v", err)
+	}
+	second, err := agent.Enroll(ctx, agent.EnrollOptions{
+		ServerURL: h.server.URL,
+		Token:     h.issueToken(t, "web-prod"),
+		StateDir:  first.Dir(),
+		CABundle:  h.caFile,
+		Hostname:  "web-01",
+	})
+	if err != nil {
+		t.Fatalf("re-enrolling a revoked machine: %v", err)
+	}
+	if second.HostID == first.HostID {
+		t.Error("re-enrolment reused the revoked host's identity")
+	}
+
+	// The new certificate authenticates, and the revoked host's row is still there to be audited.
+	if _, err := h.agentClient(t, second).Heartbeat(ctx, protocol.HeartbeatRequest{
+		AgentVersion: "test", FactsDigest: "sha256:aaa",
+	}); err != nil {
+		t.Fatalf("the re-enrolled host cannot speak: %v", err)
+	}
+	if _, err := h.store.GetHost(ctx, first.HostID); err != nil {
+		t.Errorf("the revoked host's history was discarded: %v", err)
+	}
+}
+
+// TestDeletingAHostAlsoReleasesItsMachine covers the operator's other repair.
+//
+// Deletion is for the row that should never have existed rather than for the host that did — an
+// enrolment abandoned halfway, a test machine. It has to release the machine id too, or it would be the
+// one action that looks like a cleanup and leaves the wedge in place.
+func TestDeletingAHostAlsoReleasesItsMachine(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	first := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+	if err := h.store.DeleteHost(ctx, first.HostID); err != nil {
+		t.Fatalf("deleting: %v", err)
+	}
+	if _, err := agent.Enroll(ctx, agent.EnrollOptions{
+		ServerURL: h.server.URL,
+		Token:     h.issueToken(t, "web-prod"),
+		StateDir:  first.Dir(),
+		CABundle:  h.caFile,
+		Hostname:  "web-01",
+	}); err != nil {
+		t.Fatalf("enrolling a machine whose host was deleted: %v", err)
 	}
 }

@@ -60,18 +60,18 @@ type Client struct {
 	http *http.Client
 }
 
-// NewClient builds a client that authenticates with a certificate.
+// NewClient builds a client that authenticates with the credential in a state directory.
 //
-// The certificate is loaded through a callback rather than fixed at construction so that a renewal
-// takes effect on the next request without restarting the process — and, more importantly, so that a
-// renewal that fails leaves the previous certificate in use rather than none.
-func NewClient(baseURL string, certPath, keyPath, caPath string) (*Client, error) {
+// The credential is loaded through a callback rather than fixed at construction so that a renewal takes
+// effect on the next request without restarting the process — and, more importantly, so that a renewal
+// that fails leaves the previous credential in use rather than none.
+func NewClient(baseURL, stateDir, caPath string) (*Client, error) {
 	tlsCfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+			cert, err := LoadCredential(stateDir)
 			if err != nil {
-				return nil, fmt.Errorf("agent: loading the client certificate: %w", err)
+				return nil, err
 			}
 			return &cert, nil
 		},
@@ -234,10 +234,20 @@ func (c *Client) ReportResult(ctx context.Context, result protocol.ResultRequest
 }
 
 // Renew exchanges a CSR for a fresh certificate, authenticated by the current one.
+//
+// An empty certificate in a 200 is treated as a failure rather than as an answer. A control plane that
+// replied `{}` would otherwise have the agent overwrite a working credential with an empty one, which
+// is the same outcome as deleting it — a compromised control plane must not be able to knock a host off
+// the fleet by returning nothing successfully.
 func (c *Client) Renew(ctx context.Context, csr string) (protocol.RenewResponse, error) {
 	var res protocol.RenewResponse
-	err := c.do(ctx, http.MethodPost, protocol.PathRenew, protocol.RenewRequest{CSR: csr}, &res)
-	return res, err
+	if err := c.do(ctx, http.MethodPost, protocol.PathRenew, protocol.RenewRequest{CSR: csr}, &res); err != nil {
+		return protocol.RenewResponse{}, err
+	}
+	if res.Certificate == "" {
+		return protocol.RenewResponse{}, errors.New("agent: the control plane renewed with no certificate")
+	}
+	return res, nil
 }
 
 // IsUnauthorised reports whether an error is a 401.

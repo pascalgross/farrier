@@ -214,6 +214,15 @@ authenticated by the current certificate.
 stops being able to talk to the control plane on its next request, with no distribution delay and no
 stapling infrastructure.
 
+Revoking a host also releases its machine — the salted `/etc/machine-id` hash a host claims at
+enrolment — so the same physical machine can enrol again under a new identity. The revoked row and its
+history stay. Without that release, any host row that outlived its certificate would wedge the machine
+permanently: unable to authenticate, and refused re-enrolment because a host with that machine id
+already exists. `DELETE /api/v1/hosts/{id}` releases it too, and discards the history with it; revoke
+is the answer that keeps the audit trail, and is the one to reach for. The agent's private key and
+certificate are stored as one file and promoted by one rename, so a renewal interrupted at any point
+leaves a matching pair on disk rather than half of a new one.
+
 The CA private key is the control plane's most sensitive secret. Compromising it lets an attacker
 impersonate *hosts to the server* — it does **not** let them run code on a host, because the agent
 authorises jobs by intent class and signature, not by who asked.

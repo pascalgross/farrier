@@ -148,6 +148,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/hosts", s.requireOperator(s.handleListHosts))
 	s.mux.Handle("GET /api/v1/hosts/{id}", s.requireOperator(s.handleGetHost))
 	s.mux.Handle("POST /api/v1/hosts/{id}/revoke", s.requireOperator(s.handleRevokeHost))
+	s.mux.Handle("DELETE /api/v1/hosts/{id}", s.requireOperator(s.handleDeleteHost))
 	s.mux.Handle("GET /api/v1/tokens", s.requireOperator(s.handleListTokens))
 	s.mux.Handle("POST /api/v1/tokens", s.requireOperator(s.handleCreateToken))
 	s.mux.Handle("GET /api/v1/catalogue", s.requireOperator(s.handleCatalogue))

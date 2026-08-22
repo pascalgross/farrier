@@ -21,8 +21,9 @@ run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
 	apt-get install -y -qq --reinstall logrotate' >/dev/null
 run_sh "$INSTANCE" 'printf "\n# edited by the Farrier test fleet\n" >> /etc/logrotate.conf'
 
-# The naive form: noninteractive frontend and nothing else. dpkg is given a five-second deadline; if the
-# options were sufficient on their own, this would finish well inside it.
+# The naive form: noninteractive frontend and nothing else. dpkg is given a sixty-second deadline, which
+# is long enough that hitting it means dpkg is waiting for an answer rather than being slow — the
+# failure this scenario exists to catch, and one that in production waits for ever.
 say "reinstalling with DEBIAN_FRONTEND alone"
 naive_status=0
 run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
