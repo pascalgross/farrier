@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pegasusnetworks/farrier/internal/agent"
 	"github.com/pegasusnetworks/farrier/internal/buildinfo"
 	"github.com/pegasusnetworks/farrier/internal/intent"
 	"github.com/pegasusnetworks/farrier/internal/policy"
@@ -92,14 +93,18 @@ func setupLogging() {
 
 // run starts the agent and blocks until it is asked to stop.
 //
-// Phase 0 has nothing to poll for, so the loop reports the host's local configuration and then idles.
-// It exists in this shape now so that the process lifecycle — signal handling, structured logging,
-// clean shutdown — is exercised by the packaging tests before there is any protocol traffic to confuse
-// a failure with.
+// A host that has not been enrolled does not exit. It reports its local configuration on a timer and
+// waits, because the alternative — a service that fails to start until somebody runs farrier enroll —
+// leaves systemd restarting it every five seconds and fills the journal with noise on exactly the hosts
+// an operator has not got to yet.
 func run(argv []string) int {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	policyPath := fs.String("policy", policy.Path, "policy file to read")
-	interval := fs.Duration("report-interval", 15*time.Minute, "how often to re-read and report local state")
+	stateDir := fs.String("state-dir", StateDir, "directory holding enrolment state")
+	interval := fs.Duration("report-interval", 15*time.Minute,
+		"how often an unenrolled agent re-reads and reports local state")
+	noJitter := fs.Bool("no-startup-jitter", false,
+		"contact the control plane immediately instead of waiting a random delay")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -111,15 +116,35 @@ func run(argv []string) int {
 	slog.Info("farrier agent starting",
 		"version", buildinfo.Version,
 		"commit", buildinfo.Revision(),
-		"state_dir", StateDir,
+		"state_dir", *stateDir,
 		"intents", len(intent.Names()),
 		"write_capability", false,
 	)
-	slog.Info("hello from farrier-agent: this build reports and changes nothing")
-
 	reportState(*policyPath)
 
-	ticker := time.NewTicker(*interval)
+	instance, err := agent.New(agent.Options{StateDir: *stateDir, PolicyPath: *policyPath})
+	if err != nil {
+		slog.Warn("not enrolled; reporting local state only",
+			"error", err,
+			"note", "run `farrier enroll --server URL --token TOKEN` to connect this host. "+
+				"Updates continue to be applied from the local policy either way.")
+		return idle(ctx, *policyPath, *interval)
+	}
+
+	if err := instance.Run(ctx, agent.Options{SkipStartupJitter: *noJitter}); err != nil {
+		slog.Error("the agent stopped with an error", "error", err)
+		return 1
+	}
+	return 0
+}
+
+// idle reports local state on a timer for a host that is not enrolled.
+//
+// It exists so that an unenrolled host still has a running service with a readable journal, rather than
+// a unit systemd is restarting in a loop. Patching continues regardless: unattended-upgrades runs on
+// its own timer and does not need Farrier to be reachable, or even enrolled.
+func idle(ctx context.Context, policyPath string, interval time.Duration) int {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -127,7 +152,7 @@ func run(argv []string) int {
 			slog.Info("farrier agent stopping")
 			return 0
 		case <-ticker.C:
-			reportState(*policyPath)
+			reportState(policyPath)
 		}
 	}
 }
