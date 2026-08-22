@@ -15,6 +15,7 @@ linters:
   default: none
   enable:
     - bodyclose
+    - depguard
     - errcheck
     - errorlint
     - godot
@@ -30,6 +31,24 @@ linters:
     - unused
 
   settings:
+    depguard:
+      # A closed set of forbidden imports, in the same spirit as the intent catalogue: the packages
+      # nobody should reach for, named with the reason, rather than discovered in review.
+      rules:
+        main:
+          deny:
+            - pkg: golang.org/x/crypto/openpgp
+              desc: >-
+                Unmaintained and unsafe by design (GO-2026-5932), with no fixed version. Farrier signs
+                the APT repository by calling gpg from packaging/apt/mkapt.sh and verifies job
+                signatures with ed25519 through internal/signing; neither needs OpenPGP in Go. This
+                rule exists because x/crypto is already a dependency, so the import would compile.
+            - pkg: os/exec
+              desc: >-
+                Every process Farrier starts goes through internal/run, which holds the closed
+                allowlist the guarantee in docs/SECURITY.md section 1 rests on. internal/run itself is
+                excluded below.
+
     revive:
       # Farrier's own rule is stricter than any of these; revive covers the exported half and the
       # sentence shape, and doccheck covers the rest.
@@ -69,6 +88,20 @@ linters:
           - errcheck
           - gosec
           - noctx
+
+      # internal/run is the one place allowed to start a process, and the source-level guarantee test
+      # in internal/intent asserts that it stays the only one. The deny rule above is the cheap check
+      # that fires in a contributor's editor; that test is the one that cannot be silenced with a
+      # configuration edit.
+      - path: internal/run/run\.go
+        linters:
+          - depguard
+
+      # The test fleet and the doc-comment checker are build tooling rather than agent code, and both
+      # legitimately run other programs.
+      - path: tools/
+        linters:
+          - depguard
 
 formatters:
   enable:
