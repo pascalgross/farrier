@@ -1,0 +1,76 @@
+@if (loading()) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading the catalogue"></mat-progress-bar>
+} @else if (error()) {
+  <mat-card class="max-w-xl mx-auto mt-12">
+    <mat-card-content class="!pt-6 flex items-start gap-3">
+      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <p class="m-0">{{ error() }}</p>
+    </mat-card-content>
+  </mat-card>
+} @else {
+  <header class="mb-6">
+    <h1 class="text-2xl font-medium m-0">Operations</h1>
+    <p class="m-0 mt-1 text-sm opacity-80 max-w-3xl">
+      Everything this control plane can ask a host to do. The set is closed: it is a compile-time list
+      with no registry and no configuration that adds to it, so new operations arrive only as reviewed
+      source changes.
+    </p>
+  </header>
+
+  <table mat-table [dataSource]="intents()" class="w-full mb-10">
+    <ng-container matColumnDef="name">
+      <th mat-header-cell *matHeaderCellDef>Operation</th>
+      <td mat-cell *matCellDef="let entry">
+        <span class="font-medium farrier-numeric">{{ entry.name }}</span>
+        @if (!entry.implemented) {
+          <div class="text-xs opacity-70"
+               matTooltip="Specified, with no executor on the agent. This build ships no write capability at all.">
+            no executor in this build
+          </div>
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="class">
+      <th mat-header-cell *matHeaderCellDef>Tier</th>
+      <td mat-cell *matCellDef="let entry">
+        @switch (entry.class) {
+          @case ('read') { <mat-chip class="!bg-farrier-ok/20">read</mat-chip> }
+          @case ('routine') { <mat-chip class="!bg-farrier-warn/20">routine</mat-chip> }
+          @default { <mat-chip class="!bg-farrier-bad/20">destructive</mat-chip> }
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="authorisation">
+      <th mat-header-cell *matHeaderCellDef>Authorised by</th>
+      <td mat-cell *matCellDef="let entry">{{ authorisation(entry) }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="summary">
+      <th mat-header-cell *matHeaderCellDef>What it does</th>
+      <td mat-cell *matCellDef="let entry">{{ entry.summary }}</td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="columns"></tr>
+    <tr mat-row *matRowDef="let row; columns: columns"></tr>
+  </table>
+
+  <mat-card class="max-w-3xl">
+    <mat-card-header>
+      <mat-card-title>Permanently refused</mat-card-title>
+    </mat-card-header>
+    <mat-card-content class="!pt-4">
+      <p class="text-sm opacity-80 mt-0">
+        These will never be added, each for a reason written down in <code>docs/SECURITY.md</code>. In an
+        open-source project the request arrives eventually, usually from somebody with a real problem,
+        and the answer needs to be a document rather than an argument.
+      </p>
+      <ul class="m-0 pl-5 farrier-numeric text-sm">
+        @for (name of refused(); track name) {
+          <li>{{ name }}</li>
+        }
+      </ul>
+    </mat-card-content>
+  </mat-card>
+}

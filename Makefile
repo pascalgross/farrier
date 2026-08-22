@@ -100,8 +100,15 @@ tidy: ## go mod tidy
 	go mod tidy
 
 .PHONY: web
-web: ## Build the Angular bundle into the location farrier-server embeds
+web: ## Build the Angular application into the location farrier-server embeds
 	cd web && pnpm install --frozen-lockfile && pnpm run build
+	find internal/server/assets -mindepth 1 -maxdepth 1 \
+	  ! -name .gitignore ! -name PLACEHOLDER.md -exec rm -rf {} +
+	cp -r web/dist/. internal/server/assets/
+
+.PHONY: web-lint
+web-lint: ## Lint the web application, including the doc-comment rule on private members
+	cd web && pnpm install --frozen-lockfile && pnpm exec eslint .
 
 ARCH ?= $(shell go env GOARCH)
 # nfpm insists on a semver version, and `git describe` yields v0.1.0-3-gabc1234 between tags.

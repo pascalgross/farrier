@@ -163,7 +163,9 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 
 	s.storeDocumentIfPresent(r.Context(), host.ID, "facts", req.Facts, req.FactsDigest)
 	s.storeDocumentIfPresent(r.Context(), host.ID, "policy", req.Policy, req.PolicyDigest)
-	if len(req.Signers) > 0 {
+	// req.Signers != nil rather than len() > 0: an empty trust anchor is a real answer and the default
+	// one, and treating it as "not reported" would make the server ask for it forever.
+	if req.Signers != nil {
 		s.storeDocumentIfPresent(r.Context(), host.ID, "signers", req.Signers, req.SignersDigest)
 	}
 
@@ -171,7 +173,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 	// values from before the update would ask for a document that has just arrived.
 	wantFacts := req.FactsDigest != "" && req.FactsDigest != host.FactsDigest && req.Facts == nil
 	wantPolicy := req.PolicyDigest != "" && req.PolicyDigest != host.PolicyDigest && req.Policy == nil
-	wantSigners := req.SignersDigest != "" && req.SignersDigest != host.SignersDigest && len(req.Signers) == 0
+	wantSigners := req.SignersDigest != "" && req.SignersDigest != host.SignersDigest && req.Signers == nil
 
 	if req.ClockOffsetSeconds > protocol.MaxClockSkewSeconds ||
 		req.ClockOffsetSeconds < -protocol.MaxClockSkewSeconds {

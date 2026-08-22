@@ -1,0 +1,161 @@
+@switch (state()) {
+  @case ('loading') {
+    <mat-progress-bar mode="indeterminate" aria-label="Loading the fleet"></mat-progress-bar>
+  }
+
+  @case ('failed') {
+    <mat-card class="max-w-xl mx-auto mt-12">
+      <mat-card-content class="!pt-6 flex items-start gap-3">
+        <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+        <p class="m-0">{{ error() }}</p>
+      </mat-card-content>
+    </mat-card>
+  }
+
+  @case ('loaded') {
+    <header class="mb-6 flex flex-wrap items-baseline gap-x-8 gap-y-2">
+      <h1 class="text-2xl font-medium m-0">Fleet</h1>
+
+      <p class="m-0 text-sm opacity-80 farrier-numeric">
+        {{ onlineCount() }} of {{ hosts().length }} online
+        @if (securityBacklog() > 0) {
+          · <span class="text-farrier-bad">{{ securityBacklog() }} security updates outstanding</span>
+        }
+        @if (rebootCount() > 0) {
+          · {{ rebootCount() }} awaiting reboot
+        }
+      </p>
+    </header>
+
+    @if (hosts().length === 0) {
+      <mat-card class="max-w-2xl">
+        <mat-card-header>
+          <mat-card-title>No hosts yet</mat-card-title>
+        </mat-card-header>
+        <mat-card-content class="!pt-4 flex flex-col gap-3 text-sm">
+          <p class="m-0">Create an enrolment token, then run this on the host:</p>
+          <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 overflow-x-auto"><code>sudo farrier enroll --server {{ '' }}https://this-control-plane --token &lt;TOKEN&gt;</code></pre>
+          <p class="m-0 opacity-80">
+            The token is single-use and time-limited. Only its hash is stored, so a database dump does
+            not let its holder enrol hosts.
+          </p>
+        </mat-card-content>
+      </mat-card>
+    } @else {
+      <table mat-table [dataSource]="hosts()" class="w-full">
+        <ng-container matColumnDef="hostname">
+          <th mat-header-cell *matHeaderCellDef>Host</th>
+          <td mat-cell *matCellDef="let host">
+            <a [routerLink]="['/hosts', host.id]" class="font-medium">{{ host.hostname || host.id }}</a>
+            @if (host.group) {
+              <div class="text-xs opacity-70">{{ host.group }}</div>
+            }
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="status">
+          <th mat-header-cell *matHeaderCellDef>Status</th>
+          <td mat-cell *matCellDef="let host">
+            <div class="flex flex-wrap items-center gap-1">
+              @if (host.revoked) {
+                <mat-chip class="!bg-farrier-bad/20" matTooltip="This host's certificates have been withdrawn. It keeps patching from its local policy.">revoked</mat-chip>
+              } @else if (host.online) {
+                <mat-chip class="!bg-farrier-ok/20">online</mat-chip>
+              } @else {
+                <mat-chip class="!bg-farrier-quiet/20">offline</mat-chip>
+              }
+
+              @if (host.paused) {
+                <mat-chip class="!bg-farrier-warn/20"
+                          matTooltip="/etc/farrier/paused exists on this host. The control plane cannot override it: there is deliberately no resume operation.">paused</mat-chip>
+              }
+              @if (host.clockSkewed) {
+                <mat-chip class="!bg-farrier-warn/20" [matTooltip]="'Clock ' + offset(host) + '. Privileged operations fail closed beyond five minutes.'">clock</mat-chip>
+              }
+            </div>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="distribution">
+          <th mat-header-cell *matHeaderCellDef>Release</th>
+          <td mat-cell *matCellDef="let host">
+            <span [class.opacity-60]="!host.facts">{{ release(host) }}</span>
+            @if (unsupportedRelease(host)) {
+              <mat-icon class="!text-base align-middle text-farrier-warn"
+                        matTooltip="Farrier supports the Ubuntu LTS releases in standard support, plus Debian stable and oldstable.">warning</mat-icon>
+            }
+            @if (host.facts?.kernel) {
+              <div class="text-xs opacity-70 farrier-numeric">{{ host.facts.kernel }}</div>
+            }
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="updates">
+          <th mat-header-cell *matHeaderCellDef>Updates</th>
+          <td mat-cell *matCellDef="let host" class="farrier-numeric">
+            @if (host.facts?.packages; as packages) {
+              @if (packages.upgradableSecurity > 0) {
+                <span class="text-farrier-bad font-medium">{{ packages.upgradableSecurity }} security</span>
+              } @else {
+                <span class="text-farrier-ok">no security updates</span>
+              }
+              <div class="text-xs opacity-70">{{ packages.upgradableTotal }} total</div>
+            } @else {
+              <span class="opacity-60">not reported yet</span>
+            }
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="reboot">
+          <th mat-header-cell *matHeaderCellDef>Reboot</th>
+          <td mat-cell *matCellDef="let host">
+            @if (host.facts?.reboot; as reboot) {
+              @if (reboot.required) {
+                <span class="text-farrier-warn font-medium">required</span>
+              } @else {
+                <span class="opacity-70">not required</span>
+              }
+              @if (reboot.services?.length) {
+                <div class="text-xs opacity-70"
+                     [matTooltip]="reboot.services.join(', ')">{{ reboot.services.length }} services hold replaced libraries</div>
+              }
+              @if (reboot.serviceScanComplete === false) {
+                <div class="text-xs opacity-60"
+                     matTooltip="The agent is unprivileged, so needrestart could not see every process. This is not a clean bill of health.">service scan incomplete</div>
+              }
+            } @else {
+              <span class="opacity-60">not reported yet</span>
+            }
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="policy">
+          <th mat-header-cell *matHeaderCellDef>Local policy</th>
+          <td mat-cell *matCellDef="let host">
+            <span [class.opacity-60]="!host.policy">{{ policySummary(host) }}</span>
+            @if (host.signers?.length) {
+              <div class="text-xs opacity-70">{{ host.signers.length }} trusted signers</div>
+            } @else if (host.policy) {
+              <div class="text-xs opacity-70"
+                   matTooltip="No key in this host's trusted-signers, so it will execute nothing destructive.">no trusted signers</div>
+            }
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="lastSeen">
+          <th mat-header-cell *matHeaderCellDef>Last seen</th>
+          <td mat-cell *matCellDef="let host" class="farrier-numeric">
+            {{ age(host) }}
+            @if (host.uptimeSeconds > 0) {
+              <div class="text-xs opacity-70">up {{ uptime(host) }}</div>
+            }
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="columns"></tr>
+        <tr mat-row *matRowDef="let row; columns: columns"
+            [class.farrier-attention]="needsAttention(row)"></tr>
+      </table>
+    }
+  }
+}

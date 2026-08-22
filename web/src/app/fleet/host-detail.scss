@@ -1,0 +1,12 @@
+:host {
+  display: block;
+}
+
+// Material's list items are sized for touch targets, which makes a reference page of twenty facts twice
+// as tall as it needs to be. This is a reading surface rather than a control surface.
+mat-list-item {
+  --mat-list-list-item-leading-space: 0;
+  --mat-list-list-item-trailing-space: 0;
+  height: auto !important;
+  padding-block: 0.35rem;
+}

@@ -1,0 +1,17 @@
+// The shell has almost no styles of its own: layout is Tailwind utilities in the template and the
+// component styling comes from Angular Material. What is here is the handful of things neither covers.
+
+:host {
+  display: block;
+  min-height: 100%;
+}
+
+// Inline code in explanatory prose. Material's typography has no opinion about it, and unstyled
+// <code> in a Roboto page is nearly invisible.
+code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  background: color-mix(in oklab, currentcolor 8%, transparent);
+}

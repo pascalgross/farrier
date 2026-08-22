@@ -1,0 +1,58 @@
+<mat-toolbar class="!flex items-center gap-4">
+  <a routerLink="/" class="flex items-center gap-2 no-underline text-inherit">
+    <mat-icon>dns</mat-icon>
+    <span class="font-medium">Farrier</span>
+  </a>
+
+  @if (tokens.hasToken()) {
+    <nav class="flex items-center gap-1 ml-4">
+      <a mat-button routerLink="/" routerLinkActive="!font-semibold"
+         [routerLinkActiveOptions]="{ exact: true }">Fleet</a>
+      <a mat-button routerLink="/catalogue" routerLinkActive="!font-semibold">Operations</a>
+    </nav>
+
+    <span class="flex-1"></span>
+
+    <button mat-button (click)="signOut()">
+      <mat-icon>logout</mat-icon>
+      Sign out
+    </button>
+  }
+</mat-toolbar>
+
+<main class="p-6 max-w-7xl mx-auto">
+  @if (tokens.hasToken()) {
+    <router-outlet />
+  } @else {
+    <mat-card class="max-w-xl mx-auto mt-12">
+      <mat-card-header>
+        <mat-card-title>Operator token</mat-card-title>
+      </mat-card-header>
+
+      <mat-card-content class="flex flex-col gap-4 !pt-4">
+        <p class="text-sm opacity-80">
+          The control plane prints a token when it starts, or reads one from
+          <code>FARRIER_ADMIN_TOKEN</code>. It authenticates the administrative API only.
+        </p>
+
+        <p class="text-sm opacity-80">
+          An administrator account is inside Farrier's threat model: someone holding this token can read
+          the fleet and revoke hosts, and still cannot run code on any enrolled machine. What protects
+          the hosts is each one's own <code>policy.toml</code> and a signing key this control plane does
+          not hold.
+        </p>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Bearer token</mat-label>
+          <input matInput type="password" autocomplete="off" spellcheck="false"
+                 [ngModel]="draft()" (ngModelChange)="draft.set($event)"
+                 (keyup.enter)="save()" />
+        </mat-form-field>
+      </mat-card-content>
+
+      <mat-card-actions align="end">
+        <button mat-flat-button [disabled]="draft().length === 0" (click)="save()">Continue</button>
+      </mat-card-actions>
+    </mat-card>
+  }
+</main>

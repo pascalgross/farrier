@@ -1,0 +1,134 @@
+@if (loading()) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading the host"></mat-progress-bar>
+} @else if (error()) {
+  <mat-card class="max-w-xl mx-auto mt-12">
+    <mat-card-content class="!pt-6 flex items-start gap-3">
+      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <p class="m-0">{{ error() }}</p>
+    </mat-card-content>
+  </mat-card>
+} @else if (host(); as host) {
+  <a routerLink="/" class="text-sm opacity-80 inline-flex items-center gap-1 mb-4">
+    <mat-icon class="!text-base">arrow_back</mat-icon> Fleet
+  </a>
+
+  <header class="mb-6">
+    <h1 class="text-2xl font-medium m-0">{{ host.hostname || host.id }}</h1>
+    <p class="m-0 text-sm opacity-70 farrier-numeric">{{ host.id }}</p>
+  </header>
+
+  <div class="grid gap-6 md:grid-cols-2">
+    <mat-card>
+      <mat-card-header><mat-card-title>State</mat-card-title></mat-card-header>
+      <mat-card-content class="!pt-4">
+        <mat-list>
+          <mat-list-item><span matListItemTitle>Group</span><span matListItemLine>{{ host.group || '—' }}</span></mat-list-item>
+          <mat-list-item><span matListItemTitle>Agent</span><span matListItemLine>{{ host.agentVersion || '—' }}</span></mat-list-item>
+          <mat-list-item><span matListItemTitle>Uptime</span><span matListItemLine class="farrier-numeric">{{ uptime(host) }}</span></mat-list-item>
+          <mat-list-item>
+            <span matListItemTitle>Clock</span>
+            <span matListItemLine class="farrier-numeric" [class.text-farrier-warn]="host.clockSkewed">
+              {{ offset(host) }}
+              @if (host.clockSkewed) { — privileged operations fail closed }
+            </span>
+          </mat-list-item>
+          <mat-list-item>
+            <span matListItemTitle>Paused</span>
+            <span matListItemLine>
+              @if (host.paused) {
+                yes — the control plane cannot override this
+              } @else { no }
+            </span>
+          </mat-list-item>
+        </mat-list>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card>
+      <mat-card-header><mat-card-title>What this host will accept</mat-card-title></mat-card-header>
+      <mat-card-content class="!pt-4">
+        @if (host.policy; as policy) {
+          <mat-list>
+            <mat-list-item><span matListItemTitle>Updates</span><span matListItemLine>{{ policy.updates.allow }}</span></mat-list-item>
+            <mat-list-item><span matListItemTitle>Applies unprompted</span><span matListItemLine>{{ policy.updates.autoApply ? 'yes' : 'no' }}</span></mat-list-item>
+            <mat-list-item><span matListItemTitle>Reboots</span><span matListItemLine>{{ policy.updates.reboot }} · {{ policy.updates.window }} ({{ policy.updates.timezone }})</span></mat-list-item>
+            <mat-list-item>
+              <span matListItemTitle>Restartable units</span>
+              <span matListItemLine>
+                @if (policy.services.restartable.length) {
+                  {{ policy.services.restartable.join(', ') }}
+                } @else { none }
+              </span>
+            </mat-list-item>
+            <mat-list-item><span matListItemTitle>Job age limit</span><span matListItemLine class="farrier-numeric">{{ policy.limits.maxJobAgeSeconds }}s</span></mat-list-item>
+          </mat-list>
+
+          <p class="text-sm opacity-70 mt-2 mb-0">
+            Read from <code>{{ policy.source }}</code> on the host. This control plane cannot modify it,
+            and no operation in the catalogue can either.
+          </p>
+        } @else {
+          <p class="opacity-60 m-0">The host has not reported its policy yet.</p>
+        }
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card>
+      <mat-card-header><mat-card-title>Trusted signers</mat-card-title></mat-card-header>
+      <mat-card-content class="!pt-4">
+        <p class="m-0 mb-3 text-sm">{{ signersSummary(host) }}</p>
+        @if (host.signers?.length) {
+          <mat-list>
+            @for (signer of host.signers; track signer.keyId) {
+              <mat-list-item>
+                <span matListItemTitle>{{ signer.keyId }}</span>
+                <span matListItemLine class="opacity-70">
+                  {{ signer.algorithm }}@if (signer.backend) { · {{ signer.backend }} }
+                </span>
+              </mat-list-item>
+            }
+          </mat-list>
+        }
+        <p class="text-sm opacity-70 mt-2 mb-0">
+          These keys live on the host, in <code>/etc/farrier/trusted-signers</code>. This control plane
+          holds none of them and cannot add one.
+        </p>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card>
+      <mat-card-header><mat-card-title>Inventory</mat-card-title></mat-card-header>
+      <mat-card-content class="!pt-4">
+        @if (host.facts; as facts) {
+          <mat-list>
+            <mat-list-item><span matListItemTitle>Release</span><span matListItemLine>{{ facts.distribution?.prettyName || '—' }}</span></mat-list-item>
+            <mat-list-item><span matListItemTitle>Kernel</span><span matListItemLine class="farrier-numeric">{{ facts.kernel || '—' }}</span></mat-list-item>
+            <mat-list-item>
+              <span matListItemTitle>Updates</span>
+              <span matListItemLine class="farrier-numeric">
+                {{ facts.packages?.upgradableSecurity ?? 0 }} security of
+                {{ facts.packages?.upgradableTotal ?? 0 }} total
+              </span>
+            </mat-list-item>
+            <mat-list-item>
+              <span matListItemTitle>Reboot</span>
+              <span matListItemLine>{{ facts.reboot?.required ? 'required' : 'not required' }}</span>
+            </mat-list-item>
+            <mat-list-item><span matListItemTitle>Ubuntu Pro</span><span matListItemLine>{{ subscriptionSummary(host) }}</span></mat-list-item>
+          </mat-list>
+
+          @if (facts.reboot?.services; as needRestart) {
+            @if (needRestart.length) {
+              <mat-divider class="!my-3"></mat-divider>
+              <p class="text-sm m-0">
+                Still running replaced libraries: {{ needRestart.join(', ') }}
+              </p>
+            }
+          }
+        } @else {
+          <p class="opacity-60 m-0">The host has not reported its inventory yet.</p>
+        }
+      </mat-card-content>
+    </mat-card>
+  </div>
+}

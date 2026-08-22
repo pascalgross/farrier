@@ -134,7 +134,7 @@ func New(opts Options) (*Agent, error) {
 
 // Run drives the agent until the context ends.
 func (a *Agent) Run(ctx context.Context, opts Options) error {
-	slog.Info("farrier agent starting",
+	slog.Info("agent connected to a control plane",
 		"host", a.state.HostID, "server", a.state.ServerURL, "version", buildinfo.String())
 
 	// Anything spooled before a reboot goes out first, before the agent does anything else. A result

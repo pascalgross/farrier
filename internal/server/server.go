@@ -213,18 +213,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		"ca_expires", s.cfg.Authority.NotAfter().Format(time.RFC3339),
 	)
 
-	var err error
-	if len(tlsCfg.Certificates) > 0 {
-		err = srv.ListenAndServeTLS("", "")
-	} else {
-		// Plain HTTP, for a development machine and for the integration harness. It is logged as a
-		// warning every time rather than once, because a control plane serving agent traffic in clear
-		// is not something anybody should be able to stop noticing.
-		slog.Warn("no TLS certificate configured; serving plain HTTP. " +
-			"Do not do this outside development: agent certificates authenticate the host to the " +
-			"server, and without TLS there is nothing authenticating the server to the host.")
-		err = srv.ListenAndServe()
+	if len(tlsCfg.Certificates) == 0 {
+		// Refused rather than degraded. Client certificates require TLS, so a control plane serving
+		// plain HTTP does not merely serve agent traffic insecurely — it cannot serve it at all, and
+		// every agent would get a 401 that no amount of debugging on the agent side would explain.
+		return errors.New("server: no TLS certificate. Pass --tls-cert and --tls-key, or let " +
+			"`farrier-server serve` issue one from the agent CA. The agent protocol authenticates hosts " +
+			"with client certificates, which do not exist without TLS")
 	}
+	err := srv.ListenAndServeTLS("", "")
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

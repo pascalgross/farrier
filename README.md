@@ -111,10 +111,12 @@ make build          # all three binaries into ./dist
 make test           # unit tests
 make guarantee      # the tests that enforce docs/SECURITY.md §1
 make lint           # golangci-lint + doccheck
+make web            # the Angular application, embedded into farrier-server
 make deb            # the farrier-agent .deb via nfpm
 ```
 
-Go 1.24 or newer. `make deb` additionally needs [`nfpm`](https://nfpm.goreleaser.com/).
+Go 1.25 or newer. `make deb` additionally needs [`nfpm`](https://nfpm.goreleaser.com/);
+`make web` needs Node and pnpm.
 
 ## Licence, and why it will not change
 

@@ -17,8 +17,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -142,6 +144,24 @@ func serve(argv []string) int {
 		return 1
 	}
 
+	// Client certificates require TLS, so a control plane with no certificate cannot serve the agent
+	// protocol at all. Rather than starting something that refuses every agent with a 401, one is
+	// issued from the same private CA — which means an enrolled agent, holding the CA bundle it was
+	// given, verifies the control plane with no further configuration.
+	if *tlsCert == "" || *tlsKey == "" {
+		issuedCert, issuedKey, certErr := authority.EnsureServerCertificate(*caDir, tlsNames(*addr), nil)
+		if certErr != nil {
+			slog.Error("could not issue a server certificate", "error", certErr)
+			return 1
+		}
+		*tlsCert, *tlsKey = issuedCert, issuedKey
+		slog.Warn("serving with a certificate issued by Farrier's own CA. Enrolled agents trust it "+
+			"automatically; browsers will not. Pass --tls-cert and --tls-key from whatever issues your "+
+			"public certificates before operators use this in earnest.",
+			"certificate", issuedCert,
+			"enrol_with", "farrier enroll --ca "+filepath.Join(*caDir, "ca.crt"))
+	}
+
 	var sinks []notify.Sink
 	if *webhook != "" {
 		sinks = append(sinks, notify.NewWebhook("webhook", *webhook))
@@ -246,6 +266,19 @@ func printCatalogue() {
 	for _, n := range intent.Refused {
 		fmt.Printf("  %s\n", n)
 	}
+}
+
+// tlsNames returns the DNS names a self-issued server certificate should carry.
+//
+// The listen address is parsed for a hostname because "--addr farrier.internal:8443" is a reasonable
+// thing to write and a certificate that omitted it would fail verification for exactly the name the
+// operator chose. A bare port yields nothing extra, and the caller always adds localhost.
+func tlsNames(addr string) []string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || net.ParseIP(host) != nil {
+		return nil
+	}
+	return []string{host}
 }
 
 // envOr returns an environment variable, or a fallback.

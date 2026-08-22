@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -280,4 +281,107 @@ func randomSerial() (*big.Int, error) {
 func RenewAt(cert *x509.Certificate) time.Time {
 	lifetime := cert.NotAfter.Sub(cert.NotBefore)
 	return cert.NotBefore.Add(time.Duration(float64(lifetime) * RenewAfterFraction))
+}
+
+// Server certificate file names inside the CA directory.
+const (
+	// ServerCertFile is the control plane's own HTTPS certificate, when Farrier issued it.
+	ServerCertFile = "server.crt"
+
+	// ServerKeyFile is the key for it.
+	ServerKeyFile = "server.key"
+)
+
+// EnsureServerCertificate issues a server certificate for the control plane, if one does not exist.
+//
+// It exists because client certificates require TLS. Serving the agent protocol over plain HTTP is not
+// merely insecure — it does not work at all, since there is no client certificate to present — so a
+// control plane started without one needs *something*, and an unusable process that logs a warning is
+// worse than one that works.
+//
+// The certificate is signed by the same private CA that issues agent certificates, which has a
+// pleasant consequence: an agent is handed the CA bundle at enrolment and writes it to disk, so from
+// its second request onwards it verifies the control plane with no extra configuration. Only the first
+// call, enrolment itself, needs the operator to pass --ca.
+//
+// It is deliberately not a substitute for a real certificate. An operator's browser will not trust this
+// one, and telling people to click through a warning to reach their fleet management console is how
+// clicking through warnings becomes a habit. Production deployments should pass --tls-cert and
+// --tls-key from whatever issues their public certificates.
+func (a *Authority) EnsureServerCertificate(dir string, dnsNames []string, ips []net.IP) (certPath, keyPath string, err error) {
+	certPath = filepath.Join(dir, ServerCertFile)
+	keyPath = filepath.Join(dir, ServerKeyFile)
+
+	if reusable(certPath, keyPath) {
+		return certPath, keyPath, nil
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("ca: generating a server key: %w", err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return "", "", err
+	}
+
+	// localhost and the loopback addresses are always included, because the most common first use of a
+	// freshly initialised control plane is somebody curling it from the machine it runs on.
+	dnsNames = append([]string{"localhost"}, dnsNames...)
+	ips = append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, ips...)
+
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Farrier control plane", Organization: []string{"Farrier"}},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.Add(AgentCertLifetime),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              dnsNames,
+		IPAddresses:           ips,
+		BasicConstraintsValid: true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, &key.PublicKey, a.key)
+	if err != nil {
+		return "", "", fmt.Errorf("ca: signing the server certificate: %w", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", fmt.Errorf("ca: encoding the server key: %w", err)
+	}
+
+	if err := os.WriteFile(certPath,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		return "", "", fmt.Errorf("ca: writing %s: %w", ServerCertFile, err)
+	}
+	if err := os.WriteFile(keyPath,
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return "", "", fmt.Errorf("ca: writing %s: %w", ServerKeyFile, err)
+	}
+	return certPath, keyPath, nil
+}
+
+// reusable reports whether an existing server certificate is still worth using.
+//
+// A certificate close to expiry is replaced rather than served: renewing on restart is free, and a
+// control plane whose own certificate expires takes the whole fleet offline until somebody notices.
+func reusable(certPath, keyPath string) bool {
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		return false
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(RenewAt(cert))
 }

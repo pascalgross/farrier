@@ -1,0 +1,27 @@
+// Angular Material theming for the Farrier control plane.
+//
+// Tailwind lives in src/tailwind.css, which is loaded first. The split is not arbitrary: Material
+// supplies the components that benefit from having accessibility, focus management and keyboard
+// behaviour already solved, and Tailwind supplies layout. Neither is asked to do the other's job.
+
+@use "@angular/material" as mat;
+
+html {
+  color-scheme: light dark;
+  @include mat.theme((color: mat.$azure-palette, typography: Roboto, density: 0));
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: Roboto, "Helvetica Neue", system-ui, sans-serif;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+}
+
+// Numbers compared down a column — update counts, uptimes, clock offsets, identifiers — are set with
+// tabular figures so the digits line up. It is a small thing that makes a fleet list scannable.
+.farrier-numeric {
+  font-variant-numeric: tabular-nums;
+}

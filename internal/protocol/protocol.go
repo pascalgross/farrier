@@ -207,7 +207,13 @@ type HeartbeatRequest struct {
 	//
 	// Only the identities and algorithms, never the file. The control plane has no business holding a
 	// copy of a host's trust anchor, and displaying "ops-yubikey-1 (PKCS#11)" needs no more than this.
-	Signers []SignerSummary `json:"signers,omitempty"`
+	//
+	// It deliberately has no omitempty. An empty trust anchor is the shipped default and the most
+	// important thing this field can say — "this host will execute nothing destructive" — so it must be
+	// distinguishable on the wire from "the host did not report". With omitempty the two are identical,
+	// and the server would ask for a document the agent had already sent, on every single heartbeat,
+	// for the life of every unconfigured host in the fleet.
+	Signers []SignerSummary `json:"signers"`
 }
 
 // SignerSummary is one trusted key as reported to the control plane, for display.
