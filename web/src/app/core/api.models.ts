@@ -324,6 +324,20 @@ export interface Job {
 export interface JobsResponse {
   /** Jobs, newest first. */
   jobs: Job[];
+
+  /** The bound that was applied to this listing. */
+  limit: number;
+
+  /** The largest bound the control plane will accept. */
+  maxLimit: number;
+
+  /**
+   * Whether the listing filled its bound, so there may be older jobs it did not return.
+   *
+   * It is reported by the server rather than worked out from the row count, because a client that has
+   * to derive it is a client that will eventually forget to.
+   */
+  truncated: boolean;
 }
 
 /** The body of `POST /api/v1/jobs` for an unsigned, read-only job. */

@@ -67,6 +67,18 @@ export class ApiService {
   }
 
   /**
+   * Fetches every job that is waiting for a second operator.
+   *
+   * It is a separate request rather than a filter over the list above, and that is the point: the list
+   * is bounded, so on a busy fleet a destructive job leaves the newest page within a working day. The
+   * second operator the approval model depends on would then have no way to find the one thing they
+   * exist to look at.
+   */
+  jobsAwaitingApproval(): Observable<JobsResponse> {
+    return this.http.get<JobsResponse>('/api/v1/jobs?awaiting=true', { headers: this.headers() });
+  }
+
+  /**
    * Queues a read-only job.
    *
    * There is deliberately no method here for a destructive one. Such a job carries a signature made

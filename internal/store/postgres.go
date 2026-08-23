@@ -630,21 +630,19 @@ func scanJob(row pgx.Row) (JobRecord, error) {
 
 // ListJobs returns jobs newest first, with their results.
 func (p *Postgres) ListJobs(ctx context.Context, f JobFilter) ([]JobRecord, error) {
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 100
-	}
+	limit := clampJobLimit(f.Limit)
 	rows, err := p.pool.Query(ctx, `
 		SELECT `+jobColumns+`
 		  FROM jobs j LEFT JOIN job_results r ON r.job_id = j.id
 		 WHERE ($1 = '' OR j.host_id = $1)
+		   AND (NOT $3::boolean OR (j.approval_required AND j.approved_at IS NULL))
 		 -- By creation time, not by id. Ids are lexically sortable only when this control plane
 		 -- generated them; a signed job's id comes from whoever signed it and can be any string, so
 		 -- ordering by it would file a queued reboot wherever its id happened to fall — possibly off
 		 -- the end of the page the second operator reads before approving it. The id breaks ties so
 		 -- the order is total, and so two implementations can agree on it.
 		 ORDER BY j.issued_at DESC, j.id DESC
-		 LIMIT $2`, f.HostID, limit)
+		 LIMIT $2`, f.HostID, limit, f.AwaitingApproval)
 	if err != nil {
 		return nil, wrap(err, "listing jobs")
 	}

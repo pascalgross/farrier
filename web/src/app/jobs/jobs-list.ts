@@ -56,6 +56,19 @@ export class JobsList {
   /** The jobs, newest first. Null while the first load is in flight. */
   protected readonly jobs = signal<Job[] | null>(null);
 
+  /**
+   * Every job waiting for a second operator, whether or not it is on the page below.
+   *
+   * Fetched separately for the reason the separate endpoint exists: the list is bounded, and a
+   * destructive job on a busy fleet leaves the newest page within a working day. A second operator who
+   * can only approve what happens to still be on screen is not the second operator
+   * docs/SECURITY.md §3 describes.
+   */
+  protected readonly awaiting = signal<Job[]>([]);
+
+  /** Whether the list below was cut short, so there are older jobs it does not show. */
+  protected readonly truncated = signal(false);
+
   /** Every enrolled host, for the form's host picker. */
   protected readonly hosts = signal<Host[]>([]);
 
@@ -120,9 +133,14 @@ export class JobsList {
     this.api.jobs().subscribe({
       next: (response) => {
         this.jobs.set(response.jobs);
+        this.truncated.set(response.truncated);
         this.now.set(new Date().toISOString());
         this.error.set('');
       },
+      error: (err: unknown) => this.error.set(describeError(err)),
+    });
+    this.api.jobsAwaitingApproval().subscribe({
+      next: (response) => this.awaiting.set(response.jobs),
       error: (err: unknown) => this.error.set(describeError(err)),
     });
   }

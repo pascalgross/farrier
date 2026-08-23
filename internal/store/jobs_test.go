@@ -606,3 +606,108 @@ func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
 		}
 	})
 }
+
+// TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried is the store half of a job that
+// scrolled out of reach.
+//
+// The listing is bounded, so on a fleet doing routine work a destructive job leaves the newest page
+// within a working day. That is only a display problem until you remember what is on that page: the
+// second operator docs/SECURITY.md §3 requires cannot approve a job they cannot find. This filter is
+// the answer that does not depend on how far back anybody thought to look, and it has to mean the same
+// thing in both implementations, because every server test runs against the one that does not ship.
+func TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		reboot := jobFor("01JREBOOT", "host.reboot")
+		reboot.Class = "destructive"
+		reboot.Signature = "c2lnbmF0dXJl"
+		if err := s.CreateJob(ctx, NewJob{
+			Job: reboot, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
+		}); err != nil {
+			t.Fatalf("creating the reboot: %v", err)
+		}
+
+		// A full page of routine work on top of it, plus one, so the default listing cannot reach it.
+		for i := range DefaultJobLimit + 1 {
+			id := "01JFILL" + string(rune('A'+i/26)) + string(rune('A'+i%26))
+			if err := s.CreateJob(ctx, NewJob{
+				Job: jobFor(id, "facts.collect"), HostID: host.ID, CreatedBy: "alice",
+			}); err != nil {
+				t.Fatalf("creating filler %s: %v", id, err)
+			}
+		}
+
+		listed, err := s.ListJobs(ctx, JobFilter{})
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(listed) != DefaultJobLimit {
+			t.Fatalf("the default listing returned %d rows, want %d", len(listed), DefaultJobLimit)
+		}
+		for _, rec := range listed {
+			if rec.Job.ID == "01JREBOOT" {
+				t.Fatal("the fixture did not bury the reboot; the rest of this test proves nothing")
+			}
+		}
+
+		awaiting, err := s.ListJobs(ctx, JobFilter{AwaitingApproval: true})
+		if err != nil {
+			t.Fatalf("listing what awaits approval: %v", err)
+		}
+		if len(awaiting) != 1 || awaiting[0].Job.ID != "01JREBOOT" {
+			t.Fatalf("the awaiting-approval listing returned %d rows: %+v", len(awaiting), awaiting)
+		}
+
+		if err := s.ApproveJob(ctx, "01JREBOOT", "bob", time.Now().UTC()); err != nil {
+			t.Fatalf("approving: %v", err)
+		}
+		after, err := s.ListJobs(ctx, JobFilter{AwaitingApproval: true})
+		if err != nil {
+			t.Fatalf("listing after the approval: %v", err)
+		}
+		if len(after) != 0 {
+			t.Errorf("an approved job is still awaiting approval: %+v", after)
+		}
+	})
+}
+
+// TestGuaranteeBothStoresBoundAListingTheSameWay is the drift check the constants exist for.
+//
+// A page size that differed between the two would make every server test — all of which run on Memory —
+// prove a bound the shipped store does not have, and the first place that surfaces is somebody's
+// missing row.
+func TestGuaranteeBothStoresBoundAListingTheSameWay(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		for i := range 12 {
+			id := "01JFILL" + string(rune('A'+i))
+			if err := s.CreateJob(ctx, NewJob{
+				Job: jobFor(id, "facts.collect"), HostID: host.ID, CreatedBy: "alice",
+			}); err != nil {
+				t.Fatalf("creating %s: %v", id, err)
+			}
+		}
+
+		for _, c := range []struct {
+			// asked is the filter's Limit, and want is how many rows must come back.
+			asked int
+			want  int
+		}{
+			{asked: 0, want: 12},                  // the default is above what is stored
+			{asked: 5, want: 5},                   // an explicit bound is honoured
+			{asked: MaxJobLimit + 1000, want: 12}, // above the ceiling is clamped, not refused
+		} {
+			listed, err := s.ListJobs(ctx, JobFilter{Limit: c.asked})
+			if err != nil {
+				t.Fatalf("listing with limit %d: %v", c.asked, err)
+			}
+			if len(listed) != c.want {
+				t.Errorf("limit %d returned %d rows, want %d", c.asked, len(listed), c.want)
+			}
+		}
+	})
+}

@@ -440,14 +440,14 @@ func (m *Memory) ListJobs(_ context.Context, f JobFilter) ([]JobRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 100
-	}
+	limit := clampJobLimit(f.Limit)
 	out := make([]JobRecord, 0, limit)
 	for i := len(m.order) - 1; i >= 0 && len(out) < limit; i-- {
 		rec := m.records[m.order[i]]
 		if f.HostID != "" && rec.HostID != f.HostID {
+			continue
+		}
+		if f.AwaitingApproval && !(rec.ApprovalRequired && rec.ApprovedAt.IsZero()) {
 			continue
 		}
 		out = append(out, m.withResult(rec))

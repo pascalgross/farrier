@@ -60,6 +60,37 @@
   </mat-card-content>
 </mat-card>
 
+@if (awaiting().length > 0) {
+  <mat-card class="mb-8 max-w-3xl !border-l-4 !border-l-farrier-warn">
+    <mat-card-header>
+      <mat-card-title>Waiting for a second operator</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content class="!pt-4">
+      <p class="text-sm opacity-80 mt-0">
+        Listed here as well as below, because the list below is bounded and a job that has been waiting
+        a while drops off the end of it. Approving is a decision, not a formality: you are agreeing that
+        this operation should happen on this host now, and you cannot approve one you queued yourself.
+      </p>
+
+      <ul class="list-none p-0 m-0 flex flex-col gap-3">
+        @for (job of awaiting(); track job.id) {
+          <li class="flex flex-wrap items-baseline gap-3">
+            <span class="font-medium farrier-numeric">{{ job.intent }}</span>
+            <span class="text-sm">on <a [routerLink]="['/hosts', job.hostId]">{{ hostname(job) }}</a></span>
+            <span class="text-xs opacity-70">
+              {{ authorisation(job) }}, asked {{ age(job) }} by {{ job.createdBy || 'an unnamed operator' }}
+            </span>
+            <button mat-stroked-button class="ml-auto" [disabled]="busy()" (click)="approve(job)">
+              Approve
+            </button>
+          </li>
+        }
+      </ul>
+    </mat-card-content>
+  </mat-card>
+}
+
 @if (jobs() === null) {
   <mat-progress-bar mode="indeterminate" aria-label="Loading jobs"></mat-progress-bar>
 } @else if (jobs()!.length === 0) {
@@ -139,4 +170,11 @@
     <tr mat-header-row *matHeaderRowDef="columns"></tr>
     <tr mat-row *matRowDef="let row; columns: columns"></tr>
   </table>
+
+  @if (truncated()) {
+    <p class="text-sm opacity-70 mt-4">
+      Showing the most recent jobs only; there are older ones this page did not fetch. Anything still
+      waiting for an approval is listed above regardless of its age.
+    </p>
+  }
 }

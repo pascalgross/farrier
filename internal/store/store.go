@@ -280,9 +280,32 @@ type JobFilter struct {
 	// HostID limits the listing to one host, empty for the whole fleet.
 	HostID string
 
-	// Limit bounds how many are returned, newest first. Zero takes the implementation's default.
+	// Limit bounds how many are returned, newest first. Zero takes DefaultJobLimit.
 	Limit int
+
+	// AwaitingApproval narrows the listing to jobs that require a second operator and have not had
+	// one.
+	//
+	// It exists because those are the only jobs whose visibility is load-bearing. Everything else in
+	// the list is history, and history that scrolls off the end is a nuisance; a destructive job that
+	// scrolls off the end before anybody approved it is docs/SECURITY.md §3 failing quietly, because
+	// the second person the mechanism depends on can no longer find the thing to look at.
+	AwaitingApproval bool
 }
+
+// DefaultJobLimit is how many jobs a listing returns when the caller does not say.
+//
+// A screenful with room to scroll. It is small on purpose: the list is read on every page load and the
+// rows carry parameter objects and result output.
+const DefaultJobLimit = 100
+
+// MaxJobLimit is the largest listing a caller may ask for.
+//
+// A ceiling rather than no ceiling, because one query that asks for everything is how a control plane
+// with a year of history becomes a control plane that times out. A caller that needs more than this
+// wants the awaiting-approval filter or a per-host listing, both of which are cheaper and are what the
+// question behind the request usually is.
+const MaxJobLimit = 500
 
 // Store is the control plane's persistence.
 //
@@ -433,3 +456,19 @@ var (
 	_ Store = (*Postgres)(nil)
 	_ Store = (*Memory)(nil)
 )
+
+// clampJobLimit turns a caller's requested listing size into one the store will run.
+//
+// It is shared by both implementations rather than written twice, because a default that differed
+// between them would make the in-memory store — which every server test runs against — prove a page
+// size the shipped store does not have.
+func clampJobLimit(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultJobLimit
+	case n > MaxJobLimit:
+		return MaxJobLimit
+	default:
+		return n
+	}
+}
