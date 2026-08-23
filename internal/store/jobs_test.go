@@ -34,18 +34,18 @@ func jobFor(id, intent string) protocol.Job {
 
 // TestCreateJobPutsWorkInFrontOfExactlyOneHost is the ordinary path.
 func TestCreateJobPutsWorkInFrontOfExactlyOneHost(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		target := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
-		other := enrolTestHost(t, s, "01JHOSTB", "b.example.org")
+		target := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
+		other := enrolTestHost(t, tenant, "01JHOSTB", "b.example.org")
 
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: jobFor("01JOB1", "facts.collect"), HostID: target.ID, CreatedBy: "alice",
 		}); err != nil {
 			t.Fatalf("creating a job: %v", err)
 		}
 
-		elsewhere, err := s.ClaimJobs(ctx, other.ID, 10)
+		elsewhere, err := tenant.ClaimJobs(ctx, other.ID, 10)
 		if err != nil {
 			t.Fatalf("claiming for the other host: %v", err)
 		}
@@ -53,7 +53,7 @@ func TestCreateJobPutsWorkInFrontOfExactlyOneHost(t *testing.T) {
 			t.Fatalf("a job addressed to %s was offered to %s", target.ID, other.ID)
 		}
 
-		claimed, err := s.ClaimJobs(ctx, target.ID, 10)
+		claimed, err := tenant.ClaimJobs(ctx, target.ID, 10)
 		if err != nil {
 			t.Fatalf("claiming: %v", err)
 		}
@@ -61,7 +61,7 @@ func TestCreateJobPutsWorkInFrontOfExactlyOneHost(t *testing.T) {
 			t.Fatalf("claimed %+v", claimed)
 		}
 
-		rec, err := s.GetJob(ctx, "01JOB1")
+		rec, err := tenant.GetJob(ctx, "01JOB1")
 		if err != nil {
 			t.Fatalf("reading the job back: %v", err)
 		}
@@ -83,20 +83,20 @@ func TestCreateJobPutsWorkInFrontOfExactlyOneHost(t *testing.T) {
 // live below the handler: the handler is not the only thing that will ever claim, and a requirement
 // enforced by whoever remembers to ask is not a requirement.
 func TestGuaranteeAJobWaitingForASecondOperatorIsNeverClaimable(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		job := jobFor("01JOB1", "host.reboot")
 		job.Class = "destructive"
 		job.Signature = "c2lnbmF0dXJl"
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
 		}); err != nil {
 			t.Fatalf("creating a job: %v", err)
 		}
 
-		claimed, err := s.ClaimJobs(ctx, host.ID, 10)
+		claimed, err := tenant.ClaimJobs(ctx, host.ID, 10)
 		if err != nil {
 			t.Fatalf("claiming: %v", err)
 		}
@@ -104,7 +104,7 @@ func TestGuaranteeAJobWaitingForASecondOperatorIsNeverClaimable(t *testing.T) {
 			t.Fatalf("a host claimed a job that no second operator had approved: %+v", claimed)
 		}
 
-		rec, err := s.GetJob(ctx, "01JOB1")
+		rec, err := tenant.GetJob(ctx, "01JOB1")
 		if err != nil {
 			t.Fatalf("reading the job: %v", err)
 		}
@@ -113,11 +113,11 @@ func TestGuaranteeAJobWaitingForASecondOperatorIsNeverClaimable(t *testing.T) {
 				"with the claim query about the one row where it matters")
 		}
 
-		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
 			t.Fatalf("approving: %v", err)
 		}
 
-		claimed, err = s.ClaimJobs(ctx, host.ID, 10)
+		claimed, err = tenant.ClaimJobs(ctx, host.ID, 10)
 		if err != nil {
 			t.Fatalf("claiming after approval: %v", err)
 		}
@@ -129,35 +129,43 @@ func TestGuaranteeAJobWaitingForASecondOperatorIsNeverClaimable(t *testing.T) {
 
 // TestGuaranteeNobodyApprovesTheirOwnJob is the "second person" in second-person approval.
 //
-// The rule is enforced in the store rather than only in the handler because it has to hold against two
-// requests arriving at once: a read-then-write in the caller would let the same operator approve their
-// own job by racing it against itself, which is the one way this check could be defeated by somebody
-// who already holds the credential.
+// The rule is now a tenant's setting rather than a constant — a fleet with one operator chooses "self"
+// or "none" instead, because requiring a second person where there is only one is a tier nobody can
+// reach. What has not changed is what the rule means when a fleet does choose it, and where it is
+// enforced: in the store rather than only in the handler, because it has to hold against two requests
+// arriving at once. A read-then-write in the caller would let the same operator release their own job
+// by racing it against itself, which is the one way this check could be defeated by somebody who
+// already holds the credential.
+//
+// The rule is read from the job row rather than from the tenant, so this creates the job saying so.
+// That is the same property asserted from the other side in
+// TestGuaranteeATenantsApprovalModeCannotRewriteAJobAlreadyQueued.
 func TestGuaranteeNobodyApprovesTheirOwnJob(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		job := jobFor("01JOB1", "service.restart")
 		job.Class = "destructive"
 		job.Signature = "c2lnbmF0dXJl"
-		if err := s.CreateJob(ctx, NewJob{
-			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
+		if err := tenant.CreateJob(ctx, NewJob{
+			Job: job, HostID: host.ID, CreatedBy: "alice",
+			ApprovalRequired: true, ApprovalDistinctOperator: true,
 		}); err != nil {
 			t.Fatalf("creating a job: %v", err)
 		}
 
-		if err := s.ApproveJob(ctx, "01JOB1", "alice", time.Now()); !errors.Is(err, ErrConflict) {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "alice", time.Now()); !errors.Is(err, ErrConflict) {
 			t.Fatalf("the operator who created the job approved it, producing %v; want ErrConflict", err)
 		}
-		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
 			t.Fatalf("a second operator could not approve: %v", err)
 		}
-		if err := s.ApproveJob(ctx, "01JOB1", "carol", time.Now()); !errors.Is(err, ErrConflict) {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "carol", time.Now()); !errors.Is(err, ErrConflict) {
 			t.Errorf("an already-approved job was approved again, producing %v; want ErrConflict", err)
 		}
 
-		rec, err := s.GetJob(ctx, "01JOB1")
+		rec, err := tenant.GetJob(ctx, "01JOB1")
 		if err != nil {
 			t.Fatalf("reading the job: %v", err)
 		}
@@ -172,19 +180,19 @@ func TestGuaranteeNobodyApprovesTheirOwnJob(t *testing.T) {
 // A read job carries no approval, and recording one against it would put a name in the log beside a
 // decision that person never made.
 func TestApprovingWhatNeedsNoApprovalIsRefused(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: jobFor("01JOB1", "facts.collect"), HostID: host.ID, CreatedBy: "alice",
 		}); err != nil {
 			t.Fatalf("creating a job: %v", err)
 		}
-		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); !errors.Is(err, ErrConflict) {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "bob", time.Now()); !errors.Is(err, ErrConflict) {
 			t.Errorf("approving a job that needs no approval produced %v, want ErrConflict", err)
 		}
-		if err := s.ApproveJob(ctx, "01JNOSUCHJOB", "bob", time.Now()); !errors.Is(err, ErrNotFound) {
+		if err := tenant.ApproveJob(ctx, "01JNOSUCHJOB", "bob", time.Now()); !errors.Is(err, ErrNotFound) {
 			t.Errorf("approving an unknown job produced %v, want ErrNotFound", err)
 		}
 	})
@@ -196,20 +204,20 @@ func TestApprovingWhatNeedsNoApprovalIsRefused(t *testing.T) {
 // earlier and cheaper: a job queued twice is delivered twice, refused on the host, and reported as a
 // failure nobody can explain — so the control plane declines to be the thing that replays it.
 func TestGuaranteeASignedPayloadIsQueuedOnce(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		signed := jobFor("01JOB1", "host.reboot")
 		signed.Class = "destructive"
 		signed.Signature = "c2lnbmF0dXJl"
-		if err := s.CreateJob(ctx, NewJob{Job: signed, HostID: host.ID, ApprovalRequired: true}); err != nil {
+		if err := tenant.CreateJob(ctx, NewJob{Job: signed, HostID: host.ID, ApprovalRequired: true}); err != nil {
 			t.Fatalf("creating the first job: %v", err)
 		}
 
 		replay := signed
 		replay.ID = "01JOB2"
-		if err := s.CreateJob(ctx, NewJob{Job: replay, HostID: host.ID, ApprovalRequired: true}); !errors.Is(err, ErrConflict) {
+		if err := tenant.CreateJob(ctx, NewJob{Job: replay, HostID: host.ID, ApprovalRequired: true}); !errors.Is(err, ErrConflict) {
 			t.Fatalf("the same signed payload was queued twice, producing %v; want ErrConflict", err)
 		}
 
@@ -217,7 +225,7 @@ func TestGuaranteeASignedPayloadIsQueuedOnce(t *testing.T) {
 		fresh := signed
 		fresh.ID = "01JOB3"
 		fresh.Nonce = "nonce-fresh"
-		if err := s.CreateJob(ctx, NewJob{Job: fresh, HostID: host.ID, ApprovalRequired: true}); err != nil {
+		if err := tenant.CreateJob(ctx, NewJob{Job: fresh, HostID: host.ID, ApprovalRequired: true}); err != nil {
 			t.Errorf("a differently-nonced signed job was refused: %v", err)
 		}
 
@@ -225,7 +233,7 @@ func TestGuaranteeASignedPayloadIsQueuedOnce(t *testing.T) {
 		// only so the column can stay NOT NULL.
 		unsigned := jobFor("01JOB4", "facts.collect")
 		unsigned.Nonce = signed.Nonce
-		if err := s.CreateJob(ctx, NewJob{Job: unsigned, HostID: host.ID}); err != nil {
+		if err := tenant.CreateJob(ctx, NewJob{Job: unsigned, HostID: host.ID}); err != nil {
 			t.Errorf("an unsigned job sharing a nonce was refused: %v", err)
 		}
 	})
@@ -236,8 +244,8 @@ func TestGuaranteeASignedPayloadIsQueuedOnce(t *testing.T) {
 // Without the check the row would be rejected by the foreign key in one implementation and accepted
 // into a map in the other, and the two would disagree about what a typo in a host id does.
 func TestCreateJobForAnUnknownHostIsNotFound(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
-		err := s.CreateJob(context.Background(), NewJob{
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
+		err := tenant.CreateJob(context.Background(), NewJob{
 			Job: jobFor("01JOB1", "facts.collect"), HostID: "01JNOSUCHHOST",
 		})
 		if !errors.Is(err, ErrNotFound) {
@@ -248,17 +256,17 @@ func TestCreateJobForAnUnknownHostIsNotFound(t *testing.T) {
 
 // TestAJobCarriesItsResultOnceTheHostReports is what an operator actually looks at.
 func TestAJobCarriesItsResultOnceTheHostReports(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: jobFor("01JOB1", "facts.collect"), HostID: host.ID, CreatedBy: "alice",
 		}); err != nil {
 			t.Fatalf("creating a job: %v", err)
 		}
 
-		before, err := s.GetJob(ctx, "01JOB1")
+		before, err := tenant.GetJob(ctx, "01JOB1")
 		if err != nil {
 			t.Fatalf("reading the job: %v", err)
 		}
@@ -267,17 +275,17 @@ func TestAJobCarriesItsResultOnceTheHostReports(t *testing.T) {
 				"caller tells 'not reported yet' from 'reported nothing'")
 		}
 
-		if _, err := s.ClaimJobs(ctx, host.ID, 10); err != nil {
+		if _, err := tenant.ClaimJobs(ctx, host.ID, 10); err != nil {
 			t.Fatalf("claiming: %v", err)
 		}
-		if err := s.RecordResult(ctx, host.ID, protocol.ResultRequest{
+		if err := tenant.RecordResult(ctx, host.ID, protocol.ResultRequest{
 			JobID: "01JOB1", Status: protocol.StatusSucceeded, ExitCode: 0,
 			StartedAt: time.Now(), FinishedAt: time.Now(), Output: "done",
 		}); err != nil {
 			t.Fatalf("recording a result: %v", err)
 		}
 
-		after, err := s.GetJob(ctx, "01JOB1")
+		after, err := tenant.GetJob(ctx, "01JOB1")
 		if err != nil {
 			t.Fatalf("reading the job back: %v", err)
 		}
@@ -291,7 +299,7 @@ func TestAJobCarriesItsResultOnceTheHostReports(t *testing.T) {
 			t.Error("a job with a result is not stamped as completed")
 		}
 
-		listed, err := s.ListJobs(ctx, JobFilter{HostID: host.ID})
+		listed, err := tenant.ListJobs(ctx, JobFilter{HostID: host.ID})
 		if err != nil {
 			t.Fatalf("listing: %v", err)
 		}
@@ -314,9 +322,9 @@ func TestAJobCarriesItsResultOnceTheHostReports(t *testing.T) {
 // parameters in completely different ways, and it is asserted on the bytes rather than on the decoded
 // value because the bytes are what is signed.
 func TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		// Every parameter shape the catalogue can produce: the two integers bounding a reboot delay,
 		// a message from the constrained character set, and the boolean an update job carries.
@@ -342,10 +350,10 @@ func TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned(t *testing.T) {
 				t.Fatalf("canonicalising %v before storing: %v", params, err)
 			}
 
-			if err := s.CreateJob(ctx, NewJob{Job: job, HostID: host.ID}); err != nil {
+			if err := tenant.CreateJob(ctx, NewJob{Job: job, HostID: host.ID}); err != nil {
 				t.Fatalf("creating a job with %v: %v", params, err)
 			}
-			claimed, err := s.ClaimJobs(ctx, host.ID, 1)
+			claimed, err := tenant.ClaimJobs(ctx, host.ID, 1)
 			if err != nil {
 				t.Fatalf("claiming: %v", err)
 			}
@@ -373,11 +381,11 @@ func TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned(t *testing.T) {
 // the record would be overwritten while both copies stayed in the queue, so a host would receive one
 // job and the operator would read another under the same id.
 func TestGuaranteeAJobIDIsTakenOnce(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: jobFor("01JOB1", "facts.collect"), HostID: host.ID,
 		}); err != nil {
 			t.Fatalf("creating the first job: %v", err)
@@ -385,18 +393,18 @@ func TestGuaranteeAJobIDIsTakenOnce(t *testing.T) {
 
 		second := jobFor("01JOB1", "services.list")
 		second.Nonce = "a-different-nonce"
-		if err := s.CreateJob(ctx, NewJob{Job: second, HostID: host.ID}); !errors.Is(err, ErrConflict) {
+		if err := tenant.CreateJob(ctx, NewJob{Job: second, HostID: host.ID}); !errors.Is(err, ErrConflict) {
 			t.Fatalf("a second job took an id that was already in use, producing %v; want ErrConflict", err)
 		}
 
-		listed, err := s.ListJobs(ctx, JobFilter{})
+		listed, err := tenant.ListJobs(ctx, JobFilter{})
 		if err != nil {
 			t.Fatalf("listing: %v", err)
 		}
 		if len(listed) != 1 {
 			t.Errorf("%d jobs exist under one id", len(listed))
 		}
-		rec, err := s.GetJob(ctx, "01JOB1")
+		rec, err := tenant.GetJob(ctx, "01JOB1")
 		if err != nil {
 			t.Fatalf("reading the job: %v", err)
 		}
@@ -417,14 +425,14 @@ func TestGuaranteeAJobIDIsTakenOnce(t *testing.T) {
 //
 // The in-memory store woke immediately all along, which is exactly why this needs asserting against both.
 func TestGuaranteeApprovingAJobWakesAWaitingAgent(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		job := jobFor("01JOB1", "host.reboot")
 		job.Class = "destructive"
 		job.Signature = "c2ln"
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
 		}); err != nil {
 			t.Fatalf("creating: %v", err)
@@ -435,7 +443,7 @@ func TestGuaranteeApprovingAJobWakesAWaitingAgent(t *testing.T) {
 		notified, unsubscribe := s.Subscribe(host.ID)
 		defer unsubscribe()
 		waitForListener(t, s)
-		claimed, err := s.ClaimJobs(ctx, host.ID, 10)
+		claimed, err := tenant.ClaimJobs(ctx, host.ID, 10)
 		if err != nil {
 			t.Fatalf("claiming: %v", err)
 		}
@@ -443,7 +451,7 @@ func TestGuaranteeApprovingAJobWakesAWaitingAgent(t *testing.T) {
 			t.Fatalf("an unapproved job was claimable: %+v", claimed)
 		}
 
-		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
 			t.Fatalf("approving: %v", err)
 		}
 
@@ -485,21 +493,21 @@ func waitForListener(t *testing.T, s Store) {
 // the second operator reads before approving it. The one job that needs a human to find it is the one
 // that goes missing.
 func TestGuaranteeJobsAreListedByCreationTimeNotByIdentifier(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		// Two ids that sort high, then — created last — one that sorts low, as an operator-chosen id
 		// easily can.
 		for i, id := range []string{"06AAAA", "06BBBB", "01SIGNED"} {
 			job := jobFor(id, "facts.collect")
 			job.IssuedAt = time.Now().UTC().Add(time.Duration(i) * time.Second)
-			if err := s.CreateJob(ctx, NewJob{Job: job, HostID: host.ID}); err != nil {
+			if err := tenant.CreateJob(ctx, NewJob{Job: job, HostID: host.ID}); err != nil {
 				t.Fatalf("creating %s: %v", id, err)
 			}
 		}
 
-		listed, err := s.ListJobs(ctx, JobFilter{})
+		listed, err := tenant.ListJobs(ctx, JobFilter{})
 		if err != nil {
 			t.Fatalf("listing: %v", err)
 		}
@@ -521,34 +529,34 @@ func TestGuaranteeJobsAreListedByCreationTimeNotByIdentifier(t *testing.T) {
 // and stays approvable, and approving it puts the job back on the queue of a host that no longer
 // exists: deleting a host would not cancel the work waiting for it.
 func TestGuaranteeDeletingAHostCancelsTheWorkWaitingForIt(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		job := jobFor("01JOB1", "host.reboot")
 		job.Class = "destructive"
 		job.Signature = "c2ln"
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
 		}); err != nil {
 			t.Fatalf("creating: %v", err)
 		}
 
-		if err := s.DeleteHost(ctx, host.ID); err != nil {
+		if err := tenant.DeleteHost(ctx, host.ID); err != nil {
 			t.Fatalf("deleting the host: %v", err)
 		}
 
-		if _, err := s.GetJob(ctx, "01JOB1"); !errors.Is(err, ErrNotFound) {
+		if _, err := tenant.GetJob(ctx, "01JOB1"); !errors.Is(err, ErrNotFound) {
 			t.Errorf("a deleted host's job is still readable, producing %v; want ErrNotFound", err)
 		}
-		listed, err := s.ListJobs(ctx, JobFilter{})
+		listed, err := tenant.ListJobs(ctx, JobFilter{})
 		if err != nil {
 			t.Fatalf("listing: %v", err)
 		}
 		if len(listed) != 0 {
 			t.Errorf("a deleted host's job is still listed: %+v", listed)
 		}
-		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); !errors.Is(err, ErrNotFound) {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "bob", time.Now()); !errors.Is(err, ErrNotFound) {
 			t.Errorf("a deleted host's job was approvable, producing %v; want ErrNotFound", err)
 		}
 	})
@@ -566,14 +574,14 @@ func TestGuaranteeDeletingAHostCancelsTheWorkWaitingForIt(t *testing.T) {
 // file and the signature are what bound it. What it must not be able to do is answer for work it was
 // never given.
 func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		job := jobFor("01JOB1", "host.reboot")
 		job.Class = "destructive"
 		job.Signature = "c2ln"
-		if err := s.CreateJob(ctx, NewJob{
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
 		}); err != nil {
 			t.Fatalf("creating: %v", err)
@@ -583,16 +591,16 @@ func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
 			JobID: "01JOB1", Status: protocol.StatusSucceeded,
 			StartedAt: time.Now(), FinishedAt: time.Now(), Output: "definitely rebooted",
 		}
-		if err := s.RecordResult(ctx, host.ID, forged); !errors.Is(err, ErrNotFound) {
+		if err := tenant.RecordResult(ctx, host.ID, forged); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("a result was accepted for a job the host was never given, producing %v; "+
 				"want ErrNotFound", err)
 		}
 
 		// And the job survives it: approved by a second operator, it is still delivered.
-		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
+		if err := tenant.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
 			t.Fatalf("approving: %v", err)
 		}
-		claimed, err := s.ClaimJobs(ctx, host.ID, 10)
+		claimed, err := tenant.ClaimJobs(ctx, host.ID, 10)
 		if err != nil {
 			t.Fatalf("claiming: %v", err)
 		}
@@ -601,7 +609,7 @@ func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
 		}
 
 		// Once it has genuinely been given out, the real result is accepted.
-		if err := s.RecordResult(ctx, host.ID, forged); err != nil {
+		if err := tenant.RecordResult(ctx, host.ID, forged); err != nil {
 			t.Errorf("the result of a claimed job was refused: %v", err)
 		}
 	})
@@ -616,14 +624,20 @@ func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
 // the answer that does not depend on how far back anybody thought to look, and it has to mean the same
 // thing in both implementations, because every server test runs against the one that does not ship.
 func TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		reboot := jobFor("01JREBOOT", "host.reboot")
 		reboot.Class = "destructive"
 		reboot.Signature = "c2lnbmF0dXJl"
-		if err := s.CreateJob(ctx, NewJob{
+		// Explicitly the oldest. The listing orders by issued_at and breaks ties on the id, and jobFor
+		// stamps whatever the clock says truncated to the millisecond — so a fixture that created all
+		// of these in the same millisecond would be ordered by identifier, and "01JREBOOT" sorts above
+		// "01JFILL…". The test would then pass or fail on how fast the machine was.
+		reboot.IssuedAt = reboot.IssuedAt.Add(-time.Hour)
+		reboot.NotBefore = reboot.IssuedAt
+		if err := tenant.CreateJob(ctx, NewJob{
 			Job: reboot, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
 		}); err != nil {
 			t.Fatalf("creating the reboot: %v", err)
@@ -632,14 +646,14 @@ func TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried(t *testing.
 		// A full page of routine work on top of it, plus one, so the default listing cannot reach it.
 		for i := range DefaultJobLimit + 1 {
 			id := "01JFILL" + string(rune('A'+i/26)) + string(rune('A'+i%26))
-			if err := s.CreateJob(ctx, NewJob{
+			if err := tenant.CreateJob(ctx, NewJob{
 				Job: jobFor(id, "facts.collect"), HostID: host.ID, CreatedBy: "alice",
 			}); err != nil {
 				t.Fatalf("creating filler %s: %v", id, err)
 			}
 		}
 
-		listed, err := s.ListJobs(ctx, JobFilter{})
+		listed, err := tenant.ListJobs(ctx, JobFilter{})
 		if err != nil {
 			t.Fatalf("listing: %v", err)
 		}
@@ -652,7 +666,7 @@ func TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried(t *testing.
 			}
 		}
 
-		awaiting, err := s.ListJobs(ctx, JobFilter{AwaitingApproval: true})
+		awaiting, err := tenant.ListJobs(ctx, JobFilter{AwaitingApproval: true})
 		if err != nil {
 			t.Fatalf("listing what awaits approval: %v", err)
 		}
@@ -660,10 +674,10 @@ func TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried(t *testing.
 			t.Fatalf("the awaiting-approval listing returned %d rows: %+v", len(awaiting), awaiting)
 		}
 
-		if err := s.ApproveJob(ctx, "01JREBOOT", "bob", time.Now().UTC()); err != nil {
+		if err := tenant.ApproveJob(ctx, "01JREBOOT", "bob", time.Now().UTC()); err != nil {
 			t.Fatalf("approving: %v", err)
 		}
-		after, err := s.ListJobs(ctx, JobFilter{AwaitingApproval: true})
+		after, err := tenant.ListJobs(ctx, JobFilter{AwaitingApproval: true})
 		if err != nil {
 			t.Fatalf("listing after the approval: %v", err)
 		}
@@ -679,13 +693,13 @@ func TestGuaranteeTheAwaitingApprovalFilterFindsWhatTheListingBuried(t *testing.
 // prove a bound the shipped store does not have, and the first place that surfaces is somebody's
 // missing row.
 func TestGuaranteeBothStoresBoundAListingTheSameWay(t *testing.T) {
-	eachStore(t, func(t *testing.T, s Store) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
 		ctx := context.Background()
-		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
 
 		for i := range 12 {
 			id := "01JFILL" + string(rune('A'+i))
-			if err := s.CreateJob(ctx, NewJob{
+			if err := tenant.CreateJob(ctx, NewJob{
 				Job: jobFor(id, "facts.collect"), HostID: host.ID, CreatedBy: "alice",
 			}); err != nil {
 				t.Fatalf("creating %s: %v", id, err)
@@ -701,7 +715,7 @@ func TestGuaranteeBothStoresBoundAListingTheSameWay(t *testing.T) {
 			{asked: 5, want: 5},                   // an explicit bound is honoured
 			{asked: MaxJobLimit + 1000, want: 12}, // above the ceiling is clamped, not refused
 		} {
-			listed, err := s.ListJobs(ctx, JobFilter{Limit: c.asked})
+			listed, err := tenant.ListJobs(ctx, JobFilter{Limit: c.asked})
 			if err != nil {
 				t.Fatalf("listing with limit %d: %v", c.asked, err)
 			}

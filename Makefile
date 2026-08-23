@@ -64,7 +64,9 @@ guarantee: guarantee-tests guarantee-fuzz ## Run the tests that enforce docs/SEC
 # weakened by an edit here that nobody noticed, or strengthened here and never run in CI.
 .PHONY: guarantee-tests
 guarantee-tests: ## The catalogue is the expected set, and nothing reaches a shell
-	go test -count=1 -run '^(TestGuarantee|TestClassPredicates)' -v ./internal/...
+	# ./... rather than ./internal/...: three guarantee-named tests live under helpers/ and were
+	# silently outside the required check, which nothing about their names said.
+	go test -count=1 -run '^(TestGuarantee|TestClassPredicates)' -v ./...
 
 .PHONY: guarantee-fuzz
 guarantee-fuzz: ## Fuzz the parameter decoders and the canonical encoder, as CI does

@@ -105,8 +105,12 @@ func TestAReadJobReachesTheHostAndComesBackWithItsResult(t *testing.T) {
 	if created["approvalRequired"] != false {
 		t.Error("a read job requires approval; only the destructive tier does")
 	}
-	if created["createdBy"] != "tester" {
-		t.Errorf("the job records its creator as %v, want tester", created["createdBy"])
+	// Provider-qualified, not the bare subject. Two identity sources that both call somebody "alice"
+	// would otherwise make one person look like two, or two people look like one — and one comparison
+	// of this string is load-bearing, because second-person approval refuses a release by whoever
+	// created the job.
+	if created["createdBy"] != "test:tester" {
+		t.Errorf("the job records its creator as %v, want test:tester", created["createdBy"])
 	}
 
 	client := h.agentClient(t, state)
@@ -321,8 +325,9 @@ func TestASignedDestructiveJobSurvivesTheRoundTripAndVerifiesOnTheHost(t *testin
 	if status != http.StatusOK {
 		t.Fatalf("approving returned %d: %s", status, body)
 	}
-	if approved := jobViewOf(t, body); approved["approvedBy"] != "second-operator" {
-		t.Errorf("the approval is recorded as %v", approved["approvedBy"])
+	if approved := jobViewOf(t, body); approved["approvedBy"] != "test:second-operator" {
+		t.Errorf("the approval is recorded as %v, want the provider-qualified principal",
+			approved["approvedBy"])
 	}
 
 	jobs, err = client.PollJobs(context.Background(), 0)
@@ -408,11 +413,15 @@ func (e *recordingElevator) Invoke(_ context.Context, req privsep.Request) (priv
 
 // TestGuaranteeOneOperatorCannotApproveTheirOwnJob is the second person, made mechanical.
 //
-// docs/SECURITY.md §3 requires a second person for the destructive tier. This asserts the refusal from
-// the outside, through the API, with the credential that created the job — which is exactly the shape a
-// single-operator installation has, because the shipped auth.StaticToken holds one token and one
-// subject. Such an installation therefore cannot approve a destructive job at all, and that is the
-// correct outcome rather than a gap: the requirement is a second *person*, and there is only one.
+// The rule is now a fleet's own setting rather than an installation-wide constant, and this asserts
+// what it means for a fleet that chooses it: the harness tenant is on second_person, and the refusal is
+// asserted from the outside, through the API, with the credential that created the job.
+//
+// The setting exists because the constant was unreachable. An installation with one operator could not
+// satisfy "a second person" at all — not with difficulty, but at all — so a strict default shipped a
+// tier nobody could use. A fleet with one operator now chooses "self" or "none" instead, and what this
+// test pins is that choosing "second_person" still means exactly what it always meant. See
+// docs/SECURITY.md §3.
 func TestGuaranteeOneOperatorCannotApproveTheirOwnJob(t *testing.T) {
 	h := newHarness(t)
 	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
@@ -638,5 +647,158 @@ func TestGuaranteeAQueuedReadJobHasNoLowerBound(t *testing.T) {
 	}
 	if jobs[0].NotAfter.IsZero() {
 		t.Error("the delivered job carries no upper bound either, so it would never expire")
+	}
+}
+
+// TestGuaranteeOneTenantCannotReachAnotherThroughTheAPI is the isolation boundary at the layer an
+// attacker actually touches.
+//
+// The store has its own isolation suite, and it proves the queries and the row-level security policies
+// are right. This proves the thing between them and a customer: that no handler reaches past the scoped
+// store it was handed. A handler that took an id from a URL and looked it up in the unscoped store
+// would pass every test in internal/store and fail here, which is exactly the mistake worth catching —
+// the ids in these requests are ones a real operator could learn from a log line or a support ticket.
+func TestGuaranteeOneTenantCannotReachAnotherThroughTheAPI(t *testing.T) {
+	h := newHarness(t)
+
+	// A host and a signed destructive job in the harness's own tenant.
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+	request, _ := signedRebootRequest(t, state.HostID)
+	if status, body := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/jobs", request); status != http.StatusCreated {
+		t.Fatalf("queueing returned %d: %s", status, body)
+	}
+	jobID := request["id"].(string)
+
+	// The other tenant's operator holds a valid credential for this control plane. Everything below is
+	// authenticated; what it must not be is authorised.
+	for _, c := range []struct {
+		// name says what the neighbour is reaching for.
+		name string
+
+		// method and path are the request, aimed at the first tenant's rows.
+		method string
+		path   string
+
+		// want is the status it must come back with.
+		want int
+	}{
+		{"read a host", http.MethodGet, "/api/v1/hosts/" + state.HostID, http.StatusNotFound},
+		{"revoke a host", http.MethodPost, "/api/v1/hosts/" + state.HostID + "/revoke", http.StatusNotFound},
+		{"delete a host", http.MethodDelete, "/api/v1/hosts/" + state.HostID, http.StatusNotFound},
+		{"read a job", http.MethodGet, "/api/v1/jobs/" + jobID, http.StatusNotFound},
+		{"release a job", http.MethodPost, "/api/v1/jobs/" + jobID + "/approve", http.StatusNotFound},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := h.adminJSON(t, h.otherToken, c.method, c.path, nil)
+			if status != c.want {
+				t.Fatalf("%s %s as another tenant returned %d, want %d: %s",
+					c.method, c.path, status, c.want, body)
+			}
+		})
+	}
+
+	// Nothing in the neighbour's listings, and nothing done to the first tenant's rows by any of it.
+	t.Run("listings are empty", func(t *testing.T) {
+		status, body := h.adminJSON(t, h.otherToken, http.MethodGet, "/api/v1/hosts", nil)
+		if status != http.StatusOK {
+			t.Fatalf("listing hosts returned %d: %s", status, body)
+		}
+		if !bytes.Contains(body, []byte(`"hosts":[]`)) {
+			t.Errorf("the other tenant's fleet listing is not empty: %s", body)
+		}
+
+		status, body = h.adminJSON(t, h.otherToken, http.MethodGet, "/api/v1/jobs", nil)
+		if status != http.StatusOK {
+			t.Fatalf("listing jobs returned %d: %s", status, body)
+		}
+		if bytes.Contains(body, []byte(jobID)) {
+			t.Errorf("the other tenant's job listing contains a job it does not own: %s", body)
+		}
+	})
+
+	t.Run("nothing was mutated", func(t *testing.T) {
+		status, body := h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/hosts/"+state.HostID, nil)
+		if status != http.StatusOK {
+			t.Fatalf("reading the host back returned %d: %s", status, body)
+		}
+		if bytes.Contains(body, []byte(`"revoked":true`)) {
+			t.Error("a neighbouring tenant revoked a host it does not own")
+		}
+
+		status, body = h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/jobs/"+jobID, nil)
+		if status != http.StatusOK {
+			t.Fatalf("reading the job back returned %d: %s", status, body)
+		}
+		if job := jobViewOf(t, body); job["state"] != "awaiting_approval" {
+			t.Errorf("a neighbouring tenant changed the job's state to %v", job["state"])
+		}
+	})
+}
+
+// TestGuaranteeAHostJoinsTheTenantThatIssuedItsToken is how a machine ends up in one fleet rather than
+// another.
+//
+// The tenant is not in the enrolment URL and not in the body, and that is the point: at the moment a
+// machine enrols it is not authenticated, so anything it says about which customer it belongs to is a
+// claim rather than a fact. The token is the fact. It is a secret the tenant already controls, it is
+// single-use, and redeeming it is what decides whose fleet the machine joins.
+func TestGuaranteeAHostJoinsTheTenantThatIssuedItsToken(t *testing.T) {
+	h := newHarness(t)
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+
+	// Visible to the tenant whose token it used.
+	status, body := h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/hosts/"+state.HostID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("the issuing tenant cannot see the host it enrolled: %d %s", status, body)
+	}
+
+	// And to nobody else, including through the fleet listing where a missing predicate would show.
+	if status, body := h.adminJSON(t, h.otherToken, http.MethodGet, "/api/v1/hosts/"+state.HostID, nil); status != http.StatusNotFound {
+		t.Fatalf("another tenant can see a host enrolled with somebody else's token: %d %s", status, body)
+	}
+	status, body = h.adminJSON(t, h.otherToken, http.MethodGet, "/api/v1/hosts", nil)
+	if status != http.StatusOK {
+		t.Fatalf("listing returned %d: %s", status, body)
+	}
+	if bytes.Contains(body, []byte(state.HostID)) {
+		t.Errorf("another tenant's fleet listing contains the host: %s", body)
+	}
+}
+
+// TestWhoamiNamesTheFleetTheCredentialActsIn covers what the interface needs in order to say which
+// fleet a page is showing.
+//
+// There is deliberately no tenant selector to go with it. A credential reaches exactly one fleet, so
+// this endpoint reports the answer rather than choosing it — which is also why there is no request
+// field an operator could edit to be somewhere else.
+func TestWhoamiNamesTheFleetTheCredentialActsIn(t *testing.T) {
+	h := newHarness(t)
+
+	status, body := h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/whoami", nil)
+	if status != http.StatusOK {
+		t.Fatalf("whoami returned %d: %s", status, body)
+	}
+	var me struct {
+		// Principal is the provider-qualified identity recorded against anything this operator does.
+		Principal string `json:"principal"`
+
+		// Tenant is the fleet the credential acts in.
+		Tenant struct {
+			// Slug and ApprovalMode are what the interface renders.
+			Slug         string `json:"slug"`
+			ApprovalMode string `json:"approvalMode"`
+		} `json:"tenant"`
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		t.Fatalf("decoding whoami: %v", err)
+	}
+	if me.Principal != "test:tester" {
+		t.Errorf("whoami reports the principal as %q, want the provider-qualified one", me.Principal)
+	}
+	if me.Tenant.Slug != "alpha" {
+		t.Errorf("whoami reports the tenant as %q, want alpha", me.Tenant.Slug)
+	}
+	if me.Tenant.ApprovalMode != "second_person" {
+		t.Errorf("whoami reports the approval mode as %q", me.Tenant.ApprovalMode)
 	}
 }

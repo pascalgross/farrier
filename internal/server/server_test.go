@@ -45,15 +45,39 @@ type harness struct {
 	// adminToken authenticates the administrative API as the first operator.
 	adminToken string
 
-	// secondToken authenticates a *different* operator.
+	// secondToken authenticates a *different* operator in the same tenant.
 	//
-	// docs/SECURITY.md §3 requires a second person to approve a destructive job, and a second person is
-	// something the shipped auth.StaticToken cannot express: it holds one token and one subject. This
-	// stands in for the multi-operator provider auth.Provider exists as a seam for, so that the
-	// approval path can be exercised at all — and TestGuaranteeOneOperatorCannotApproveTheirOwnJob
-	// pins what a default installation actually does, which is refuse.
+	// A tenant using second-person approval needs two operators, and two operators is something the
+	// shipped auth.StaticToken cannot express: it holds one token and one subject. This stands in for
+	// the multi-operator provider auth.Provider exists as a seam for, so that the approval path can be
+	// exercised at all.
 	secondToken string
+
+	// tenant is the fleet both operators act in.
+	//
+	// The harness has one because requireOperator refuses an identity without one: an operator
+	// credential reaches exactly one tenant, so there is no such thing as a request that names none.
+	tenant store.TenantID
+
+	// otherToken authenticates an operator in a *different* tenant.
+	//
+	// It is what makes a cross-tenant assertion possible through the HTTP API rather than only through
+	// the store — and the API is where a handler that reached past its scoped store would show up.
+	otherToken string
+
+	// otherTenant is that second fleet.
+	otherTenant store.TenantID
+
+	// platformToken administers tenants and reaches no tenant's data.
+	platformToken string
 }
+
+// scoped returns a store handle for the harness's own tenant.
+//
+// Tests reach the store directly to set up fixtures and to assert on what a handler stored; going
+// through a scoped handle is not a formality, because the unscoped store no longer has those methods
+// at all.
+func (h *harness) scoped() store.Scoped { return h.store.In(h.tenant) }
 
 // newHarness starts a control plane for one test.
 func newHarness(t *testing.T) *harness {
@@ -67,12 +91,33 @@ func newHarness(t *testing.T) *harness {
 
 	memory := store.NewMemory()
 	const (
-		adminToken  = "test-admin-token-0123456789"
-		secondToken = "test-second-operator-0123456789"
+		adminToken    = "test-admin-token-0123456789"
+		secondToken   = "test-second-operator-0123456789"
+		otherToken    = "test-other-tenant-0123456789"
+		platformToken = "test-platform-token-0123456789"
 	)
+
+	// Two fleets, not one. Almost every test below is about a single fleet, but building the second one
+	// here rather than in the tests that need it means every handler runs against a store that holds
+	// somebody else's data — so a handler that reached past its scope has something to reach.
+	tenant := makeTenant(t, memory, "alpha", store.ApprovalSecondPerson)
+	otherTenant := makeTenant(t, memory, "beta", store.ApprovalNone)
+
 	provider := &twoOperators{tokens: map[string]auth.Identity{
-		adminToken:  {Subject: "tester", Display: "Tester", Provider: "test"},
-		secondToken: {Subject: "second-operator", Display: "Second Operator", Provider: "test"},
+		adminToken: {
+			Subject: "tester", Display: "Tester", Provider: "test", Tenant: string(tenant),
+		},
+		secondToken: {
+			Subject: "second-operator", Display: "Second Operator", Provider: "test",
+			Tenant: string(tenant),
+		},
+		otherToken: {
+			Subject: "other-tenant-operator", Display: "Other", Provider: "test",
+			Tenant: string(otherTenant),
+		},
+		platformToken: {
+			Subject: "platform", Display: "Platform", Provider: "test", Platform: true,
+		},
 	}}
 
 	srv, err := server.New(server.Config{
@@ -103,16 +148,36 @@ func newHarness(t *testing.T) *harness {
 	return &harness{
 		server: ts, store: memory, dir: dir, caFile: caFile,
 		adminToken: adminToken, secondToken: secondToken,
+		tenant: tenant, otherToken: otherToken, otherTenant: otherTenant,
+		platformToken: platformToken,
 	}
 }
 
-// twoOperators authenticates two bearer tokens as two distinct identities.
+// makeTenant creates one fleet in the in-memory store.
 //
-// It exists because approval needs a second person and auth.StaticToken has only one subject, so
-// without it the approval path could not be exercised anywhere. It is a stand-in for the OIDC or local
-// -accounts provider auth.Provider is a seam for, and it deliberately does nothing else: this is not a
-// boundary the guarantee rests on, and a more elaborate fake would only invite somebody to believe it
-// was testing the authentication rather than what happens after it.
+// Directly rather than through the tenant API, because the harness needs a tenant before it has a
+// server to ask, and because the tenant API's own behaviour is tested separately rather than being
+// relied on by every other test in the package.
+func makeTenant(t *testing.T, memory *store.Memory, slug string, mode store.ApprovalMode) store.TenantID {
+	t.Helper()
+
+	id := store.TenantID("tenant-" + slug)
+	if err := memory.CreateTenant(context.Background(), store.Tenant{
+		ID: id, Slug: slug, DisplayName: slug, CreatedAt: time.Now().UTC(), ApprovalMode: mode,
+	}); err != nil {
+		t.Fatalf("creating tenant %s: %v", slug, err)
+	}
+	return id
+}
+
+// twoOperators authenticates a handful of bearer tokens as distinct identities.
+//
+// It exists because a tenant using second-person approval needs two operators, a cross-tenant assertion
+// needs an operator in another fleet, and a platform assertion needs a credential with no fleet at all
+// — and auth.StaticToken holds one token, one subject and one tenant. It is a stand-in for the OIDC or
+// local-accounts provider auth.Provider is a seam for, and it deliberately does nothing else: this is
+// not a boundary the guarantee rests on, and a more elaborate fake would only invite somebody to
+// believe it was testing the authentication rather than what happens after it.
 type twoOperators struct {
 	// tokens maps a bearer token to the identity it authenticates.
 	tokens map[string]auth.Identity
@@ -143,7 +208,7 @@ func (h *harness) issueToken(t *testing.T, group string) string {
 	if err != nil {
 		t.Fatalf("generating a token: %v", err)
 	}
-	err = h.store.CreateEnrollmentToken(context.Background(), store.EnrollmentToken{
+	err = h.scoped().CreateEnrollmentToken(context.Background(), store.EnrollmentToken{
 		Hash:      hash,
 		Label:     "test",
 		Group:     group,
@@ -200,7 +265,7 @@ func TestEnrolmentIssuesAWorkingCertificate(t *testing.T) {
 	if state.HostID == "" {
 		t.Fatal("enrolment returned no host id")
 	}
-	host, err := h.store.GetHost(context.Background(), state.HostID)
+	host, err := h.scoped().GetHost(context.Background(), state.HostID)
 	if err != nil {
 		t.Fatalf("the enrolled host is not in the store: %v", err)
 	}
@@ -263,7 +328,7 @@ func TestUnknownAndExpiredTokensAreIndistinguishable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating a token: %v", err)
 	}
-	if err := h.store.CreateEnrollmentToken(context.Background(), store.EnrollmentToken{
+	if err := h.scoped().CreateEnrollmentToken(context.Background(), store.EnrollmentToken{
 		Hash: hash, CreatedAt: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(-time.Hour),
 	}); err != nil {
 		t.Fatalf("storing an expired token: %v", err)
@@ -368,7 +433,7 @@ func TestRevocationTakesEffectImmediately(t *testing.T) {
 		t.Fatalf("a freshly enrolled host could not heartbeat: %v", err)
 	}
 
-	if err := h.store.RevokeHost(context.Background(), state.HostID); err != nil {
+	if err := h.scoped().RevokeHost(context.Background(), state.HostID); err != nil {
 		t.Fatalf("revoking: %v", err)
 	}
 
@@ -413,7 +478,7 @@ func TestHeartbeatIsDigestFirst(t *testing.T) {
 		t.Fatalf("heartbeat with facts: %v", err)
 	}
 
-	host, err := h.store.GetHost(ctx, state.HostID)
+	host, err := h.scoped().GetHost(ctx, state.HostID)
 	if err != nil {
 		t.Fatalf("reading the host: %v", err)
 	}
@@ -515,7 +580,7 @@ func TestGuaranteeDigestFirstWorksWithRealFacts(t *testing.T) {
 		t.Fatalf("heartbeat with facts: %v", err)
 	}
 
-	stored, err := h.store.GetHost(ctx, state.HostID)
+	stored, err := h.scoped().GetHost(ctx, state.HostID)
 	if err != nil {
 		t.Fatalf("reading the host: %v", err)
 	}
@@ -569,7 +634,7 @@ func TestGuaranteeALostFullReportIsAskedForAgain(t *testing.T) {
 		}
 	}
 
-	stored, err := h.store.GetHost(ctx, state.HostID)
+	stored, err := h.scoped().GetHost(ctx, state.HostID)
 	if err != nil {
 		t.Fatalf("reading the host: %v", err)
 	}
@@ -634,7 +699,7 @@ func TestJobLongPollReturnsEarlyWhenWorkArrives(t *testing.T) {
 
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		h.store.Enqueue(state.HostID, protocol.Job{
+		h.store.Enqueue(h.tenant, state.HostID, protocol.Job{
 			ID: "01JTESTJOB", Intent: "facts.collect", Class: "read", IssuedAt: time.Now(),
 		})
 	}()
@@ -665,7 +730,7 @@ func TestResultsAreIdempotent(t *testing.T) {
 	client := h.agentClient(t, state)
 	ctx := context.Background()
 
-	h.store.Enqueue(state.HostID, protocol.Job{
+	h.store.Enqueue(h.tenant, state.HostID, protocol.Job{
 		ID: "01JTESTJOB", Intent: "facts.collect", Class: "read", IssuedAt: time.Now(),
 	})
 	if _, err := client.PollJobs(ctx, 0); err != nil {
@@ -684,7 +749,7 @@ func TestResultsAreIdempotent(t *testing.T) {
 		}
 	}
 
-	stored, ok := h.store.Result("01JTESTJOB")
+	stored, ok := h.store.Result(h.tenant, "01JTESTJOB")
 	if !ok {
 		t.Fatal("the result was not recorded")
 	}
@@ -705,7 +770,7 @@ func TestGuaranteeAHostCannotReportAnotherHostsJob(t *testing.T) {
 	attacker := h.enrolHost(t, "web-02", h.issueToken(t, "web-prod"))
 	ctx := context.Background()
 
-	h.store.Enqueue(victim.HostID, protocol.Job{
+	h.store.Enqueue(h.tenant, victim.HostID, protocol.Job{
 		ID: "01JVICTIMJOB", Intent: "facts.collect", Class: "read", IssuedAt: time.Now(),
 	})
 
@@ -717,7 +782,7 @@ func TestGuaranteeAHostCannotReportAnotherHostsJob(t *testing.T) {
 	if err := h.agentClient(t, attacker).ReportResult(ctx, forged); err == nil {
 		t.Fatal("a host reported a result for another host's job")
 	}
-	if _, recorded := h.store.Result("01JVICTIMJOB"); recorded {
+	if _, recorded := h.store.Result(h.tenant, "01JVICTIMJOB"); recorded {
 		t.Fatal("the forged result was recorded")
 	}
 
@@ -732,7 +797,7 @@ func TestGuaranteeAHostCannotReportAnotherHostsJob(t *testing.T) {
 	if err := victimClient.ReportResult(ctx, genuine); err != nil {
 		t.Fatalf("the owning host could not report its own result: %v", err)
 	}
-	stored, recorded := h.store.Result("01JVICTIMJOB")
+	stored, recorded := h.store.Result(h.tenant, "01JVICTIMJOB")
 	if !recorded || stored.Output != "collected" {
 		t.Errorf("the genuine result was not recorded: %+v", stored)
 	}
@@ -841,7 +906,7 @@ func TestARevokedMachineCanEnrolAgain(t *testing.T) {
 		t.Fatal("a machine that is already enrolled enrolled a second time")
 	}
 
-	if err := h.store.RevokeHost(ctx, first.HostID); err != nil {
+	if err := h.scoped().RevokeHost(ctx, first.HostID); err != nil {
 		t.Fatalf("revoking: %v", err)
 	}
 	second, err := agent.Enroll(ctx, agent.EnrollOptions{
@@ -864,7 +929,7 @@ func TestARevokedMachineCanEnrolAgain(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("the re-enrolled host cannot speak: %v", err)
 	}
-	if _, err := h.store.GetHost(ctx, first.HostID); err != nil {
+	if _, err := h.scoped().GetHost(ctx, first.HostID); err != nil {
 		t.Errorf("the revoked host's history was discarded: %v", err)
 	}
 }
@@ -879,7 +944,7 @@ func TestDeletingAHostAlsoReleasesItsMachine(t *testing.T) {
 	ctx := context.Background()
 
 	first := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
-	if err := h.store.DeleteHost(ctx, first.HostID); err != nil {
+	if err := h.scoped().DeleteHost(ctx, first.HostID); err != nil {
 		t.Fatalf("deleting: %v", err)
 	}
 	if _, err := agent.Enroll(ctx, agent.EnrollOptions{
