@@ -401,9 +401,15 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 				"job", job.ID, "error", err)
 		}
 		if err := a.client.ReportResult(ctx, result); err != nil {
-			slog.Warn("could not report a job result; it stays spooled for the next pass",
-				"job", job.ID, "error", err)
-			continue
+			if !permanentlyRefused(err) {
+				slog.Warn("could not report a job result; it stays spooled for the next pass",
+					"job", job.ID, "error", err)
+				continue
+			}
+			// Refused rather than undelivered: see DeliverPending for why that is the one case where
+			// the spool file goes rather than staying.
+			slog.Error("a job result was refused permanently and has been discarded",
+				"job", job.ID, "status", result.Status, "error", err)
 		}
 		spoolFile, pathErr := SpoolPath(a.state.Dir(), result.JobID)
 		if pathErr != nil {
