@@ -347,6 +347,13 @@ A job is a *typed intent with typed parameters*. It is never a command, a script
 a URL to fetch code from. An agent receiving an `intent` it does not recognise MUST report
 `unsupported_intent` and MUST NOT attempt any fallback interpretation.
 
+`id` is letters and digits only, at most 64 of them. For an unsigned job the control plane generates
+it; for a signed one the signer chooses it, and the control plane MUST refuse a request whose `id` is
+any other shape rather than correcting it — the signature covers the id, so a normalised id would not
+verify. The rule exists because the id is a path segment in [§6](#6-post-agentv1jobsidresult) and a
+filename in the agent's result spool: an id containing `/`, `?` or `#` yields work whose result has
+nowhere to go.
+
 ### 5.1 Agent-side acceptance checks
 
 Before executing anything, the agent MUST, in this order, and MUST fail closed on any error:
@@ -402,7 +409,11 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
 ```
 
 `status` is one of `succeeded`, `failed`, `refused_by_policy`, `refused_unsigned`, `refused_clock_skew`,
-`unsupported_intent`, `expired`.
+`unsupported_intent`, `expired`. The set is closed and the control plane **MUST** reject any other word
+with `400`, because every client renders `status` as the job's state: a host that could report `queued`
+could make a job it had already run look untouched. An agent that meets a `400` here has produced a
+result this control plane cannot store; it logs and drops it like any other `400`, per
+[§11](#11-errors).
 
 ### 6.1 Idempotency
 

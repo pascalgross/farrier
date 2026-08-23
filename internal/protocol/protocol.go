@@ -15,7 +15,10 @@
 // duration parser.
 package protocol
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
 
 // Version is the protocol version, which appears in every path.
 //
@@ -343,6 +346,34 @@ type JobsResponse struct {
 	Jobs []Job `json:"jobs"`
 }
 
+// MaxJobIDBytes bounds a job identifier.
+//
+// A generated one is 26 characters, so this is room for a signer who wants a readable id
+// ("reboot-web01-2026-08-23" is a legitimate thing to want) without the id becoming a place to put a
+// kilobyte. It is a filename on the host and a path segment on the wire, and both have limits well
+// above this.
+const MaxJobIDBytes = 64
+
+// jobIDPattern is the only shape a job identifier may take.
+//
+// Crockford base32 is upper-case alphanumeric without I, L, O and U, so an allowlist is exact rather
+// than a list of characters somebody thought to exclude. Lower case is permitted so that an identifier
+// that has been through a case-normalising layer still round-trips.
+//
+// The rule lives here, in the package both sides share, rather than on either side of the wire. The id
+// is a path segment in POST /agent/v1/jobs/{id}/result and a filename in the agent's result spool, so a
+// control plane that accepted an id the agent refuses would produce work whose result has nowhere to go
+// — and one that accepted a "/" would produce work whose result POST does not route at all.
+var jobIDPattern = regexp.MustCompile(`^[0-9A-Za-z]+$`)
+
+// ValidJobID reports whether an identifier is one both sides will carry.
+func ValidJobID(id string) bool {
+	return id != "" && len(id) <= MaxJobIDBytes && jobIDPattern.MatchString(id)
+}
+
+// JobIDShape describes the accepted shape, for an error message that says what to do instead.
+const JobIDShape = "letters and digits only, at most 64 of them"
+
 // Result statuses. They are stable strings because they end up in the UI, in the audit log and in
 // operators' alerting rules, and renaming one silently breaks somebody's dashboard.
 const (
@@ -367,6 +398,25 @@ const (
 	// StatusExpired means the job's validity window had closed by the local clock.
 	StatusExpired = "expired"
 )
+
+// statuses is the closed set, as a set, for the check below.
+var statuses = map[string]bool{
+	StatusSucceeded:         true,
+	StatusFailed:            true,
+	StatusRefusedByPolicy:   true,
+	StatusRefusedUnsigned:   true,
+	StatusRefusedClockSkew:  true,
+	StatusUnsupportedIntent: true,
+	StatusExpired:           true,
+}
+
+// ValidStatus reports whether a reported status is one of the seven above.
+//
+// The control plane checks this on the way in because the status is what every client renders as the
+// job's state. Passing an unknown word through means a host can choose that word — including one of the
+// control plane's own state words, so that a job which has been claimed and has reported a result
+// renders as though nobody had touched it, and an operator re-issues work that already ran.
+func ValidStatus(s string) bool { return statuses[s] }
 
 // ResultRequest is the body of POST /agent/v1/jobs/{id}/result.
 //

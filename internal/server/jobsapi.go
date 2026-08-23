@@ -3,8 +3,10 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/auth"
@@ -196,11 +198,19 @@ func jobState(rec store.JobRecord) string {
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who auth.Identity) {
 	var req jobRequest
 	if err := decodeJSON(w, r, MaxJobRequestBytes, &req); err != nil {
-		if isTooLarge(err) {
+		switch {
+		case isTooLarge(err):
 			writeError(w, http.StatusRequestEntityTooLarge, "too_large", "the request body is too large")
-			return
+		case errors.Is(err, errTrailingData):
+			// Worth its own message here. This endpoint is the one somebody scripts in a loop, and the
+			// failure it catches — two concatenated requests, of which only the first was ever going to
+			// be read — otherwise looks exactly like success for both.
+			writeError(w, http.StatusBadRequest, "malformed",
+				"this endpoint issues one job to one host, and the body holds more than one JSON "+
+					"value. Nothing was queued; send them as separate requests.")
+		default:
+			writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
 		}
-		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
 		return
 	}
 
@@ -244,8 +254,14 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who aut
 	}
 	switch err := s.cfg.Store.CreateJob(r.Context(), record); {
 	case errors.Is(err, store.ErrConflict):
+		// Two different uniqueness rules reach here and they are not the same news. The job id is the
+		// primary key and is global, so a collision on it may well belong to another host entirely;
+		// (host_id, nonce) is per host. Saying "for this host" of both told an operator their own
+		// queue already held the job when it did not, and they moved on.
 		writeError(w, http.StatusConflict, "duplicate",
-			"a job with this id, or this signed payload, has already been queued for this host")
+			"this job was not queued: either its id is already in use — job ids are unique across the "+
+				"whole fleet, so it may belong to another host — or this host has already been sent a "+
+				"job with this nonce")
 		return
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "unknown_host", "no such host")
@@ -328,6 +344,16 @@ func (s *Server) validateJobRequest(w http.ResponseWriter, req jobRequest) (inte
 			return refuse(http.StatusBadRequest, "malformed",
 				"a signed job must carry its id, nonce, notBefore and notAfter: all four are covered "+
 					"by the signature, so a value chosen here would invalidate it")
+		}
+		// The id is the signer's, but it is not arbitrary. It becomes a path segment in the result POST
+		// and a filename in the agent's spool, so an id carrying a slash produces a job whose result the
+		// host can never deliver — and the shape has to be refused here rather than corrected, because
+		// the signature covers it and a normalised id would simply stop verifying.
+		if !protocol.ValidJobID(req.ID) {
+			return refuse(http.StatusBadRequest, "malformed",
+				"the job id must be "+protocol.JobIDShape+": it is a path segment in the result "+
+					"endpoint and a filename in the agent's spool, and a host refuses any other shape. "+
+					"Sign a different id rather than expecting this one to be corrected.")
 		}
 		if !req.NotAfter.After(req.NotBefore) {
 			return refuse(http.StatusBadRequest, "malformed", "notAfter must be after notBefore")
@@ -480,8 +506,24 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who au
 }
 
 // handleListJobs returns recent jobs, newest first, optionally for one host.
+//
+// The listing is bounded, and the response says so when the bound bit. A page that silently returns the
+// newest hundred reads as the whole truth, and the row it is most likely to be hiding is a destructive
+// job nobody has approved yet — the one thing docs/SECURITY.md §3 needs a second person to be able to
+// find. Hence both the disclosure and the awaiting filter, which is not subject to the same drift.
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, _ auth.Identity) {
-	filter := store.JobFilter{HostID: r.URL.Query().Get("host")}
+	query := r.URL.Query()
+	limit, err := jobLimit(query.Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "malformed", err.Error())
+		return
+	}
+
+	filter := store.JobFilter{
+		HostID:           query.Get("host"),
+		Limit:            limit,
+		AwaitingApproval: query.Get("awaiting") == "true",
+	}
 
 	records, err := s.cfg.Store.ListJobs(r.Context(), filter)
 	if err != nil {
@@ -494,7 +536,38 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, _ auth.I
 	for _, rec := range records {
 		views = append(views, toJobView(rec))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": views})
+	effective := filter.Limit
+	if effective <= 0 {
+		effective = store.DefaultJobLimit
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"jobs":     views,
+		"limit":    effective,
+		"maxLimit": store.MaxJobLimit,
+		// True when the listing filled its bound, so there may be older jobs it did not return. It is
+		// reported rather than inferred from len(jobs) == limit, because a client that has to work that
+		// out for itself is a client that will not.
+		"truncated": len(views) >= effective,
+	})
+}
+
+// jobLimit reads the listing bound from the query string.
+//
+// An unparseable or out-of-range value is refused rather than quietly replaced by the default: a
+// caller who asked for a thousand and silently got a hundred draws exactly the wrong conclusion from a
+// short list.
+func jobLimit(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errors.New("limit must be a whole number")
+	}
+	if n < 1 || n > store.MaxJobLimit {
+		return 0, fmt.Errorf("limit must be between 1 and %d", store.MaxJobLimit)
+	}
+	return n, nil
 }
 
 // handleGetJob returns one job and its result.

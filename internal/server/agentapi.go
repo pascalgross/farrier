@@ -342,6 +342,18 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, host store
 		writeError(w, http.StatusBadRequest, "malformed", "the job id in the body does not match the path")
 		return
 	}
+	// The status is a closed set, and this is the one field of a result the control plane must not pass
+	// through. Every client renders it as the job's state, so an unchecked word lets a host name its own
+	// job "queued" — a job that has been claimed and has reported a result then looks untouched, and an
+	// operator re-issues work that has already run. A future agent reporting a word this build does not
+	// know is refused for the same reason and retries, rather than being displayed as a state.
+	if !protocol.ValidStatus(req.Status) {
+		slog.Warn("a host reported an unknown result status",
+			"host", host.ID, "job", jobID, "status", req.Status)
+		writeError(w, http.StatusBadRequest, "malformed",
+			"the result status is not one this control plane knows; see docs/PROTOCOL.md §6")
+		return
+	}
 	req.JobID = jobID
 	req.Output, req.OutputTruncated = protocol.TruncateOutput(req.Output)
 
