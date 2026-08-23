@@ -270,7 +270,12 @@ func rebootIfRequired(ctx context.Context, jobID string) (string, error) {
 			"reboot, which local policy refuses: %w", decision.Error())
 	}
 
-	res, err := run.Command(ctx, run.Shutdown, "-r", "now", "farrier: rebooting after applying updates")
+	// "--" for the same reason helpers/reboot-host uses it: the message is a positional argument and
+	// shutdown(8) would read a leading hyphen there as an option. This message is a constant and cannot
+	// begin with one, so nothing is wrong here today — the separator is present so that the safe form is
+	// what the next person copies.
+	res, err := run.Command(ctx, run.Shutdown, "-r", "--", "now",
+		"farrier: rebooting after applying updates")
 	if err != nil {
 		return commandOutput(res), fmt.Errorf("apply-updates: the updates were applied but the "+
 			"reboot could not be scheduled: %w", err)

@@ -70,12 +70,34 @@ func main() {
 	}, *dryRun)
 }
 
+// rebootArgs builds the exact argument vector one reboot invokes shutdown(8) with.
+//
+// Separated from reboot so it can be asserted, because the property worth pinning is not observable
+// once the process has been started: the "--" is the whole point of this function and a maintainer
+// tidying the slice would remove it without any test noticing.
+//
+// That separator matters because the message is a positional argument and shutdown(8)'s options are
+// anything but harmless in that slot. "-h" is poweroff and overrides "-r", so the host does not come
+// back and needs a console. "-k" sends the wall message and reboots nothing — a reboot job that
+// reports success and did not happen, which is the same silent wrong answer the platform seam exists
+// to prevent, arriving at a different point. "-c" cancels a shutdown already pending.
+//
+// internal/intent already refuses a message beginning with a hyphen, and that is the defence that
+// should hold. This is the second one, kept because it is this call site that would be wrong if the
+// first were ever relaxed, and because "--" costs nothing.
+func rebootArgs(params intent.RebootParams) []string {
+	args := []string{"-r", "--", shutdownTime(params.DelaySeconds)}
+	if params.Message != "" {
+		args = append(args, params.Message)
+	}
+	return args
+}
+
 // reboot schedules the reboot described by the validated parameters.
 //
 // The delay and the message come from job.Params rather than from the flags, so the values reaching
-// shutdown(8) are the ones the catalogue's validators accepted — the message in particular is
-// constrained to a character set that cannot mean anything to a terminal, a log parser or an argument
-// parser, and that constraint is only worth having if this is where the value comes from.
+// shutdown(8) are the ones the catalogue's validators accepted, and that is only worth having if this
+// is where the value comes from.
 //
 // It returns as soon as the reboot is scheduled. The host going away is what completes the job, which
 // is why the agent fsyncs a provisional result before invoking this at all.
@@ -85,13 +107,8 @@ func reboot(ctx context.Context, job helper.Job) (string, error) {
 		return "", fmt.Errorf("reboot-host: %s did not decode to reboot parameters", job.Intent)
 	}
 
+	res, err := run.Command(ctx, run.Shutdown, rebootArgs(params)...)
 	when := shutdownTime(params.DelaySeconds)
-	args := []string{"-r", when}
-	if params.Message != "" {
-		args = append(args, params.Message)
-	}
-
-	res, err := run.Command(ctx, run.Shutdown, args...)
 	if err != nil {
 		return output(res), fmt.Errorf("reboot-host: scheduling a reboot for %s: %w", when, err)
 	}

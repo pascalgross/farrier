@@ -25,13 +25,18 @@ const maxParamsBytes = 8 << 10
 // allowlist.
 var unitPattern = regexp.MustCompile(`^[a-zA-Z0-9@._-]+\.(service|socket|timer)$`)
 
-// messagePattern bounds the wall message a reboot may carry.
+// messagePattern bounds the character set of the wall message a reboot may carry.
 //
-// The character set is far narrower than the message could safely be, and that is on purpose. Every
-// external invocation is execve with a fixed argv slice, so quoting is not the risk; the risk is that
-// a future maintainer moves one of these values somewhere a shell, a log parser or a terminal does
-// interpret it. A parameter that cannot express a metacharacter cannot be the thing that goes wrong
-// on that day.
+// The set is far narrower than the message could safely be, and that is on purpose. Every external
+// invocation is execve with a fixed argv slice, so quoting is not the risk; the risk is that a future
+// maintainer moves one of these values somewhere a shell, a log parser or a terminal does interpret it.
+// A parameter that cannot express a metacharacter cannot be the thing that goes wrong on that day.
+//
+// What it deliberately does not bound is POSITION, and that distinction cost a real defect: a hyphen is
+// legitimate inside a message ("pre-flight check") and dangerous as its first character, because the
+// message reaches shutdown(8) as a positional argument and an argument parser reads a leading hyphen as
+// an option. The character set cannot express that rule, so it is checked separately below rather than
+// asserted here.
 var messagePattern = regexp.MustCompile(`^[A-Za-z0-9 .,:_-]{0,200}$`)
 
 // ErrUnknownField is returned when a parameter object carries a field the intent does not define.
@@ -270,6 +275,19 @@ func decodeReboot(n Name) func([]byte) (Params, error) {
 		}
 		if wire.DelaySeconds < 0 || wire.DelaySeconds > 3600 {
 			return nil, fmt.Errorf("delaySeconds %d out of range 0..3600", wire.DelaySeconds)
+		}
+		// Position before character set, so that the operator who typed something dangerous is told
+		// which rule they broke and why, rather than being shown a regular expression.
+		//
+		// The three that matter are not hypothetical: shutdown(8) reads "-h" as poweroff and it
+		// OVERRIDES "-r", so the host does not come back; "-k" sends the wall message and reboots
+		// nothing, which is a reboot job that reports success and did not happen; and "-c" cancels a
+		// shutdown already pending. The helper also passes "--" before its positional arguments, and
+		// both defences are kept because this one bounds what any future call site can receive.
+		if strings.HasPrefix(wire.Message, "-") {
+			return nil, fmt.Errorf("message must not begin with a hyphen: it reaches shutdown(8) as a "+
+				"positional argument, where a leading hyphen is read as an option — %q would power the "+
+				"host off instead of rebooting it", wire.Message)
 		}
 		if !messagePattern.MatchString(wire.Message) {
 			return nil, fmt.Errorf("message does not match %s", messagePattern)

@@ -69,3 +69,48 @@ func TestEveryDelayTheCatalogueAcceptsProducesAValidTimeSpecification(t *testing
 		}
 	}
 }
+
+// TestTheWallMessageCannotReachShutdownAsAnOption is why rebootArgs is a function.
+//
+// The message is a positional argument, and shutdown(8)'s options are not harmless in that slot: "-h"
+// is poweroff and overrides "-r", so the host does not come back; "-k" sends the warnings and reboots
+// nothing, which is a job reporting a success that did not happen; "-c" cancels a pending shutdown.
+// internal/intent refuses a message beginning with a hyphen, so these values cannot arrive here through
+// the catalogue — this asserts the second defence, the one that still holds if the first is relaxed.
+func TestTheWallMessageCannotReachShutdownAsAnOption(t *testing.T) {
+	for _, message := range []string{"-h", "-k", "-c", "--poweroff", "-r"} {
+		args := rebootArgs(intent.RebootParams{DelaySeconds: 60, Message: message})
+
+		sep := -1
+		for i, a := range args {
+			if a == "--" {
+				sep = i
+				break
+			}
+		}
+		if sep < 0 {
+			t.Fatalf("rebootArgs(%q) = %q, with no %q separator: the message is parsed as an option",
+				message, args, "--")
+		}
+		found := false
+		for _, a := range args[sep+1:] {
+			if a == message {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("rebootArgs(%q) = %q: the message is not after the separator", message, args)
+		}
+	}
+}
+
+// TestTheRebootFlagComesBeforeTheSeparator pins the other half of the argument vector.
+//
+// A "--" placed too early would make "-r" positional, and shutdown(8) with no action flag is a halt
+// rather than a reboot. The separator has exactly one correct position and both neighbours matter.
+func TestTheRebootFlagComesBeforeTheSeparator(t *testing.T) {
+	args := rebootArgs(intent.RebootParams{DelaySeconds: 0})
+	if len(args) < 3 || args[0] != "-r" || args[1] != "--" || args[2] != "now" {
+		t.Fatalf("rebootArgs = %q; want -r, then --, then the time", args)
+	}
+}
