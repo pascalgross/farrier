@@ -26,6 +26,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/auth"
@@ -84,6 +86,22 @@ type Server struct {
 	// mux routes every request.
 	mux *http.ServeMux
 
+	// paths matches a request path against the API and agent routes while ignoring the method.
+	//
+	// It exists so that a request under /api or /agent that matched no route can tell an unknown path
+	// from a known path asked for with the wrong method, and answer 404 or 405 accordingly. Deriving it
+	// from the same route() calls that build mux is what keeps the two from drifting: a hand-kept second
+	// table would answer 405 for a route somebody had already deleted.
+	paths *http.ServeMux
+
+	// allow accumulates, per route pattern, the methods that pattern is registered with.
+	//
+	// It is a build-time scratch table rather than state: routes() fills it and sealRoutes() turns it
+	// into handlers on paths. A ServeMux panics on a duplicated pattern, and three of these routes
+	// share a path with a different method, so the methods have to be collected before they are
+	// registered.
+	allow map[string][]string
+
 	// assets is the embedded web application rooted at its own directory.
 	assets fs.FS
 
@@ -126,6 +144,8 @@ func New(cfg Config) (*Server, error) {
 		assets:       assets,
 		hasUI:        statErr == nil,
 		enrolLimiter: newRateLimiter(enrollBurst, enrollRefill),
+		paths:        http.NewServeMux(),
+		allow:        map[string][]string{},
 	}
 	s.routes()
 	return s, nil
@@ -138,30 +158,85 @@ func New(cfg Config) (*Server, error) {
 // way the intent catalogue answers it for hosts.
 func (s *Server) routes() {
 	// The agent protocol. Five endpoints, no more.
-	s.mux.HandleFunc("POST "+protocol.PathEnroll, s.handleEnroll)
-	s.mux.Handle("POST "+protocol.PathHeartbeat, s.requireAgent(s.handleHeartbeat))
-	s.mux.Handle("GET "+protocol.PathJobs, s.requireAgent(s.handleJobs))
-	s.mux.Handle("POST "+protocol.PathResults+"{id}/result", s.requireAgent(s.handleResult))
-	s.mux.Handle("POST "+protocol.PathRenew, s.requireAgent(s.handleRenew))
+	s.route(http.MethodPost, protocol.PathEnroll, http.HandlerFunc(s.handleEnroll))
+	s.route(http.MethodPost, protocol.PathHeartbeat, s.requireAgent(s.handleHeartbeat))
+	s.route(http.MethodGet, protocol.PathJobs, s.requireAgent(s.handleJobs))
+	s.route(http.MethodPost, protocol.PathResults+"{id}/result", s.requireAgent(s.handleResult))
+	s.route(http.MethodPost, protocol.PathRenew, s.requireAgent(s.handleRenew))
 
 	// The administrative API, for the UI and for scripting.
-	s.mux.Handle("GET /api/v1/hosts", s.requireOperator(s.handleListHosts))
-	s.mux.Handle("GET /api/v1/hosts/{id}", s.requireOperator(s.handleGetHost))
-	s.mux.Handle("POST /api/v1/hosts/{id}/revoke", s.requireOperator(s.handleRevokeHost))
-	s.mux.Handle("DELETE /api/v1/hosts/{id}", s.requireOperator(s.handleDeleteHost))
-	s.mux.Handle("GET /api/v1/tokens", s.requireOperator(s.handleListTokens))
-	s.mux.Handle("POST /api/v1/tokens", s.requireOperator(s.handleCreateToken))
-	s.mux.Handle("GET /api/v1/catalogue", s.requireOperator(s.handleCatalogue))
-	s.mux.Handle("GET /api/v1/jobs", s.requireOperator(s.handleListJobs))
-	s.mux.Handle("POST /api/v1/jobs", s.requireOperator(s.handleCreateJob))
-	s.mux.Handle("GET /api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
-	s.mux.Handle("POST /api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
+	s.route(http.MethodGet, "/api/v1/hosts", s.requireOperator(s.handleListHosts))
+	s.route(http.MethodGet, "/api/v1/hosts/{id}", s.requireOperator(s.handleGetHost))
+	s.route(http.MethodPost, "/api/v1/hosts/{id}/revoke", s.requireOperator(s.handleRevokeHost))
+	s.route(http.MethodDelete, "/api/v1/hosts/{id}", s.requireOperator(s.handleDeleteHost))
+	s.route(http.MethodGet, "/api/v1/tokens", s.requireOperator(s.handleListTokens))
+	s.route(http.MethodPost, "/api/v1/tokens", s.requireOperator(s.handleCreateToken))
+	s.route(http.MethodGet, "/api/v1/catalogue", s.requireOperator(s.handleCatalogue))
+	s.route(http.MethodGet, "/api/v1/jobs", s.requireOperator(s.handleListJobs))
+	s.route(http.MethodPost, "/api/v1/jobs", s.requireOperator(s.handleCreateJob))
+	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
+	s.route(http.MethodPost, "/api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
 
 	// Unauthenticated, and deliberately so: a health check that needs a credential is a health check
 	// the load balancer cannot perform.
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 
+	// Everything else under the two API prefixes is a client error and is answered as one. Without
+	// these two the "/" fallback below would match instead and return 200 and an HTML page: a mistyped
+	// approve call would look like an approval, and — the sharper edge — an agent posting a result to a
+	// path that does not route would see 2xx, treat the result as delivered and drop it, which quietly
+	// converts the protocol's at-least-once delivery into at-most-once.
+	s.mux.HandleFunc("/api/", s.handleAPIMiss)
+	s.mux.HandleFunc("/agent/", s.handleAPIMiss)
+
 	s.mux.HandleFunc("/", s.handleUI)
+	s.sealRoutes()
+}
+
+// route registers one API or agent route and records the method its path accepts.
+//
+// Every such route goes through here rather than through mux directly, so that the method table cannot
+// be left behind by an edit to the route list above.
+func (s *Server) route(method, pattern string, h http.Handler) {
+	s.mux.Handle(method+" "+pattern, h)
+	s.allow[pattern] = append(s.allow[pattern], method)
+}
+
+// sealRoutes turns the collected methods into the path-only mux the miss handler consults.
+func (s *Server) sealRoutes() {
+	for pattern, methods := range s.allow {
+		slices.Sort(methods)
+		s.paths.Handle(pattern, allowedMethods(strings.Join(methods, ", ")))
+	}
+}
+
+// allowedMethods answers a request whose path is a real route but whose method is not.
+//
+// It is a distinct type rather than a closure so that the miss handler can recognise its own handler by
+// type assertion: http.ServeMux also returns synthesised redirect handlers, and a 405 for one of those
+// would be a lie about a path that does not exist.
+type allowedMethods string
+
+// ServeHTTP reports that the path exists but not for this method.
+func (a allowedMethods) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Allow", string(a))
+	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+		"this path does not accept "+r.Method+"; it accepts "+string(a))
+}
+
+// handleAPIMiss answers a request under /api or /agent that matched no route.
+//
+// The distinction it draws is worth the machinery: 405 tells a client its path is right and its verb is
+// wrong, and 404 tells it the path is wrong. Answering 404 for both would send somebody hunting for a
+// typo in a path that is correct.
+func (s *Server) handleAPIMiss(w http.ResponseWriter, r *http.Request) {
+	if h, _ := s.paths.Handler(r); h != nil {
+		if allow, ok := h.(allowedMethods); ok {
+			allow.ServeHTTP(w, r)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", "no such endpoint")
 }
 
 // ServeHTTP routes a request, so the server can be used directly in tests.
@@ -376,8 +451,24 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) er
 	if err := dec.Decode(dst); err != nil {
 		return err
 	}
+	// One object, and nothing after it. encoding/json stops at the end of the first value and would
+	// otherwise discard whatever follows in silence, so a caller that concatenated two job requests —
+	// a `jq -c` stream piped into curl, a loop missing its separator — would be told 201 for the first
+	// and never told anything at all about the second. internal/intent/params.go refuses exactly this
+	// one layer down, for the same reason.
+	if dec.More() {
+		return errTrailingData
+	}
 	return nil
 }
+
+// errTrailingData is returned for a body that holds more than the one value it should.
+//
+// It is a sentinel rather than a formatted error so that a handler can tell this failure from a syntax
+// error and say which it was. Both are a 400, but they are different mistakes: one body is malformed
+// and the other is two well-formed requests where the endpoint takes one, and only the second leaves
+// the caller believing something was queued that was not.
+var errTrailingData = errors.New("server: the request body holds more than one JSON value")
 
 // isTooLarge reports whether a decode failed because the body exceeded its bound.
 //
