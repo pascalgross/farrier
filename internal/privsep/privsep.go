@@ -153,6 +153,14 @@ const (
 	ExitFailed = 5
 )
 
+// ReplyTimeout bounds how long a helper spends handing its answer back.
+//
+// A reply is at most a little over protocol.MaxJobOutputBytes and a unix socket's send buffer is larger
+// than that, so a caller that is still there never comes close to this. It exists for the caller that is
+// not: an agent killed mid-operation leaves a root process blocked on a write to nobody, and a bound is
+// cheaper than reasoning about whether that can happen.
+const ReplyTimeout = 30 * time.Second
+
 // Request is one privileged operation, as the agent asks for it.
 //
 // Note what is absent, because the absence is the design: there is no program, no path, no argument

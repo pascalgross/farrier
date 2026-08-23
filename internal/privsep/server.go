@@ -166,10 +166,19 @@ func readRequest(conn net.Conn) (Request, error) {
 }
 
 // writeResponse encodes a reply and finishes the connection.
+//
+// The write is bounded as well as the read. A reply is at most a little over
+// protocol.MaxJobOutputBytes and a unix socket's buffer is larger than that, so this deadline should
+// never fire against a caller that is still there — which is the point of setting it. A helper blocked
+// writing to an agent that died mid-operation would be a root process held open by a process that no
+// longer exists.
 func writeResponse(conn *net.UnixConn, resp Response) error {
 	raw, err := json.Marshal(resp)
 	if err != nil {
 		return fmt.Errorf("privsep: encoding the reply: %w", err)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(ReplyTimeout)); err != nil {
+		return fmt.Errorf("privsep: setting a write deadline: %w", err)
 	}
 	if _, err := conn.Write(raw); err != nil {
 		return fmt.Errorf("privsep: sending the reply: %w", err)
