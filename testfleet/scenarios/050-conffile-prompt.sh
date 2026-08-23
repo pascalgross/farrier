@@ -35,16 +35,29 @@ else
 	skip "this image's dpkg completed anyway; the assertion below is the one that matters"
 fi
 
+# The naive run above was made to fail on purpose, and apt exits 100 leaving dpkg half-configured —
+# after which every apt-get refuses to do anything until somebody repairs it. Repairing here is not
+# papering over that failure; it is separating the two runs, so that what the assertion below
+# measures is the conffile options rather than the wreckage of the run that was meant to fail.
+run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
+	dpkg --configure -a >/dev/null 2>&1 || true'
+
 # The form Farrier's executor must use. It has to complete, and it has to keep the administrator's
 # edited file rather than silently replacing it.
 say "reinstalling the way the executor must"
+correct_status=0
 run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
 	timeout 120 apt-get install -y -qq --reinstall \
 		-o Dpkg::Options::=--force-confdef \
 		-o Dpkg::Options::=--force-confold \
 		-o DPkg::Lock::Timeout=600 \
-		logrotate </dev/null >/tmp/correct.log 2>&1' \
-	|| fail "the run with --force-confdef and --force-confold did not complete"
+		logrotate </dev/null >/tmp/correct.log 2>&1' || correct_status=$?
+if [ "$correct_status" -ne 0 ]; then
+	# The log, not just the verdict. "Did not complete" sends somebody to read a CI log that does not
+	# contain the reason, which is a whole round trip to learn what apt had already said.
+	run_sh "$INSTANCE" 'tail -n 20 /tmp/correct.log' >&2 || true
+	fail "the run with --force-confdef and --force-confold did not complete (exit $correct_status)"
+fi
 pass "the run completes with --force-confdef, --force-confold and a lock timeout"
 
 run_sh "$INSTANCE" 'grep -q "edited by the Farrier test fleet" /etc/logrotate.conf' \
