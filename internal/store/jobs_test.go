@@ -725,3 +725,89 @@ func TestGuaranteeBothStoresBoundAListingTheSameWay(t *testing.T) {
 		}
 	})
 }
+
+// TestGuaranteeAJobIsNotDeliveredBeforeItsWindowOpens is what makes scheduling work at all.
+//
+// Delivering a job early does not delay it, it destroys it. The agent checks the validity window
+// against its own clock, finds it shut, and reports StatusExpired — which completes the job
+// permanently. So a maintenance window signed on Thursday for Sunday would be claimed on Thursday,
+// burned, and could never run, while `farrier sign --not-before` advertises exactly that use.
+//
+// The scheduled job is created FIRST on purpose. The queue is in creation order, so this also pins that
+// a job waiting for next week does not hold up the one queued behind it for now — a claim that stopped
+// at the first undue job would pass a weaker version of this test and starve the host.
+func TestGuaranteeAJobIsNotDeliveredBeforeItsWindowOpens(t *testing.T) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
+		ctx := context.Background()
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
+
+		scheduled := jobFor("01JOBLATER", "host.reboot")
+		scheduled.NotBefore = time.Now().UTC().Add(72 * time.Hour)
+		scheduled.NotAfter = scheduled.NotBefore.Add(time.Hour)
+		if err := tenant.CreateJob(ctx, NewJob{
+			Job: scheduled, HostID: host.ID, CreatedBy: "alice",
+		}); err != nil {
+			t.Fatalf("creating the scheduled job: %v", err)
+		}
+
+		if err := tenant.CreateJob(ctx, NewJob{
+			Job: jobFor("01JOBNOW", "facts.collect"), HostID: host.ID, CreatedBy: "alice",
+		}); err != nil {
+			t.Fatalf("creating the due job: %v", err)
+		}
+
+		claimed, err := tenant.ClaimJobs(ctx, host.ID, 10)
+		if err != nil {
+			t.Fatalf("claiming: %v", err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("claimed %d jobs, want only the due one: %+v", len(claimed), claimed)
+		}
+		if claimed[0].ID != "01JOBNOW" {
+			t.Fatalf("claimed %q; the job scheduled for three days out was delivered, and the agent "+
+				"would report it expired and complete it for good", claimed[0].ID)
+		}
+
+		// And it is still there, unclaimed, rather than having been quietly consumed.
+		rec, err := tenant.GetJob(ctx, "01JOBLATER")
+		if err != nil {
+			t.Fatalf("reading the scheduled job: %v", err)
+		}
+		if !rec.ClaimedAt.IsZero() {
+			t.Errorf("the scheduled job was stamped as claimed at %s", rec.ClaimedAt)
+		}
+		if !rec.CompletedAt.IsZero() {
+			t.Errorf("the scheduled job was completed at %s without ever running", rec.CompletedAt)
+		}
+	})
+}
+
+// TestGuaranteeAScheduledJobIsDeliveredOnceItsWindowOpens is the other half.
+//
+// A filter that never let anything through would satisfy the test above perfectly, and would be a
+// worse bug than the one it replaced: jobs that vanish are at least visible, jobs that never arrive
+// look like an idle fleet.
+func TestGuaranteeAScheduledJobIsDeliveredOnceItsWindowOpens(t *testing.T) {
+	eachScoped(t, func(t *testing.T, s Store, tenant Scoped) {
+		ctx := context.Background()
+		host := enrolTestHost(t, tenant, "01JHOSTA", "a.example.org")
+
+		// Its window opened a minute ago: the same shape as a job scheduled earlier and reached now.
+		job := jobFor("01JOBDUE", "host.reboot")
+		job.NotBefore = time.Now().UTC().Add(-time.Minute)
+		job.NotAfter = time.Now().UTC().Add(time.Hour)
+		if err := tenant.CreateJob(ctx, NewJob{
+			Job: job, HostID: host.ID, CreatedBy: "alice",
+		}); err != nil {
+			t.Fatalf("creating the job: %v", err)
+		}
+
+		claimed, err := tenant.ClaimJobs(ctx, host.ID, 10)
+		if err != nil {
+			t.Fatalf("claiming: %v", err)
+		}
+		if len(claimed) != 1 || claimed[0].ID != "01JOBDUE" {
+			t.Fatalf("a job whose window is open was not delivered: %+v", claimed)
+		}
+	})
+}

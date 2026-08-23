@@ -1006,19 +1006,35 @@ func (s *scopedMemory) ClaimJobs(_ context.Context, hostID string, limit int) ([
 		return nil, nil
 	}
 
-	claimed := pending
-	if len(pending) > limit {
-		claimed = pending[:limit]
-		m.jobs[queue] = pending[limit:]
-	} else {
+	// A job whose window has not opened stays in the queue. Handing one over early does not delay it,
+	// it destroys it: the agent finds the window shut and reports that as a terminal status. Skipped
+	// rather than stopping at the first one, because the queue is in creation order and a job scheduled
+	// for next Sunday must not hold up the one queued after it for now.
+	//
+	// The server's clock decides delivery; the agent's own clock decides authorisation. Keeping those
+	// separate is why this is not a shortcut for the window check in internal/agent.
+	now := time.Now()
+	var claimed, deferred []protocol.Job
+	for _, job := range pending {
+		if len(claimed) < limit && !job.NotBefore.After(now) {
+			claimed = append(claimed, job)
+			continue
+		}
+		deferred = append(deferred, job)
+	}
+	if len(claimed) == 0 {
+		return nil, nil
+	}
+	if len(deferred) == 0 {
 		delete(m.jobs, queue)
+	} else {
+		m.jobs[queue] = deferred
 	}
 
 	// The record is stamped as well as the queue emptied, so that an operator watching a job sees it
 	// move from waiting to running. Without this the job would simply disappear from the queue and
 	// stay "not started" on the screen until its result arrived, which on a forty-minute upgrade is a
 	// long time to look like nothing is happening.
-	now := time.Now()
 	for _, job := range claimed {
 		key := jobKey{tenant: s.tenant, id: job.ID}
 		if rec, ok := m.records[key]; ok {

@@ -1058,6 +1058,17 @@ func (s *scopedPostgres) ClaimJobs(ctx context.Context, hostID string, limit int
 				   -- condition is here rather than in the handler because the handler is not the only
 				   -- thing that will ever claim.
 				   AND (NOT approval_required OR approved_at IS NOT NULL)
+				   -- Nor is a job whose window has not opened. Handing one over early does not delay
+				   -- it, it destroys it: the agent checks the window, finds it shut, and reports that
+				   -- as a terminal status, so a maintenance window signed for Sunday would be burned
+				   -- on Thursday and could never run.
+				   --
+				   -- This is a delivery decision taken on the server's clock and it is deliberately
+				   -- NOT the authorisation check. The agent re-checks the window against its own
+				   -- clock, which is the only clock allowed to decide whether a signed job may run —
+				   -- a control plane that lied here could withhold work, which it can do anyway, but
+				   -- could never extend a signature's validity. See docs/SECURITY.md §4.3.
+				   AND not_before <= now()
 				 ORDER BY issued_at
 				 LIMIT $2
 				 FOR UPDATE SKIP LOCKED
