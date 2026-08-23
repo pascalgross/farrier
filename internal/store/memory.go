@@ -340,6 +340,14 @@ func (m *Memory) CreateJob(_ context.Context, j NewJob) error {
 		m.mu.Unlock()
 		return ErrNotFound
 	}
+	// The primary key, which PostgreSQL enforces for free and this has to state. Without it a second
+	// job carrying an id that is already taken is silently accepted here and refused there — and worse,
+	// the record would be overwritten while both copies stayed in the queue, so a host would receive one
+	// job and the operator would read another under the same id.
+	if _, taken := m.records[j.Job.ID]; taken {
+		m.mu.Unlock()
+		return ErrConflict
+	}
 	// The same refusal the partial unique index makes in PostgreSQL. A signed payload may be queued
 	// once; an unsigned read job's nonce means nothing and is not checked, which is why the condition
 	// is on the signature rather than on the nonce being non-empty.

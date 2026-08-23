@@ -364,3 +364,44 @@ func TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned(t *testing.T) {
 		}
 	})
 }
+
+// TestGuaranteeAJobIDIsTakenOnce keeps the two implementations agreeing about the primary key.
+//
+// PostgreSQL enforces it for free and the in-memory store has to state it, which is exactly the shape
+// of divergence that goes unnoticed: every server test runs against Memory, so a rule only the database
+// enforces is one those tests would prove nothing about. Here it would be worse than a missing error —
+// the record would be overwritten while both copies stayed in the queue, so a host would receive one
+// job and the operator would read another under the same id.
+func TestGuaranteeAJobIDIsTakenOnce(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		if err := s.CreateJob(ctx, NewJob{
+			Job: jobFor("01JOB1", "facts.collect"), HostID: host.ID,
+		}); err != nil {
+			t.Fatalf("creating the first job: %v", err)
+		}
+
+		second := jobFor("01JOB1", "services.list")
+		second.Nonce = "a-different-nonce"
+		if err := s.CreateJob(ctx, NewJob{Job: second, HostID: host.ID}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a second job took an id that was already in use, producing %v; want ErrConflict", err)
+		}
+
+		listed, err := s.ListJobs(ctx, JobFilter{})
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(listed) != 1 {
+			t.Errorf("%d jobs exist under one id", len(listed))
+		}
+		rec, err := s.GetJob(ctx, "01JOB1")
+		if err != nil {
+			t.Fatalf("reading the job: %v", err)
+		}
+		if rec.Job.Intent != "facts.collect" {
+			t.Errorf("the job under this id is now %q; the first one was replaced", rec.Job.Intent)
+		}
+	})
+}
