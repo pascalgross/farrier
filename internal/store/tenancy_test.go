@@ -256,17 +256,17 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				}
 			},
 			"StoreFacts": func(t *testing.T) {
-				assertDocumentIsNotWritable(t, ctx, alpha.StoreFacts, beta, func(h Host) string {
+				assertDocumentIsNotWritable(t, alpha.StoreFacts, beta, func(h Host) string {
 					return h.FactsDigest
 				})
 			},
 			"StorePolicy": func(t *testing.T) {
-				assertDocumentIsNotWritable(t, ctx, alpha.StorePolicy, beta, func(h Host) string {
+				assertDocumentIsNotWritable(t, alpha.StorePolicy, beta, func(h Host) string {
 					return h.PolicyDigest
 				})
 			},
 			"StoreSigners": func(t *testing.T) {
-				assertDocumentIsNotWritable(t, ctx, alpha.StoreSigners, beta, func(h Host) string {
+				assertDocumentIsNotWritable(t, alpha.StoreSigners, beta, func(h Host) string {
 					return h.SignersDigest
 				})
 			},
@@ -371,12 +371,12 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 // copy would mean three chances to check the wrong digest.
 func assertDocumentIsNotWritable(
 	t *testing.T,
-	ctx context.Context,
 	write func(context.Context, string, string, []byte) error,
 	victim Scoped,
 	digestOf func(Host) string,
 ) {
 	t.Helper()
+	ctx := t.Context()
 
 	_ = write(ctx, betaHostID, "sha256:forged", []byte(`{"forged":true}`))
 	host, err := victim.GetHost(ctx, betaHostID)

@@ -940,7 +940,7 @@ func (s *scopedMemory) ListJobs(_ context.Context, f JobFilter) ([]JobRecord, er
 		if f.HostID != "" && rec.HostID != f.HostID {
 			continue
 		}
-		if f.AwaitingApproval && !(rec.ApprovalRequired && rec.ApprovedAt.IsZero()) {
+		if f.AwaitingApproval && !rec.AwaitingApproval() {
 			continue
 		}
 		out = append(out, s.withResult(key, rec))

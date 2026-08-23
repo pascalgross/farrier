@@ -80,7 +80,7 @@ func signCommand(argv []string) int {
 	}
 	defer func() { _ = signer.Close() }()
 
-	describeJob(os.Stderr, job, spec, decoded, *host, signer, payload)
+	fmt.Fprint(os.Stderr, describeJob(job, spec, decoded, *host, signer, payload))
 	if !*assumeYes {
 		ok, err := confirm("Sign this? [y/N] ")
 		if err != nil {
@@ -222,26 +222,32 @@ func openSigningKey(path string) (signing.Signer, error) {
 	return signer, nil
 }
 
-// describeJob prints what is about to be signed.
+// describeJob renders what is about to be signed.
 //
 // Everything here is derived locally: the operation's description comes from decoding the parameters
-// against this binary's own catalogue, and the payload printed at the end is the exact byte string the
+// against this binary's own catalogue, and the payload at the end is the exact byte string the
 // signature will cover. An operator who compares the two is checking the thing that matters, which is
 // why both are shown rather than a summary alone.
-func describeJob(w *os.File, job protocol.Job, spec intent.Spec, decoded intent.Params,
-	host string, signer signing.Signer, payload []byte) {
+//
+// It returns the text rather than writing it, so that a test can assert what an operator is shown
+// against what is signed. A function that printed would have to be tested by capturing a stream, and
+// the property worth pinning here is the content.
+func describeJob(job protocol.Job, spec intent.Spec, decoded intent.Params,
+	host string, signer signing.Signer, payload []byte) string {
 
-	fmt.Fprintf(w, "\n  Operation   %s\n", decoded.Describe())
-	fmt.Fprintf(w, "  Class       %s — %s\n", spec.Class, spec.Summary)
-	fmt.Fprintf(w, "  Host        %s\n", host)
-	fmt.Fprintf(w, "  Job id      %s\n", job.ID)
-	fmt.Fprintf(w, "  Valid       %s to %s (%s)\n",
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n  Operation   %s\n", decoded.Describe())
+	fmt.Fprintf(&b, "  Class       %s — %s\n", spec.Class, spec.Summary)
+	fmt.Fprintf(&b, "  Host        %s\n", host)
+	fmt.Fprintf(&b, "  Job id      %s\n", job.ID)
+	fmt.Fprintf(&b, "  Valid       %s to %s (%s)\n",
 		job.NotBefore.Format(time.RFC3339), job.NotAfter.Format(time.RFC3339),
 		job.NotAfter.Sub(job.NotBefore).Round(time.Second))
-	fmt.Fprintf(w, "  Signing key %s (%s)\n", signer.KeyID(), signer.Backend())
-	fmt.Fprintf(w, "\n  This host will act on it only if %s is listed in its own %s.\n",
+	fmt.Fprintf(&b, "  Signing key %s (%s)\n", signer.KeyID(), signer.Backend())
+	fmt.Fprintf(&b, "\n  This host will act on it only if %s is listed in its own %s.\n",
 		signer.KeyID(), signing.TrustedSignersPath)
-	fmt.Fprintf(w, "\n  Signed payload, verbatim:\n    %s\n\n", payload)
+	fmt.Fprintf(&b, "\n  Signed payload, verbatim:\n    %s\n\n", payload)
+	return b.String()
 }
 
 // confirm asks a yes-or-no question on the terminal.

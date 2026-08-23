@@ -192,7 +192,7 @@ func jobState(rec store.JobRecord) string {
 		return rec.Result.Status
 	case !rec.ClaimedAt.IsZero():
 		return "running"
-	case rec.ApprovalRequired && rec.ApprovedAt.IsZero():
+	case rec.AwaitingApproval():
 		return "awaiting_approval"
 	default:
 		return "queued"

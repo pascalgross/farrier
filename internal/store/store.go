@@ -287,6 +287,16 @@ type JobRecord struct {
 	Result *protocol.ResultRequest
 }
 
+// AwaitingApproval reports whether this job is waiting for somebody to release it.
+//
+// It exists so that the two store implementations, the API's state word and the partial index in
+// migration 0004 all mean the same thing by "awaiting approval". The predicate is small enough to write
+// out at each site and that is exactly the problem: the copy somebody forgets to update is the one that
+// decides whether a destructive job appears on the page a second operator is reading.
+func (r JobRecord) AwaitingApproval() bool {
+	return r.ApprovalRequired && r.ApprovedAt.IsZero()
+}
+
 // Claimable reports whether a host may take this job now.
 //
 // It exists so that the API and the UI answer the question the same way the claim query does, rather
@@ -295,7 +305,7 @@ func (r JobRecord) Claimable() bool {
 	if !r.ClaimedAt.IsZero() || !r.CompletedAt.IsZero() {
 		return false
 	}
-	return !r.ApprovalRequired || !r.ApprovedAt.IsZero()
+	return !r.AwaitingApproval()
 }
 
 // JobFilter narrows a job listing.
