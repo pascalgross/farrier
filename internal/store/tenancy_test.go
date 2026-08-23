@@ -166,7 +166,7 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatalf("listing: %v", err)
 				}
 				if len(hosts) != 1 {
-					t.Fatalf("alpha sees %d hosts; it has one and beta has one", len(hosts))
+					t.Fatalf("alpha sees %d hosts; it has one and every other host is beta's", len(hosts))
 				}
 			},
 			"ListJobs": func(t *testing.T) {

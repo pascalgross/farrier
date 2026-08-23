@@ -293,7 +293,10 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 	}
 }
 
-// TestClockSkewFailsClosedForPrivilegedIntentsOnly covers the boundary CLAUDE.md names an invariant.
+// TestGuaranteeClockSkewFailsClosedForPrivilegedIntentsOnly covers the boundary CLAUDE.md names an
+// invariant. The Guarantee prefix is what puts it inside the required check: its predecessor lacked
+// it, was rewritten in place into an unrelated test, and nothing noticed the boundary going uncovered
+// — which is precisely the failure the guarantee suite exists to make loud.
 //
 // Validity windows are checked against the local clock only, so a host whose clock is far from the
 // control plane's cannot reason about a window at all — it must refuse privileged work, and the refusal
@@ -301,7 +304,7 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 // "only" in the name is the other half, and it is asserted with the same weight: a read intent still
 // runs, because a skewed host is exactly the one an operator needs to keep hearing from, and blinding
 // them to its state is how a wrong clock stays wrong.
-func TestClockSkewFailsClosedForPrivilegedIntentsOnly(t *testing.T) {
+func TestGuaranteeClockSkewFailsClosedForPrivilegedIntentsOnly(t *testing.T) {
 	trusted := newSignerFixture(t, "ops-laptop")
 	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
 	skew := 10 * time.Minute
