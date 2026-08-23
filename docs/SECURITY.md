@@ -162,6 +162,21 @@ two tiers against two anchors and never one: a signature by the online key must 
 and a signature by a key in `trusted-signers` is not an online-key signature. That is asserted
 mechanically, in both directions, by `TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob`.
 
+**A reboot must be unreachable from the routine tier by effect, not merely by class.** That distinction
+is load-bearing and it was once got wrong here: `packages.applySecurity` shared a parameter decoder with
+`packages.applyAll`, so it accepted `rebootIfRequired`, and the root helper acted on the flag without
+asking which intent had carried it. The control plane could therefore reboot a host with a key it holds
+itself, while a test asserting that the online key cannot sign a *destructive-class* job stayed green —
+a reboot reached through a routine intent's parameters is never classified as anything.
+
+`packages.applySecurity` now has its own decoder and takes no parameters at all. The field is unknown to
+it rather than accepted and ignored, because a field that is accepted and ignored is one flipped
+condition away from being honoured. The root helper refuses the combination a second time, since it runs
+as root and the catalogue does not.
+`TestGuaranteeTheRoutineTierCannotExpressAReboot` asserts this over the whole catalogue rather than over
+one intent, because the defect was a shared decoder and no test naming a single member would have seen
+it.
+
 ### Destructive — signed by a key in the **host's** `trusted-signers`
 
 | Intent | What it does |

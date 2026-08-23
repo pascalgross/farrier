@@ -2,6 +2,7 @@ package intent
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
@@ -300,7 +301,7 @@ func TestGuaranteeIntentsThatMayNotReturnArePinned(t *testing.T) {
 // reboot, and the job would sit in the queue looking like a host that had gone quiet — the failure the
 // flag exists to prevent, arriving through the one path the flag cannot see.
 func TestGuaranteeAnUpdateThatRebootsIsTreatedAsAnOperationThatMayNotReturn(t *testing.T) {
-	for _, name := range []Name{PackagesApplySecurity, PackagesApplyAll} {
+	for _, name := range []Name{PackagesApplyAll} {
 		spec, ok := Lookup(name)
 		if !ok {
 			t.Fatalf("%q is not in the catalogue", name)
@@ -527,4 +528,75 @@ func stringFieldsOf(p Params) []string {
 		}
 	}
 	return out
+}
+
+// TestGuaranteeTheRoutineTierCannotExpressAReboot is the mechanism behind docs/SECURITY.md §3's
+// sentence "a signature by the online key must not authorise a reboot".
+//
+// The routine tier is the one the control plane signs for itself, with no human present, so every
+// parameter a routine intent accepts is a parameter an attacker owning the control plane can set. It
+// follows that no routine intent may accept one that reaches destructive work — and that has to be
+// asserted over the catalogue rather than over one intent, because the way it went wrong was a decoder
+// shared between a routine member and a destructive one, which no test naming a single intent would
+// have caught.
+//
+// Asserted by EFFECT rather than by class. TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob
+// already covers class — it proves the online key cannot sign something the catalogue calls
+// destructive. It passed throughout the period when packages.applySecurity could reboot a host,
+// because a reboot reached through a routine intent's parameters is never classified as anything.
+func TestGuaranteeTheRoutineTierCannotExpressAReboot(t *testing.T) {
+	routine := 0
+	for name, spec := range catalogue {
+		if spec.Class != ClassRoutine {
+			continue
+		}
+		routine++
+
+		// The static flag first: a routine intent must not be one the catalogue itself says may take
+		// the host away.
+		if spec.MayNotReturn {
+			t.Errorf("%q is routine and its Spec says it may not return; an operation that takes a "+
+				"host away cannot be authorised by a key the control plane holds", name)
+		}
+
+		// And the flag must not be reachable through parameters either. rebootIfRequired is the one
+		// that got in; a future one would be caught by the same shape, because what is asserted is
+		// that no accepted parameter object makes MayNotReturn true.
+		if _, params, err := Decode(name, []byte(`{"rebootIfRequired":true}`)); err == nil {
+			if MayNotReturn(spec, params) {
+				t.Errorf("%q is routine and accepts rebootIfRequired, so the control plane's own key "+
+					"authorises a reboot. docs/SECURITY.md §3 says it must not: a reboot needs a key "+
+					"from the host's own trusted-signers, which the control plane does not hold", name)
+			} else {
+				t.Errorf("%q is routine and accepts rebootIfRequired without acting on it. An "+
+					"accepted-and-ignored parameter is one flipped condition away from being "+
+					"honoured; refuse it in the decoder instead", name)
+			}
+		}
+	}
+
+	// A catalogue with no routine member would pass every assertion above without exercising one.
+	if routine == 0 {
+		t.Fatal("no routine intent in the catalogue; this test asserted nothing")
+	}
+}
+
+// TestGuaranteeApplySecurityNamesTheIntentToUseInstead is about the refusal being usable.
+//
+// "Patch and reboot" is a reasonable thing to want, and the answer is two authorisations rather than
+// none. A refusal that only said "unknown field" would leave an operator guessing at which of ten
+// catalogue members does the other half.
+func TestGuaranteeApplySecurityNamesTheIntentToUseInstead(t *testing.T) {
+	_, _, err := Decode(PackagesApplySecurity, []byte(`{"rebootIfRequired":true}`))
+	if err == nil {
+		t.Fatal("packages.applySecurity accepted rebootIfRequired")
+	}
+	if !errors.Is(err, ErrUnknownField) {
+		t.Errorf("the refusal is %v; it should be an unknown-field error so callers can classify it", err)
+	}
+	for _, want := range []string{string(HostReboot), "trusted-signers"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
 }

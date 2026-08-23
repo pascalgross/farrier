@@ -57,7 +57,10 @@ func TestDecodeAcceptsWellFormedParameters(t *testing.T) {
 		{FactsCollect, `{}`, "facts.collect"},
 		{ServicesList, ``, "services.list"},
 		{ServiceRestart, `{"unit":"nginx.service"}`, "service.restart nginx.service"},
-		{PackagesApplySecurity, `{"rebootIfRequired":false}`, "packages.applySecurity"},
+		// No parameters at all: the routine member refuses rebootIfRequired in either state, because a
+		// field it accepts and ignores is one flipped condition away from being honoured.
+		{PackagesApplySecurity, `{}`, "packages.applySecurity"},
+		{PackagesApplySecurity, ``, "packages.applySecurity"},
 		{PackagesApplyAll, `{"rebootIfRequired":true}`, "packages.applyAll (reboot if required)"},
 		{HostReboot, `{"delaySeconds":60,"message":"kernel update"}`, `host.reboot in 60s ("kernel update")`},
 		{HostReboot, `{}`, "host.reboot"},

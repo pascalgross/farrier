@@ -625,6 +625,30 @@ func TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob(t *testing.T) {
 		}
 	})
 
+	t.Run("the online key cannot reboot a host through a routine intent's parameters", func(t *testing.T) {
+		// The subtest above proves the online key cannot sign something the catalogue *calls*
+		// destructive. That is not the same property, and the difference was a real defect: while
+		// packages.applySecurity shared a parameter decoder with packages.applyAll it accepted
+		// rebootIfRequired, so the control plane could reboot a host with a key it holds itself while
+		// the test above stayed green. A reboot reached through a routine intent's parameters is never
+		// classified as anything, so class-based assertions cannot see it.
+		//
+		// internal/intent refuses the parameter now and TestGuaranteeTheRoutineTierCannotExpressAReboot
+		// asserts that over the whole catalogue. This asserts the end of the chain: that the refusal
+		// actually reaches the agent, rather than being a property of a decoder nothing calls.
+		job := routineJob("nonce-routine-with-reboot")
+		job.Params = map[string]any{"rebootIfRequired": true}
+		job = signJobWith(t, job, controlPlane)
+
+		got := accept(job, testHostID, permissivePolicy(t), operator.set, controlPlane.set,
+			newNonceStore(t), 0, time.Now())
+		if got.accepted() {
+			t.Fatal("a routine job carrying rebootIfRequired was accepted. An attacker owning the " +
+				"control plane could reboot this fleet with the key the control plane signs with, " +
+				"which docs/SECURITY.md §3 says must not authorise a reboot.")
+		}
+	})
+
 	t.Run("an operator key does not sign routine work", func(t *testing.T) {
 		job := signJobWith(t, routineJob("nonce-offline-signed-routine"), operator)
 

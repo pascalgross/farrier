@@ -113,6 +113,14 @@ func (p UnitParams) sealed() {}
 // /etc/farrier/policy.toml and will decline to reboot a host whose policy forbids it or whose
 // maintenance window has closed. It exists so an operator can express "and finish the job" in one
 // authorisation rather than having to sign a second one at an hour nobody wants to be awake for.
+//
+// It is expressible on packages.applyAll and on nothing else. packages.applySecurity is the routine
+// tier — signed by the control plane's own online key, with no human present — and docs/SECURITY.md §3
+// says a signature by that key must not authorise a reboot. Sharing one decoder between the two made
+// that sentence false: the flag reaches the same helper, which acts on it without asking which intent
+// carried it, so the control plane could reboot a host with a key it holds itself. The two decoders
+// are separate now, and the field is simply unknown to the routine member rather than accepted and
+// ignored — an accepted-and-ignored field is one flipped condition away from being honoured again.
 type ApplyParams struct {
 	intent Name
 
@@ -250,17 +258,41 @@ func decodeUnit(n Name) func([]byte) (Params, error) {
 	}
 }
 
-// decodeApply builds a decoder for an update-application intent.
-func decodeApply(n Name) func([]byte) (Params, error) {
-	return func(raw []byte) (Params, error) {
-		var wire struct {
-			RebootIfRequired bool `json:"rebootIfRequired"`
-		}
-		if err := strictUnmarshal(raw, &wire); err != nil {
-			return nil, err
-		}
-		return ApplyParams{intent: n, RebootIfRequired: wire.RebootIfRequired}, nil
+// decodeApplyAll decodes the destructive update intent, the one that may carry a follow-up reboot.
+//
+// Not shared with the routine member, deliberately. See ApplyParams and decodeApplySecurity.
+func decodeApplyAll(raw []byte) (Params, error) {
+	var wire struct {
+		RebootIfRequired bool `json:"rebootIfRequired"`
 	}
+	if err := strictUnmarshal(raw, &wire); err != nil {
+		return nil, err
+	}
+	return ApplyParams{intent: PackagesApplyAll, RebootIfRequired: wire.RebootIfRequired}, nil
+}
+
+// decodeApplySecurity decodes the routine update intent, which takes no parameters at all.
+//
+// The refusal below is the mechanism behind docs/SECURITY.md §3's "a signature by the online key must
+// not authorise a reboot". This intent is signed by the control plane for itself, so any parameter it
+// accepts is a parameter an attacker owning the control plane can set. A reboot is destructive work and
+// needs a key the control plane does not hold; there is no version of it that is safe to reach from
+// here, which is why the field is refused rather than clamped.
+//
+// The error says which intent to use instead. An operator who wanted "patch and reboot" is asking for
+// something reasonable, and the answer is two authorisations rather than none.
+func decodeApplySecurity(raw []byte) (Params, error) {
+	var wire struct{}
+	if err := strictUnmarshal(raw, &wire); err != nil {
+		if errors.Is(err, ErrUnknownField) {
+			return nil, fmt.Errorf("%w. %s takes no parameters: a reboot is destructive work and needs "+
+				"an offline signature from a key in the host's own %s, which is what %s is for. "+
+				"See docs/SECURITY.md §3",
+				err, PackagesApplySecurity, "trusted-signers", HostReboot)
+		}
+		return nil, err
+	}
+	return ApplyParams{intent: PackagesApplySecurity}, nil
 }
 
 // decodeReboot builds a decoder for the host reboot intent.

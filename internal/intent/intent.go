@@ -255,8 +255,12 @@ var catalogue = map[Name]Spec{
 		// the agent. So the worst a control plane can do with this intent is make a host do sooner what
 		// it already permits itself to do unattended — which is what makes an online key acceptable
 		// here and unacceptable for every member below. See docs/SECURITY.md §3.
+		//
+		// Its own decoder, not the one packages.applyAll uses. Sharing it let this intent carry
+		// rebootIfRequired, which made the sentence above untrue: the worst a control plane could do
+		// was reboot the host, using a key it holds itself.
 		Implemented: true,
-		Decode:      decodeApply(PackagesApplySecurity),
+		Decode:      decodeApplySecurity,
 	},
 
 	PackagesApplyAll: {
@@ -264,7 +268,7 @@ var catalogue = map[Name]Spec{
 		Class:       ClassDestructive,
 		Summary:     "Apply all available updates, subject to local policy",
 		Implemented: true,
-		Decode:      decodeApply(PackagesApplyAll),
+		Decode:      decodeApplyAll,
 	},
 	ServiceStart: {
 		Name:        ServiceStart,

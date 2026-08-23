@@ -150,6 +150,19 @@ func apply(ctx context.Context, job helper.Job) (string, error) {
 	if !params.RebootIfRequired {
 		return report.String(), nil
 	}
+	// Refused here as well as in the catalogue, because this helper runs as root and the catalogue
+	// runs in the agent. internal/intent gives packages.applySecurity a decoder with no
+	// rebootIfRequired field, so the flag cannot arrive on a routine job at all — and that is a
+	// property of the caller, which is exactly the kind of thing a root helper does not take on trust.
+	//
+	// The tier this protects is stated in docs/SECURITY.md §3: a routine job is signed by the control
+	// plane's own online key, with no human present, so a reboot reachable from one would be a reboot
+	// authorised by a key the control plane holds. A destructive job needs a key it does not.
+	if job.Intent == intent.PackagesApplySecurity {
+		return report.String(), fmt.Errorf("apply-updates: %s asked for a follow-up reboot. Only %s "+
+			"may do that, because a reboot needs an offline signature from a key in this host's own "+
+			"trusted-signers. See docs/SECURITY.md §3", job.Intent, intent.PackagesApplyAll)
+	}
 	note, err := rebootIfRequired(ctx, job.ID)
 	report.WriteString("\n" + note)
 	return report.String(), err
