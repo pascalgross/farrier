@@ -603,3 +603,40 @@ func TestServerJobValidityIsGenerousEnoughForAnOfflineHost(t *testing.T) {
 			server.ReadJobValidity)
 	}
 }
+
+// TestGuaranteeAQueuedReadJobHasNoLowerBound is the same property, from the side that creates it.
+//
+// The control plane must not pin a read job's window to its own clock. An agent checks the window
+// against its own, so a host a second behind would refuse every on-demand report as expired — and read
+// intents deliberately skip the clock-skew check, so nothing would catch it. The job that comes back
+// from the API must carry no lower bound at all, and the one the agent claims must agree.
+func TestGuaranteeAQueuedReadJobHasNoLowerBound(t *testing.T) {
+	h := newHarness(t)
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+
+	status, body := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/jobs", map[string]any{
+		"hostId": state.HostID, "intent": "facts.collect", "params": map[string]any{},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("creating returned %d: %s", status, body)
+	}
+	if view := jobViewOf(t, body); view["notBefore"] != nil {
+		t.Errorf("the API renders a lower bound of %v for an unsigned job; a host running behind this "+
+			"control plane would refuse it as expired", view["notBefore"])
+	}
+
+	jobs, err := h.agentClient(t, state).PollJobs(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("polling: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("claimed %d jobs, want 1", len(jobs))
+	}
+	if !jobs[0].NotBefore.IsZero() {
+		t.Errorf("the delivered job carries notBefore %s; an agent checks that against its own clock",
+			jobs[0].NotBefore)
+	}
+	if jobs[0].NotAfter.IsZero() {
+		t.Error("the delivered job carries no upper bound either, so it would never expire")
+	}
+}

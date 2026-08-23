@@ -528,3 +528,32 @@ func TestOverSizeHelperOutputIsTruncatedOnThisSideToo(t *testing.T) {
 		t.Error("the head was kept rather than the tail; the failure is at the end")
 	}
 }
+
+// TestGuaranteeAJobWithNoLowerBoundIsNotRefusedAsExpired is why an unsigned job carries none.
+//
+// The validity window is checked against the *local* clock — it must be, or a compromised control plane
+// could extend a signature's validity by lying about the time — so a notBefore taken from the control
+// plane's clock is refused by any host running even slightly behind it. Read intents deliberately skip
+// the clock-skew check, so nothing else would catch it, and the result would be that every on-demand
+// report failed on exactly the host whose clock is wrong: the one an operator most wants to look at.
+//
+// A job nothing signed has no authorisation whose start needs pinning, so it carries no lower bound at
+// all. This asserts both halves: that an absent bound is not a refusal, and that a real one still is.
+func TestGuaranteeAJobWithNoLowerBoundIsNotRefusedAsExpired(t *testing.T) {
+	runner := testRunner(t, newStubPlatform(), nil)
+
+	noLowerBound := readJob("01JA", "facts.collect")
+	noLowerBound.NotBefore = time.Time{}
+	if result := runner.Run(context.Background(), noLowerBound); result.Status != protocol.StatusSucceeded {
+		t.Errorf("a job with no lower bound was refused as %q: %s", result.Status, result.Error)
+	}
+
+	// And the check is still live: a window that genuinely has not opened is still refused, or the
+	// assertion above would be about a check that had been removed rather than one that was not reached.
+	notYet := readJob("01JB", "facts.collect")
+	notYet.NotBefore = time.Now().Add(time.Hour)
+	if result := runner.Run(context.Background(), notYet); result.Status != protocol.StatusExpired {
+		t.Errorf("a job whose window has not opened produced %q, want %q",
+			result.Status, protocol.StatusExpired)
+	}
+}

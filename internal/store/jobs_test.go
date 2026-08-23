@@ -405,3 +405,110 @@ func TestGuaranteeAJobIDIsTakenOnce(t *testing.T) {
 		}
 	})
 }
+
+// TestGuaranteeApprovingAJobWakesAWaitingAgent closes a gap that costs the operator's own window.
+//
+// A destructive job is created waiting, so the insert that created it wakes agents to tell them about
+// work none of them can take, and the approval — which is what actually makes it claimable — is an
+// UPDATE. With only an insert trigger, an agent holding a long poll hears nothing until its own poll
+// expires: up to a minute. For a signed job that minute is charged against the signed notBefore, because
+// the age limit deliberately runs from the value the signer chose rather than one the control plane can
+// pick, so a slow wake spends the operator's authorisation rather than the server's.
+//
+// The in-memory store woke immediately all along, which is exactly why this needs asserting against both.
+func TestGuaranteeApprovingAJobWakesAWaitingAgent(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		job := jobFor("01JOB1", "host.reboot")
+		job.Class = "destructive"
+		job.Signature = "c2ln"
+		if err := s.CreateJob(ctx, NewJob{
+			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
+		}); err != nil {
+			t.Fatalf("creating: %v", err)
+		}
+
+		// Subscribed before the queue is read, which is the order the handler uses and the reason the
+		// insert's own notification cannot be mistaken for the approval's.
+		notified, unsubscribe := s.Subscribe(host.ID)
+		defer unsubscribe()
+		waitForListener(t, s)
+		claimed, err := s.ClaimJobs(ctx, host.ID, 10)
+		if err != nil {
+			t.Fatalf("claiming: %v", err)
+		}
+		if len(claimed) != 0 {
+			t.Fatalf("an unapproved job was claimable: %+v", claimed)
+		}
+
+		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
+			t.Fatalf("approving: %v", err)
+		}
+
+		select {
+		case <-notified:
+		case <-time.After(5 * time.Second):
+			t.Fatal("approving a job did not wake an agent already waiting for work; it would sit " +
+				"undelivered until the long poll expired, and for a signed job that delay is spent " +
+				"from the window the operator signed")
+		}
+	})
+}
+
+// waitForListener blocks until a PostgreSQL store has actually issued its LISTEN.
+//
+// The listener starts on the first Subscribe and connects asynchronously, so a NOTIFY sent immediately
+// afterwards can be delivered to nobody. Waiting for it rather than sleeping is what keeps this test
+// from passing on a fast machine and failing on a loaded one — this is the assertion that would be
+// quietly disabled first. The in-memory store has nothing to wait for.
+func waitForListener(t *testing.T, s Store) {
+	t.Helper()
+
+	pg, ok := s.(*Postgres)
+	if !ok {
+		return
+	}
+	select {
+	case <-pg.ready:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the notification listener never issued its LISTEN")
+	}
+}
+
+// TestGuaranteeJobsAreListedByCreationTimeNotByIdentifier stops a queued reboot hiding.
+//
+// A signed job's id comes from whoever signed it — it is covered by the signature, so the control plane
+// cannot choose it — and nothing constrains its shape. Ordering a listing by id therefore files such a
+// job wherever its identifier happens to sort, which on a busy fleet can be past the end of the page
+// the second operator reads before approving it. The one job that needs a human to find it is the one
+// that goes missing.
+func TestGuaranteeJobsAreListedByCreationTimeNotByIdentifier(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		// Two ids that sort high, then — created last — one that sorts low, as an operator-chosen id
+		// easily can.
+		for i, id := range []string{"06AAAA", "06BBBB", "01SIGNED"} {
+			job := jobFor(id, "facts.collect")
+			job.IssuedAt = time.Now().UTC().Add(time.Duration(i) * time.Second)
+			if err := s.CreateJob(ctx, NewJob{Job: job, HostID: host.ID}); err != nil {
+				t.Fatalf("creating %s: %v", id, err)
+			}
+		}
+
+		listed, err := s.ListJobs(ctx, JobFilter{})
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(listed) != 3 {
+			t.Fatalf("listed %d jobs, want 3", len(listed))
+		}
+		if listed[0].Job.ID != "01SIGNED" {
+			t.Errorf("the newest job is %q, want the one created last (01SIGNED). Ordering by "+
+				"identifier hides a signed job wherever its id happens to sort.", listed[0].Job.ID)
+		}
+	})
+}

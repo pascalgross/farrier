@@ -94,9 +94,15 @@ type jobView struct {
 	// CreatedBy is the operator who asked for it.
 	CreatedBy string `json:"createdBy"`
 
-	// NotBefore and NotAfter bound its validity, checked on the host against the host's own clock.
-	NotBefore time.Time `json:"notBefore"`
-	NotAfter  time.Time `json:"notAfter"`
+	// NotBefore is when the job becomes valid, or null when it has no lower bound.
+	//
+	// Null is the ordinary case for a read job: nothing signed it, so there is no authorisation whose
+	// start needs pinning, and a lower bound taken from the control plane's clock would be refused by
+	// any host running a second behind it.
+	NotBefore *time.Time `json:"notBefore"`
+
+	// NotAfter is when it stops being valid, checked on the host against the host's own clock.
+	NotAfter time.Time `json:"notAfter"`
 
 	// Signed reports whether an offline signature is attached.
 	//
@@ -137,7 +143,6 @@ func toJobView(rec store.JobRecord) jobView {
 		Class:            rec.Job.Class,
 		CreatedAt:        rec.CreatedAt,
 		CreatedBy:        rec.CreatedBy,
-		NotBefore:        rec.Job.NotBefore,
 		NotAfter:         rec.Job.NotAfter,
 		Signed:           rec.Job.Signature != "",
 		SignerKeyID:      rec.Job.SignerKeyID,
@@ -148,6 +153,10 @@ func toJobView(rec store.JobRecord) jobView {
 	}
 	if view.Params == nil {
 		view.Params = map[string]any{}
+	}
+	if !rec.Job.NotBefore.IsZero() {
+		at := rec.Job.NotBefore
+		view.NotBefore = &at
 	}
 	if !rec.ApprovedAt.IsZero() {
 		at := rec.ApprovedAt
@@ -383,7 +392,19 @@ func (s *Server) buildJob(req jobRequest, spec intent.Spec) (protocol.Job, error
 	// A nonce nothing checks, so that the column can stay NOT NULL and a future signed intent cannot
 	// find the constraint missing when it needs it.
 	job.Nonce = nonce
-	job.NotBefore = job.IssuedAt
+
+	// No lower bound at all, and this is the one line here worth arguing about.
+	//
+	// The obvious value is "now", and it is wrong. An agent checks the window against its *own* clock —
+	// it must, or a compromised control plane could extend a signature's validity by lying about the
+	// time — so a host whose clock is a second behind the control plane's would find a job whose window
+	// had not opened yet and report it expired. Read intents deliberately skip the clock-skew check, so
+	// nothing else would catch it, and the result is that every on-demand report fails on exactly the
+	// host whose clock is wrong: the one an operator most wants to look at.
+	//
+	// Nothing signed this job, so there is no authorisation whose start needs pinning. notAfter still
+	// bounds it, and a zero notBefore is what the agent's own check reads as "no lower bound".
+	job.NotBefore = time.Time{}
 	job.NotAfter = job.IssuedAt.Add(ReadJobValidity)
 	return job, nil
 }
