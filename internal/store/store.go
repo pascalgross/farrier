@@ -202,6 +202,88 @@ type HeartbeatUpdate struct {
 // once, and if that one full report were lost to a network failure it would compare the next heartbeat
 // against the claim it had stored, conclude it was up to date, and never ask again.
 
+// NewJob is a job as the control plane creates it.
+//
+// It is a separate type from protocol.Job because the two answer different questions. protocol.Job is
+// what goes on the wire to a host and carries only what the host needs; this carries what the control
+// plane must remember about the decision to issue it — who asked, and whether a second person still
+// has to agree.
+type NewJob struct {
+	// Job is what the host will receive, unchanged.
+	Job protocol.Job
+
+	// HostID is the host it is issued to.
+	HostID string
+
+	// CreatedBy is the operator identity that asked for it, for the audit trail.
+	//
+	// It is recorded even though the guarantee does not rest on it. A compromised administrator account
+	// is inside the threat model by construction; what this protects is the ability to answer "who
+	// asked for this reboot" afterwards, which is a different and still necessary thing.
+	CreatedBy string
+
+	// ApprovalRequired reports whether a second operator must agree before a host may claim it.
+	//
+	// docs/SECURITY.md §3 requires it for the destructive tier. It is a field rather than something
+	// derived from the class on read, so that the row records the rule as it stood when the job was
+	// created: a later build that classified an intent differently must not change what an
+	// already-queued job needed.
+	ApprovalRequired bool
+}
+
+// JobRecord is one job as the control plane holds it, with its result if one has arrived.
+type JobRecord struct {
+	// Job is what the host receives.
+	Job protocol.Job
+
+	// HostID is the host it was issued to.
+	HostID string
+
+	// CreatedAt is when the control plane created it.
+	CreatedAt time.Time
+
+	// CreatedBy is the operator who asked for it.
+	CreatedBy string
+
+	// ApprovalRequired reports whether a second operator had to agree.
+	ApprovalRequired bool
+
+	// ApprovedAt is when the second operator agreed, zero if they have not.
+	ApprovedAt time.Time
+
+	// ApprovedBy is who agreed, empty if nobody has.
+	ApprovedBy string
+
+	// ClaimedAt is when a host took it, zero if none has.
+	ClaimedAt time.Time
+
+	// CompletedAt is when a result arrived, zero if none has.
+	CompletedAt time.Time
+
+	// Result is what the host reported, nil until it does.
+	Result *protocol.ResultRequest
+}
+
+// Claimable reports whether a host may take this job now.
+//
+// It exists so that the API and the UI answer the question the same way the claim query does, rather
+// than each deciding for itself what "waiting" means and disagreeing on the one row where it matters.
+func (r JobRecord) Claimable() bool {
+	if !r.ClaimedAt.IsZero() || !r.CompletedAt.IsZero() {
+		return false
+	}
+	return !r.ApprovalRequired || !r.ApprovedAt.IsZero()
+}
+
+// JobFilter narrows a job listing.
+type JobFilter struct {
+	// HostID limits the listing to one host, empty for the whole fleet.
+	HostID string
+
+	// Limit bounds how many are returned, newest first. Zero takes the implementation's default.
+	Limit int
+}
+
 // Store is the control plane's persistence.
 //
 // Every method takes a context because every one of them can be waiting on a database that has stopped
@@ -274,11 +356,40 @@ type Store interface {
 	// whose facts nobody will ever read again.
 	DeleteHost(ctx context.Context, hostID string) error
 
+	// CreateJob records a job for a host and wakes any long-poll waiting for it.
+	//
+	// It returns ErrConflict when a signed job's nonce has already been queued for that host. The host
+	// refuses a replayed nonce itself and that is the check the guarantee rests on; this one is earlier
+	// and cheaper, because a job queued twice is delivered twice, refused on the host, and reported as
+	// a failure nobody can explain.
+	CreateJob(ctx context.Context, j NewJob) error
+
+	// ApproveJob records a second operator's agreement, making the job claimable.
+	//
+	// The refusal to self-approve is enforced here rather than only in the handler, because it must
+	// hold against two requests arriving at once. A read-then-write in the caller would let the same
+	// operator approve their own job by racing it against itself, which is the one way this check could
+	// be defeated by someone who already has the credential.
+	//
+	// It returns ErrNotFound for a job that does not exist, and ErrConflict for one that needs no
+	// approval, already has it, or would be approved by whoever created it.
+	ApproveJob(ctx context.Context, jobID, approver string, now time.Time) error
+
+	// ListJobs returns jobs newest first, with their results.
+	ListJobs(ctx context.Context, f JobFilter) ([]JobRecord, error)
+
+	// GetJob returns one job and its result, or ErrNotFound.
+	GetJob(ctx context.Context, jobID string) (JobRecord, error)
+
 	// ClaimJobs atomically takes up to limit jobs for a host.
 	//
 	// Atomic claiming is what lets a control plane run more than one replica. In PostgreSQL it is
 	// SELECT … FOR UPDATE SKIP LOCKED against a partial index; the interface says nothing about that,
 	// but the guarantee it makes — a job is delivered to one agent, once — is the one callers rely on.
+	//
+	// A job still waiting for its second operator is never returned. That check belongs here rather
+	// than in the handler: the handler is not the only thing that will ever claim, and an approval
+	// requirement enforced by whoever remembers to ask is not a requirement.
 	ClaimJobs(ctx context.Context, hostID string, limit int) ([]protocol.Job, error)
 
 	// RecordResult stores a job result idempotently, keyed by job id.
@@ -312,3 +423,13 @@ type Store interface {
 	// Close releases the store's resources.
 	Close() error
 }
+
+// Compile-time proof that both implementations satisfy the interface.
+//
+// Without it, a method added to Store is a compile error only where a Store value is assigned — which
+// in this package's tests is inside a test helper, so a missing method on one implementation surfaces
+// as a confusing failure in an unrelated test rather than here, next to the interface it belongs to.
+var (
+	_ Store = (*Postgres)(nil)
+	_ Store = (*Memory)(nil)
+)

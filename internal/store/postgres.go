@@ -480,6 +480,194 @@ func (p *Postgres) RevokeHost(ctx context.Context, hostID string) error {
 	return wrap(tx.Commit(ctx), "revoking a host")
 }
 
+// CreateJob records a job and lets the trigger wake whichever agent is waiting for it.
+//
+// The insert is the whole operation: the NOTIFY comes from a trigger on the table rather than from
+// here, so a job inserted by any path — this, a maintenance script, a future scheduler — wakes the
+// agent that is waiting for it. See 0001_initial.sql.
+func (p *Postgres) CreateJob(ctx context.Context, j NewJob) error {
+	params, err := json.Marshal(j.Job.Params)
+	if err != nil {
+		return fmt.Errorf("store: encoding job parameters: %w", err)
+	}
+	if j.Job.Params == nil {
+		params = []byte("{}")
+	}
+
+	_, err = p.pool.Exec(ctx, `
+		INSERT INTO jobs (id, host_id, intent, params, class, issued_at, not_before, not_after,
+		                  nonce, signature, signer_key_id, signer_algorithm,
+		                  created_by, approval_required)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+		        NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''), $13, $14)`,
+		j.Job.ID, j.HostID, j.Job.Intent, params, j.Job.Class,
+		j.Job.IssuedAt, j.Job.NotBefore, j.Job.NotAfter, j.Job.Nonce,
+		j.Job.Signature, j.Job.SignerKeyID, j.Job.SignerAlgorithm,
+		j.CreatedBy, j.ApprovalRequired)
+	// A foreign-key violation here means one thing only: the host id does not exist. It is translated
+	// locally rather than in wrap, because for every other insert in this file an FK violation is an
+	// internal bug and reporting it as "not found" would send somebody looking for a missing row that
+	// was never the problem.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return ErrNotFound
+	}
+	// wrap turns a unique violation into ErrConflict, which here means the signed nonce has already
+	// been queued for this host.
+	return wrap(err, "creating a job")
+}
+
+// ApproveJob records a second operator's agreement.
+//
+// The rules are in the WHERE clause rather than in a read followed by a write, and that placement is
+// the point: two requests arriving at once must not let the same operator approve their own job by
+// racing it against itself. The caller reads the row first to produce a good error message; this is
+// what decides.
+func (p *Postgres) ApproveJob(ctx context.Context, jobID, approver string, now time.Time) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE jobs
+		   SET approved_at = $3, approved_by = $2
+		 WHERE id = $1
+		   AND approval_required
+		   AND approved_at IS NULL
+		   AND created_by <> $2`,
+		jobID, approver, now)
+	if err != nil {
+		return wrap(err, "approving a job")
+	}
+	if tag.RowsAffected() == 0 {
+		// Nothing moved, and the two reasons want different answers: a job that does not exist is a 404
+		// and a job that cannot be approved is a 409. The distinction is drawn with a second query
+		// rather than by relaxing the update's WHERE clause, so the rules above stay atomic — this runs
+		// only on the failure path and only to choose an error.
+		var exists bool
+		if err := p.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)`, jobID).Scan(&exists); err != nil {
+			return wrap(err, "approving a job")
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
+// jobColumns is the projection every job read shares.
+//
+// Written once because the three readers must agree about what a job record contains: a column added to
+// one query and forgotten in another produces a record that is complete on one screen and missing a
+// field on the next, which reads as a bug in the UI.
+const jobColumns = `j.id, j.host_id, j.intent, j.params, j.class, j.issued_at, j.not_before,
+	j.not_after, j.nonce, COALESCE(j.signature, ''), COALESCE(j.signer_key_id, ''),
+	COALESCE(j.signer_algorithm, ''), j.created_by, j.approval_required, j.approved_at,
+	j.approved_by, j.claimed_at, j.completed_at,
+	r.status, r.started_at, r.finished_at, r.exit_code, r.output, r.output_truncated, r.result, r.error`
+
+// scanJob reads one row of jobColumns into a record.
+func scanJob(row pgx.Row) (JobRecord, error) {
+	var rec JobRecord
+	var approvedAt, claimedAt, completedAt *time.Time
+	var status, output, errText *string
+	var startedAt, finishedAt *time.Time
+	var exitCode *int
+	var outputTruncated *bool
+	var resultJSON []byte
+
+	if err := row.Scan(&rec.Job.ID, &rec.HostID, &rec.Job.Intent, &rec.Job.Params, &rec.Job.Class,
+		&rec.Job.IssuedAt, &rec.Job.NotBefore, &rec.Job.NotAfter, &rec.Job.Nonce,
+		&rec.Job.Signature, &rec.Job.SignerKeyID, &rec.Job.SignerAlgorithm,
+		&rec.CreatedBy, &rec.ApprovalRequired, &approvedAt, &rec.ApprovedBy,
+		&claimedAt, &completedAt,
+		&status, &startedAt, &finishedAt, &exitCode, &output, &outputTruncated, &resultJSON,
+		&errText); err != nil {
+		return JobRecord{}, err
+	}
+
+	rec.CreatedAt = rec.Job.IssuedAt
+	for _, pair := range []struct {
+		src *time.Time
+		dst *time.Time
+	}{{approvedAt, &rec.ApprovedAt}, {claimedAt, &rec.ClaimedAt}, {completedAt, &rec.CompletedAt}} {
+		if pair.src != nil {
+			*pair.dst = *pair.src
+		}
+	}
+
+	// A result row is present only once a host has reported. The LEFT JOIN yields nulls until then, and
+	// a nil Result is how a caller tells "not reported yet" from "reported nothing", which are
+	// different states an operator needs distinguished.
+	if status != nil {
+		result := protocol.ResultRequest{JobID: rec.Job.ID, Status: *status}
+		if startedAt != nil {
+			result.StartedAt = *startedAt
+		}
+		if finishedAt != nil {
+			result.FinishedAt = *finishedAt
+		}
+		if exitCode != nil {
+			result.ExitCode = *exitCode
+		}
+		if output != nil {
+			result.Output = *output
+		}
+		if outputTruncated != nil {
+			result.OutputTruncated = *outputTruncated
+		}
+		if errText != nil {
+			result.Error = *errText
+		}
+		if len(resultJSON) > 0 && string(resultJSON) != "null" {
+			var decoded any
+			if err := json.Unmarshal(resultJSON, &decoded); err == nil {
+				result.Result = decoded
+			}
+		}
+		rec.Result = &result
+	}
+	return rec, nil
+}
+
+// ListJobs returns jobs newest first, with their results.
+func (p *Postgres) ListJobs(ctx context.Context, f JobFilter) ([]JobRecord, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT `+jobColumns+`
+		  FROM jobs j LEFT JOIN job_results r ON r.job_id = j.id
+		 WHERE ($1 = '' OR j.host_id = $1)
+		 ORDER BY j.id DESC
+		 LIMIT $2`, f.HostID, limit)
+	if err != nil {
+		return nil, wrap(err, "listing jobs")
+	}
+	defer rows.Close()
+
+	out := make([]JobRecord, 0, limit)
+	for rows.Next() {
+		rec, err := scanJob(rows)
+		if err != nil {
+			return nil, wrap(err, "scanning a job")
+		}
+		out = append(out, rec)
+	}
+	return out, wrap(rows.Err(), "listing jobs")
+}
+
+// GetJob returns one job and its result, or ErrNotFound.
+func (p *Postgres) GetJob(ctx context.Context, jobID string) (JobRecord, error) {
+	rec, err := scanJob(p.pool.QueryRow(ctx, `
+		SELECT `+jobColumns+`
+		  FROM jobs j LEFT JOIN job_results r ON r.job_id = j.id
+		 WHERE j.id = $1`, jobID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return JobRecord{}, ErrNotFound
+	}
+	return rec, wrap(err, "reading a job")
+}
+
 // ClaimJobs atomically takes up to limit jobs for a host.
 //
 // FOR UPDATE SKIP LOCKED against the partial index is what lets the control plane run more than one
@@ -493,6 +681,10 @@ func (p *Postgres) ClaimJobs(ctx context.Context, hostID string, limit int) ([]p
 		WITH claimed AS (
 			SELECT id FROM jobs
 			 WHERE host_id = $1 AND claimed_at IS NULL AND completed_at IS NULL
+			   -- A job still waiting for its second operator is not work this host may take. The
+			   -- condition is here rather than in the handler because the handler is not the only
+			   -- thing that will ever claim.
+			   AND (NOT approval_required OR approved_at IS NOT NULL)
 			 ORDER BY issued_at
 			 LIMIT $2
 			 FOR UPDATE SKIP LOCKED

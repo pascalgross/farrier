@@ -38,6 +38,16 @@ type Memory struct {
 	// jobs are pending jobs by host id, in delivery order.
 	jobs map[string][]protocol.Job
 
+	// records are every job ever created, by job id, whether or not it has been claimed.
+	//
+	// It is separate from `jobs` because the two answer different questions: `jobs` is the queue and is
+	// emptied on claim, and this is the history the API and the UI read. Keeping one map and filtering
+	// would mean a claimed job vanished from the operator's view at the moment it became interesting.
+	records map[string]JobRecord
+
+	// order is job ids in creation order, so a listing can return newest first without sorting a map.
+	order []string
+
 	// results are recorded results by job id, which is what makes recording idempotent.
 	results map[string]protocol.ResultRequest
 
@@ -58,6 +68,7 @@ func NewMemory() *Memory {
 		hosts:   map[string]Host{},
 		certs:   map[string]Certificate{},
 		jobs:    map[string][]protocol.Job{},
+		records: map[string]JobRecord{},
 		results: map[string]protocol.ResultRequest{},
 		jobHost: map[string]string{},
 		waiters: map[string][]chan struct{}{},
@@ -308,23 +319,139 @@ func (m *Memory) RevokeHost(_ context.Context, hostID string) error {
 	return nil
 }
 
-// Enqueue adds a job for a host and wakes any long-poll waiting for it.
+// Enqueue adds a job for a host that needs no approval, and wakes any long-poll waiting for it.
 //
-// It is not part of the Store interface because the control plane does not create jobs yet: there is no
-// job-creation API, so no job of any class reaches a host from the server side. It exists so that tests
-// and the integration harness can exercise the delivery path — including the wake-up — before there is
-// anything to deliver.
+// It is not part of the Store interface: it exists so that a test can put work in front of an agent in
+// one line without assembling a NewJob. It goes through CreateJob rather than touching the maps itself,
+// so that a test is exercising the same path the API uses — a helper that took a shortcut would be a
+// test fixture that proved something the production path does not do.
 func (m *Memory) Enqueue(hostID string, job protocol.Job) {
+	//nolint:errcheck // CreateJob on the memory store fails only for a host that does not exist, and
+	// this helper is used by tests that have just created one. A test that got that wrong fails on the
+	// assertion that follows rather than here, with a better message than this could produce.
+	_ = m.CreateJob(context.Background(), NewJob{Job: job, HostID: hostID})
+}
+
+// CreateJob records a job for a host and wakes any long-poll waiting for it.
+func (m *Memory) CreateJob(_ context.Context, j NewJob) error {
 	m.mu.Lock()
-	m.jobs[hostID] = append(m.jobs[hostID], job)
-	m.jobHost[job.ID] = hostID
-	waiters := m.waiters[hostID]
-	m.waiters[hostID] = nil
+
+	if _, ok := m.hosts[j.HostID]; !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	// The same refusal the partial unique index makes in PostgreSQL. A signed payload may be queued
+	// once; an unsigned read job's nonce means nothing and is not checked, which is why the condition
+	// is on the signature rather than on the nonce being non-empty.
+	if j.Job.Signature != "" {
+		for _, id := range m.order {
+			if prev := m.records[id]; prev.HostID == j.HostID && prev.Job.Nonce == j.Job.Nonce &&
+				prev.Job.Signature != "" {
+				m.mu.Unlock()
+				return ErrConflict
+			}
+		}
+	}
+
+	m.records[j.Job.ID] = JobRecord{
+		Job:              j.Job,
+		HostID:           j.HostID,
+		CreatedAt:        j.Job.IssuedAt,
+		CreatedBy:        j.CreatedBy,
+		ApprovalRequired: j.ApprovalRequired,
+	}
+	m.order = append(m.order, j.Job.ID)
+	m.jobHost[j.Job.ID] = j.HostID
+
+	// A job waiting for a second operator is not in the queue at all. Holding it back here rather than
+	// filtering on claim keeps the two implementations honest about the same thing: the PostgreSQL
+	// claim excludes it with a WHERE clause, and this one never offers it.
+	var waiters []chan struct{}
+	if !j.ApprovalRequired {
+		m.jobs[j.HostID] = append(m.jobs[j.HostID], j.Job)
+		waiters = m.waiters[j.HostID]
+		m.waiters[j.HostID] = nil
+	}
 	m.mu.Unlock()
 
 	for _, w := range waiters {
 		close(w)
 	}
+	return nil
+}
+
+// ApproveJob records a second operator's agreement, making the job claimable.
+//
+// The whole check happens under the lock, which is what PostgreSQL gets from putting the rules in the
+// WHERE clause: two requests arriving at once must not let the same operator approve their own job by
+// racing it against itself.
+func (m *Memory) ApproveJob(_ context.Context, jobID, approver string, now time.Time) error {
+	m.mu.Lock()
+
+	rec, ok := m.records[jobID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	if !rec.ApprovalRequired || !rec.ApprovedAt.IsZero() || rec.CreatedBy == approver {
+		m.mu.Unlock()
+		return ErrConflict
+	}
+
+	rec.ApprovedAt = now
+	rec.ApprovedBy = approver
+	m.records[jobID] = rec
+
+	m.jobs[rec.HostID] = append(m.jobs[rec.HostID], rec.Job)
+	waiters := m.waiters[rec.HostID]
+	m.waiters[rec.HostID] = nil
+	m.mu.Unlock()
+
+	for _, w := range waiters {
+		close(w)
+	}
+	return nil
+}
+
+// ListJobs returns jobs newest first, with their results.
+func (m *Memory) ListJobs(_ context.Context, f JobFilter) ([]JobRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]JobRecord, 0, limit)
+	for i := len(m.order) - 1; i >= 0 && len(out) < limit; i-- {
+		rec := m.records[m.order[i]]
+		if f.HostID != "" && rec.HostID != f.HostID {
+			continue
+		}
+		out = append(out, m.withResult(rec))
+	}
+	return out, nil
+}
+
+// GetJob returns one job and its result, or ErrNotFound.
+func (m *Memory) GetJob(_ context.Context, jobID string) (JobRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rec, ok := m.records[jobID]
+	if !ok {
+		return JobRecord{}, ErrNotFound
+	}
+	return m.withResult(rec), nil
+}
+
+// withResult attaches a job's result if one has been recorded. The caller holds the lock.
+func (m *Memory) withResult(rec JobRecord) JobRecord {
+	if result, ok := m.results[rec.Job.ID]; ok {
+		copied := result
+		rec.Result = &copied
+	}
+	return rec
 }
 
 // ClaimJobs takes up to limit jobs for a host.
@@ -339,12 +466,27 @@ func (m *Memory) ClaimJobs(_ context.Context, hostID string, limit int) ([]proto
 	if len(pending) == 0 {
 		return nil, nil
 	}
+
+	claimed := pending
 	if limit > 0 && len(pending) > limit {
+		claimed = pending[:limit]
 		m.jobs[hostID] = pending[limit:]
-		return pending[:limit], nil
+	} else {
+		delete(m.jobs, hostID)
 	}
-	delete(m.jobs, hostID)
-	return pending, nil
+
+	// The record is stamped as well as the queue emptied, so that an operator watching a job sees it
+	// move from waiting to running. Without this the job would simply disappear from the queue and
+	// stay "not started" on the screen until its result arrived, which on a forty-minute upgrade is a
+	// long time to look like nothing is happening.
+	now := time.Now()
+	for _, job := range claimed {
+		if rec, ok := m.records[job.ID]; ok {
+			rec.ClaimedAt = now
+			m.records[job.ID] = rec
+		}
+	}
+	return claimed, nil
 }
 
 // RecordResult stores a job result idempotently, for a job that belongs to the reporting host.
@@ -365,6 +507,10 @@ func (m *Memory) RecordResult(_ context.Context, hostID string, r protocol.Resul
 		return nil
 	}
 	m.results[r.JobID] = r
+	if rec, ok := m.records[r.JobID]; ok {
+		rec.CompletedAt = time.Now()
+		m.records[r.JobID] = rec
+	}
 	return nil
 }
 
