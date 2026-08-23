@@ -18,6 +18,7 @@ import (
 	"github.com/pascalgross/farrier/internal/ca"
 	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/server"
 	"github.com/pascalgross/farrier/internal/store"
@@ -120,8 +121,14 @@ func newHarness(t *testing.T) *harness {
 		},
 	}}
 
+	online, err := onlinekey.Ensure(filepath.Join(dir, "ca"))
+	if err != nil {
+		t.Fatalf("preparing the online key: %v", err)
+	}
+
 	srv, err := server.New(server.Config{
 		Authority:        authority,
+		OnlineKey:        online,
 		Store:            memory,
 		Auth:             provider,
 		HeartbeatSeconds: 60,

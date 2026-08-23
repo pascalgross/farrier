@@ -157,13 +157,7 @@ func TestGuaranteeDestructiveIntentsRequireOfflineSignature(t *testing.T) {
 // executor is a decision somebody made and the next person to read this file needs to know which
 // decision. An empty map would be the ordinary state of a finished catalogue; a member appearing here
 // without a reason is what the test refuses.
-var unimplemented = map[Name]string{
-	PackagesApplySecurity: "it is the only routine intent, so Class.RequiresOfflineSignature is false " +
-		"for it and the agent's acceptance sequence checks no signature at all. docs/PROTOCOL.md §5.1 " +
-		"requires the control plane's online key to be verified instead, and no such key exists yet. " +
-		"Implementing it before that check would make applying packages to a fleet an operation " +
-		"authorised by mTLS alone.",
-}
+var unimplemented = map[Name]string{}
 
 // TestGuaranteeEveryCatalogueMemberIsImplementedOrHasAWrittenReasonNotToBe replaces the phase 0 pin.
 //
@@ -199,29 +193,69 @@ func TestGuaranteeEveryCatalogueMemberIsImplementedOrHasAWrittenReasonNotToBe(t 
 	}
 }
 
-// TestGuaranteeTheRoutineTierGainsNoExecutorWithoutTheOnlineKeyCheck states the rule generally.
+// TestGuaranteeTheRoutineTierIsNeverAuthorisedByMTLSAlone states the rule generally.
 //
 // It is deliberately about the *class* rather than about packages.applySecurity, because the specific
-// name is not the point. Any future routine member would arrive with the same hole: routine is the one
-// tier for which RequiresOfflineSignature is false, so the acceptance sequence in internal/agent
-// verifies nothing, and docs/PROTOCOL.md §5.1's "an agent MUST NOT execute a routine intent until it
-// does" is the sentence this test makes mechanical.
-func TestGuaranteeTheRoutineTierGainsNoExecutorWithoutTheOnlineKeyCheck(t *testing.T) {
+// name is not the point. Any future routine member arrives with the same question, and the answer this
+// pins is that routine is signed — by the control plane's own key — and is never the tier for which no
+// signature is checked at all.
+//
+// This test previously held the line the other way round: while there was no online key, it required
+// that no routine intent have an executor. That was the same rule at an earlier moment. What must not
+// happen is for a routine intent to be executable while nothing verifies a signature for it, and the
+// two halves of that are asserted in two places — here, that the catalogue demands an online signature,
+// and in internal/agent, that the acceptance sequence actually checks one.
+func TestGuaranteeTheRoutineTierIsNeverAuthorisedByMTLSAlone(t *testing.T) {
+	var routine int
 	for _, s := range All() {
 		if s.Class != ClassRoutine {
 			continue
 		}
-		if s.Class.RequiresOfflineSignature() {
-			// Would make this test vacuous, and would mean the class contract had changed underneath it.
-			t.Fatalf("routine intent %q now requires an offline signature; this test assumes it does "+
-				"not, and the reasoning below needs revisiting", s.Name)
+		routine++
+
+		if !s.Class.RequiresOnlineSignature() {
+			t.Errorf("routine intent %q requires no signature of any kind. Routine is privileged, so "+
+				"this would make it an operation authorised by mTLS alone — see docs/PROTOCOL.md §5.1 "+
+				"step 5.", s.Name)
 		}
-		if s.Implemented {
-			t.Errorf("routine intent %q has an executor. Routine is the one tier the agent verifies no "+
-				"signature for, so this makes it an operation authorised by mTLS alone. It may only be "+
-				"turned on together with verification of the control plane's online key — see "+
-				"docs/PROTOCOL.md §5.1 step 5, which says an agent MUST NOT execute a routine intent "+
-				"until it does.", s.Name)
+		if s.Class.RequiresOfflineSignature() {
+			// Not a weakening but a confusion, and worth catching: an offline signature is the
+			// destructive tier's authority, and a routine intent that demanded one would either be
+			// unsatisfiable — the control plane cannot produce one — or would mean the tiers had been
+			// merged.
+			t.Errorf("routine intent %q requires an offline signature. The two tiers verify against "+
+				"different anchors and neither substitutes for the other; see docs/SECURITY.md §3.",
+				s.Name)
+		}
+	}
+	if routine == 0 {
+		t.Fatal("no routine intent in the catalogue, so this test asserts nothing. If the tier has " +
+			"been removed, remove this test and the reasoning in docs/SECURITY.md §3 with it.")
+	}
+}
+
+// TestGuaranteeTheTwoSignatureTiersNeverOverlap is the separation the whole design rests on.
+//
+// A destructive intent is authorised by a key in the host's own trusted-signers, which the control
+// plane does not hold. A routine intent is authorised by the control plane's own key. If one class ever
+// demanded both, or a class demanded neither while being privileged, the acceptance sequence would have
+// a branch nobody wrote — and the plausible way that happens is somebody replacing two predicates with
+// one boolean and inverting it.
+func TestGuaranteeTheTwoSignatureTiersNeverOverlap(t *testing.T) {
+	for _, s := range All() {
+		offline := s.Class.RequiresOfflineSignature()
+		online := s.Class.RequiresOnlineSignature()
+
+		switch {
+		case offline && online:
+			t.Errorf("%q requires both an offline and an online signature; the acceptance sequence "+
+				"checks one branch, so one of the two would go unverified", s.Name)
+		case s.Class.Privileged() && !offline && !online:
+			t.Errorf("%q is privileged and requires no signature; that is an operation authorised by "+
+				"mTLS alone", s.Name)
+		case !s.Class.Privileged() && (offline || online):
+			t.Errorf("%q is a read intent that demands a signature. Nothing produces one for a read "+
+				"intent, so every one of them would be refused on every host", s.Name)
 		}
 	}
 }

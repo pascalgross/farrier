@@ -144,6 +144,24 @@ operation the host would perform on its own timer anyway via `unattended-upgrade
 can, at most, make a host do sooner what its own local policy already permits it to do unattended.
 A host with `allow = "none"` refuses it.
 
+The control plane signs it with a key it holds itself, generated on first start and kept beside the CA.
+The public half reaches agents in the enrolment response and on every heartbeat, so rotation needs no
+operator action — see [`PROTOCOL.md` §5.2](PROTOCOL.md#52-the-control-planes-online-key).
+
+**That the control plane distributes the key it signs with is not an oversight, and it does not weaken
+[§1](#1-the-guarantee).** An attacker who owns the control plane owns this key, so it defends against
+nothing in §1's scenario. What bounds a routine intent is the paragraph above: the host's own policy,
+re-read as root by the helper. So why sign at all? Because the alternative is a privileged operation
+authorised by mTLS alone, and because it keeps one mechanism instead of two — every privileged job
+carries a signature over the same canonical payload, checked in the same place, against the same replay
+store. An agent with a second code path for "privileged but unsigned" would have a second place to get
+it wrong.
+
+**The same arrangement for the destructive tier would be a backdoor.** An agent therefore verifies the
+two tiers against two anchors and never one: a signature by the online key must not authorise a reboot,
+and a signature by a key in `trusted-signers` is not an online-key signature. That is asserted
+mechanically, in both directions, by `TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob`.
+
 ### Destructive — signed by a key in the **host's** `trusted-signers`
 
 | Intent | What it does |

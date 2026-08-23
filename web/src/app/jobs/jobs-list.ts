@@ -96,12 +96,16 @@ export class JobsList {
   /**
    * The operations this page will offer to start.
    *
-   * Read-only and implemented, and nothing else. A routine intent has no online key to sign it and a
-   * destructive one needs a signature this browser must never be able to make; offering either would be
-   * a control whose only outcome is an error message.
+   * Everything the control plane can authorise on its own: read intents, which need no signature at
+   * all, and the routine one, which the control plane signs with its own key. What is missing is the
+   * destructive tier, and that is permanent rather than pending — it needs a signature made by a key
+   * listed in the host's own trusted-signers, which this control plane does not hold and a browser is
+   * the last place it should ever be. Sign one with `farrier sign` and post it.
    */
   protected readonly startableIntents = computed(() =>
-    this.intents().filter((entry) => entry.class === 'read' && entry.implemented),
+    this.intents().filter(
+      (entry) => entry.implemented && (entry.class === 'read' || entry.class === 'routine'),
+    ),
   );
 
   /** Whether the form has enough to submit. */
@@ -145,7 +149,7 @@ export class JobsList {
     });
   }
 
-  /** Queues the read-only job the form describes. */
+  /** Queues the job the form describes. */
   protected createJob(): void {
     this.busy.set(true);
     this.actionError.set('');

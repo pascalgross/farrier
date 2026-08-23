@@ -149,13 +149,18 @@ func TestAReadJobReachesTheHostAndComesBackWithItsResult(t *testing.T) {
 	}
 }
 
-// TestGuaranteeTheRoutineTierCannotBeQueued is the online key, refused at the door.
+// TestARoutineJobIsSignedByTheControlPlaneAndRunsOnTheHost is the tier that arrived last, end to end.
 //
-// packages.applySecurity is the one routine intent, and routine is the tier for which no offline
-// signature is required — so an agent that ran one without verifying the control plane's online key
-// would be acting on mTLS alone. There is no online key, the agent refuses one, and queueing it here
-// would produce a job that failed on every host in the fleet with a message about a key nobody has.
-func TestGuaranteeTheRoutineTierCannotBeQueued(t *testing.T) {
+// packages.applySecurity is the one routine intent, and routine is the tier for which no *offline*
+// signature is required. That is why it had no executor for a whole phase: an agent that ran one
+// without verifying anything would have been acting on mTLS alone. What closes it is the control
+// plane's own key — so this queues the job, takes the online key from the same enrolment response a
+// real agent would, and runs the agent's acceptance sequence against it.
+//
+// The refusal this replaces asserted that queueing one returned 501. That was the same rule at an
+// earlier moment; the rule itself — no execution without a verified signature — is asserted in
+// internal/agent, where it belongs.
+func TestARoutineJobIsSignedByTheControlPlaneAndRunsOnTheHost(t *testing.T) {
 	h := newHarness(t)
 	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
 
@@ -164,11 +169,79 @@ func TestGuaranteeTheRoutineTierCannotBeQueued(t *testing.T) {
 		"intent": "packages.applySecurity",
 		"params": map[string]any{},
 	})
-	if status != http.StatusNotImplemented {
-		t.Fatalf("queueing a routine intent returned %d, want 501: %s", status, body)
+	if status != http.StatusCreated {
+		t.Fatalf("queueing a routine intent returned %d: %s", status, body)
 	}
-	if !bytes.Contains(body, []byte("online key")) {
-		t.Errorf("the refusal does not name the online key: %s", body)
+	created := jobViewOf(t, body)
+	if created["signed"] != true {
+		t.Fatalf("a routine job was queued unsigned: %s", body)
+	}
+	if created["state"] != "queued" {
+		t.Errorf("a routine job is in state %v; nothing releases it, because the signature is the "+
+			"control plane's own", created["state"])
+	}
+
+	client := h.agentClient(t, state)
+	jobs, err := client.PollJobs(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("polling: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("the agent claimed %+v", jobs)
+	}
+
+	// The key the host would actually have. It arrives in the enrolment response and on every
+	// heartbeat, and this reads it from the same place rather than from the server's own struct — a key
+	// the server holds but never sends would pass a test written the other way and verify nothing on a
+	// real host.
+	stateDir := t.TempDir()
+	beat, err := client.Heartbeat(context.Background(), protocol.HeartbeatRequest{AgentVersion: "test"})
+	if err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if beat.OnlineKey == "" {
+		t.Fatal("the heartbeat carries no online key, so no host could ever verify a routine job")
+	}
+	if err := agent.StoreOnlineKey(stateDir, beat.OnlineKey); err != nil {
+		t.Fatalf("caching the online key: %v", err)
+	}
+	online, err := agent.LoadOnlineKey(stateDir)
+	if err != nil {
+		t.Fatalf("loading the online key: %v", err)
+	}
+
+	nonces, err := agent.LoadNonceStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("opening a nonce store: %v", err)
+	}
+	elevator := &recordingElevator{reply: privsep.Response{ExitCode: 0, Output: "0 upgraded"}}
+	runner := agent.Runner{
+		HostID:  state.HostID,
+		Policy:  permissiveTestPolicy(t),
+		Signers: &signing.SignerSet{},
+		Online:  online,
+		Nonces:  nonces,
+		Elevate: elevator,
+		Spool:   func(protocol.ResultRequest) error { return nil },
+	}
+
+	result := runner.Run(context.Background(), jobs[0])
+	if result.Status != protocol.StatusSucceeded {
+		t.Fatalf("the agent refused a routine job the control plane signed: %s — %s",
+			result.Status, result.Error)
+	}
+	if elevator.calls != 1 {
+		t.Fatalf("the job reached the root helper %d times", elevator.calls)
+	}
+	if elevator.seen.Intent != "packages.applySecurity" {
+		t.Errorf("the helper was asked for %q", elevator.seen.Intent)
+	}
+
+	// The host's trusted-signers is empty throughout. A routine job must not need one, and — the half
+	// that matters — the empty anchor must not have been what let this through: the destructive tier is
+	// refused on exactly this host in TestGuaranteeADestructiveJobWithoutASignatureIsRefused.
+	if !runner.Signers.Empty() {
+		t.Error("this test no longer proves a routine job needs no offline signature")
 	}
 }
 
@@ -345,22 +418,7 @@ func TestASignedDestructiveJobSurvivesTheRoundTripAndVerifiesOnTheHost(t *testin
 	if err != nil {
 		t.Fatalf("opening a nonce store: %v", err)
 	}
-	permissive, err := policy.Parse([]byte(`
-[updates]
-allow = "all"
-reboot = "window"
-window = "daily 00:00-00:00"
-timezone = "UTC"
-
-[services]
-restartable = ["nginx.service"]
-
-[limits]
-max_job_age_seconds = 900
-`))
-	if err != nil {
-		t.Fatalf("parsing a policy: %v", err)
-	}
+	permissive := permissiveTestPolicy(t)
 
 	spoolDir := t.TempDir()
 	runner := agent.Runner{
@@ -801,4 +859,30 @@ func TestWhoamiNamesTheFleetTheCredentialActsIn(t *testing.T) {
 	if me.Tenant.ApprovalMode != "second_person" {
 		t.Errorf("whoami reports the approval mode as %q", me.Tenant.ApprovalMode)
 	}
+}
+
+// permissiveTestPolicy is a local policy that permits what these tests ask for.
+//
+// Permissive on purpose, because these tests are about the *control plane* reaching a host correctly.
+// What a restrictive policy does is asserted where it belongs — in internal/policy, and in the root
+// helpers, which re-read the file themselves and are what the guarantee actually rests on.
+func permissiveTestPolicy(t *testing.T) policy.Policy {
+	t.Helper()
+	p, err := policy.Parse([]byte(`
+[updates]
+allow = "all"
+reboot = "window"
+window = "daily 00:00-00:00"
+timezone = "UTC"
+
+[services]
+restartable = ["nginx.service"]
+
+[limits]
+max_job_age_seconds = 900
+`))
+	if err != nil {
+		t.Fatalf("parsing a policy: %v", err)
+	}
+	return p
 }

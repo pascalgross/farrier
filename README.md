@@ -8,28 +8,26 @@ By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
-> Farrier is in **phase 1**, and two things are missing from it. Nine of the ten catalogue members have an
-> executor: the four read-only operations, and all five destructive ones — apply every update, start,
-> stop or restart a unit, and reboot. They enforce the host's own policy as root, over a socket rather
-> than through `sudo`, and you can drive them from an administrator's shell on a host today.
+> Farrier is in **phase 1, and phase 1 is complete**. All ten catalogue members have an executor: the
+> four read-only operations, the one routine operation, and all five destructive ones — apply every
+> update, start, stop or restart a unit, and reboot. They enforce the host's own policy as root, over a
+> socket rather than through `sudo`.
 >
-> The control plane can issue them: `POST /api/v1/jobs` creates a job. It is multi-tenant — one control
-> plane, many isolated fleets — and each fleet decides for itself whether a destructive job waits for
-> somebody to release it, and whether that somebody has to be a second person.
+> The control plane issues them and `farrier sign` authorises the destructive ones. That command never
+> contacts the server: it renders what you are about to authorise from the same canonical payload it
+> then signs, so a compromised control plane cannot show one operation and have another signed.
 >
-> **What is missing is `farrier sign`.** A destructive job carries a signature made offline by a key
-> the control plane does not hold, and nothing yet produces one for a human — so in practice the fleet
-> is drivable through the API for read-only work, and the destructive tier is complete on every side
-> except the tool an operator would use. `packages.applySecurity` is separately unavailable, and
-> deliberately: it is the one *routine* intent, and [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §5.1 says an
-> agent must not run one until it verifies a signature by the control plane's online key, which does
-> not exist yet.
+> It is multi-tenant — one control plane, many isolated fleets, separated by PostgreSQL row-level
+> security — and each fleet decides for itself whether a destructive job waits for somebody to release
+> it, and whether that somebody has to be a second person.
 >
-> The jobs page exists, and it offers exactly what a browser may legitimately authorise: it queues
-> read-only work and releases destructive work somebody else signed. It will never offer to *create* a
+> The jobs page offers exactly what a browser may legitimately authorise: it queues reports and security
+> updates, and releases destructive work somebody else signed. It will never offer to *create* a
 > destructive job, because that needs a key the control plane does not hold and a browser is the last
-> place it should ever be. So: do not expect to patch a fleet from a browser — not yet, and not by this
-> route afterwards either.
+> place it should ever be.
+>
+> What is not built, and is next: pushing a configuration to a host that is already enrolled is
+> **never** built — see the guarantee below. Tier 2 provisioning arrives in phase 3.
 
 ---
 

@@ -34,6 +34,9 @@ type signerFixture struct {
 
 	// set is a SignerSet trusting the matching public key.
 	set *signing.SignerSet
+
+	// keyID is the identity this key signs under, for a job's signerKeyId.
+	keyID string
 }
 
 // newSignerFixture generates a key and the trusted-signers set that trusts it.
@@ -53,7 +56,7 @@ func newSignerFixture(t *testing.T, keyID string) signerFixture {
 	if err != nil {
 		t.Fatalf("parsing the trusted-signers fixture: %v", err)
 	}
-	return signerFixture{private: priv, set: set}
+	return signerFixture{private: priv, set: set, keyID: keyID}
 }
 
 // sign produces a detached signature over a job's canonical signed payload.
@@ -126,7 +129,7 @@ func TestGuaranteeAnUnsignedDestructiveJobIsRefused(t *testing.T) {
 	trusted := newSignerFixture(t, "ops-laptop")
 	job := destructiveJob("nonce-unsigned")
 
-	got := accept(job, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, time.Now())
+	got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, time.Now())
 	if got.accepted() {
 		t.Fatal("a destructive job with no signature was accepted")
 	}
@@ -146,7 +149,7 @@ func TestGuaranteeAnUntrustedSignatureIsRefused(t *testing.T) {
 	job := destructiveJob("nonce-untrusted")
 	job.Signature = attacker.sign(t, job)
 
-	got := accept(job, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, time.Now())
+	got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, time.Now())
 	if got.accepted() {
 		t.Fatal("a signature from an untrusted key was accepted")
 	}
@@ -161,7 +164,7 @@ func TestGuaranteeAnEmptyTrustAnchorRefusesEverythingDestructive(t *testing.T) {
 	job := destructiveJob("nonce-empty-anchor")
 	job.Signature = signer.sign(t, job)
 
-	got := accept(job, testHostID, permissivePolicy(t), &signing.SignerSet{}, newNonceStore(t), 0, time.Now())
+	got := accept(job, testHostID, permissivePolicy(t), &signing.SignerSet{}, noOnlineKey(), newNonceStore(t), 0, time.Now())
 	if got.accepted() {
 		t.Fatal("a host with an empty trust anchor accepted a destructive job")
 	}
@@ -178,7 +181,7 @@ func TestGuaranteeTheAgentTakesTheClassFromItsOwnCatalogue(t *testing.T) {
 	job := destructiveJob("nonce-forged-class")
 	job.Class = "read" // the lie
 
-	got := accept(job, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, time.Now())
+	got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, time.Now())
 	if got.accepted() {
 		t.Fatal("a destructive job labelled \"read\" by the control plane was accepted")
 	}
@@ -274,7 +277,7 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 		ID: "01JEXPIRED", Intent: "facts.collect", Params: map[string]any{},
 		IssuedAt: now.Add(-time.Hour), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(-time.Minute),
 	}
-	got := accept(expired, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, now)
+	got := accept(expired, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, now)
 	if got.accepted() {
 		t.Error("a job whose validity window had closed was accepted")
 	}
@@ -285,46 +288,40 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 	notYet := expired
 	notYet.NotBefore = now.Add(time.Hour)
 	notYet.NotAfter = now.Add(2 * time.Hour)
-	if accept(notYet, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, now).accepted() {
+	if accept(notYet, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, now).accepted() {
 		t.Error("a job whose validity window had not opened was accepted")
 	}
 }
 
-// TestGuaranteeTheRoutineIntentIsStillRefusedByTheAgent is the one gap phase 1 left on purpose.
+// TestGuaranteeATrustedSignatureIsNotAnOnlineKeySignature is what remains of the rule that once kept
+// packages.applySecurity out of the catalogue entirely.
 //
-// packages.applySecurity is the only routine intent, and routine is the one tier for which
-// Class.RequiresOfflineSignature is false — so the acceptance sequence above verifies no signature for
-// it at all. docs/PROTOCOL.md §5.1 says the control plane's online key must be verified instead, and
-// there is no online key yet. Until there is, accepting one would make applying packages to a fleet an
-// operation authorised by mTLS alone.
+// While there was no online key, this test asserted that a routine intent was refused however it was
+// signed. Now there is one, and the surviving half is the sharper one: a host that has *not* been given
+// an online key must still refuse a routine job, even when that job carries a perfectly good signature
+// from a key in its own trusted-signers.
 //
-// This is asserted at the agent rather than only in the catalogue because this is the layer an actual
-// job passes through, and because the refusal must hold however well the job is signed: a signature by
-// a key in trusted-signers is not an online-key signature and must not be mistaken for one.
-func TestGuaranteeTheRoutineIntentIsStillRefusedByTheAgent(t *testing.T) {
+// That is the fallback somebody would add out of helpfulness — "verify against whatever keys we have" —
+// and it would be wrong in both directions at once. It would let a control plane's routine job be
+// authorised by an operator's offline key, and it is one edit away from the reverse, which is a
+// compromised control plane rebooting the fleet with a key it holds itself.
+func TestGuaranteeATrustedSignatureIsNotAnOnlineKeySignature(t *testing.T) {
 	trusted := newSignerFixture(t, "ops-laptop")
 	now := time.Now()
 
-	job := protocol.Job{
-		ID: "01JROUTINE", Intent: "packages.applySecurity", Params: map[string]any{},
-		Class: "routine", IssuedAt: now, NotBefore: now.Add(-time.Minute),
-		NotAfter: now.Add(30 * time.Minute), Nonce: "nonce-routine",
+	// Signed by a key this host genuinely trusts, over the right payload, naming itself correctly.
+	// Everything about it is valid except that it is not the control plane's online key.
+	job := signJobWith(t, routineJob("nonce-routine-trusted-not-online"), trusted)
+
+	got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, now)
+	if got.accepted() {
+		t.Fatal("a routine job was accepted on the strength of a trusted-signers signature. The two " +
+			"anchors are being consulted as one, which also means a control plane's own key would " +
+			"authorise a reboot.")
 	}
-	for _, signed := range []bool{false, true} {
-		if signed {
-			// Signed by a key the host does trust, which is the case that would slip through if the
-			// refusal were ever loosened to "unless it is signed by something".
-			job.Signature = trusted.sign(t, job)
-		}
-		got := accept(job, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, now)
-		if got.accepted() {
-			t.Errorf("packages.applySecurity was accepted (signed=%v). Routine intents verify no "+
-				"signature, so this is mTLS-only authorisation for applying packages.", signed)
-		}
-		if got.status != protocol.StatusUnsupportedIntent {
-			t.Errorf("packages.applySecurity was refused as %q; it must read as unsupported_intent, "+
-				"which is what an agent reports for something it will not do", got.status)
-		}
+	if got.status != protocol.StatusRefusedUnsigned {
+		t.Errorf("status %q, want %q: the host has no online key, so this is an unverifiable "+
+			"signature rather than an unknown intent", got.status, protocol.StatusRefusedUnsigned)
 	}
 }
 
@@ -350,7 +347,7 @@ func TestTheDestructiveTierIsAcceptedWhenProperlySigned(t *testing.T) {
 		jobs[i].Nonce = "nonce-phase1-" + jobs[i].ID
 		jobs[i].Signature = trusted.sign(t, jobs[i])
 
-		got := accept(jobs[i], testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, now)
+		got := accept(jobs[i], testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, now)
 		if !got.accepted() {
 			t.Errorf("%s was refused with %q: %s", jobs[i].Intent, got.status, got.reason)
 		}
@@ -508,4 +505,134 @@ func TestWriteFileAtomicLeavesNoPartialFile(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("the directory holds %d entries, want 1: %v", len(entries), entries)
 	}
+}
+
+// signJobWith signs a job with a fixture's key and records who signed it.
+//
+// The signerKeyId is set as well as the signature, because the acceptance sequence checks the two agree
+// — a job that verified against one key while naming another is a disagreement between the control
+// plane's audit record and the host's, and the host does not take the server's word for it.
+func signJobWith(t *testing.T, job protocol.Job, by signerFixture) protocol.Job {
+	t.Helper()
+	job.Signature = by.sign(t, job)
+	job.SignerKeyID = by.keyID
+	job.SignerAlgorithm = string(signing.Ed25519)
+	return job
+}
+
+// noOnlineKey is the online key set of a host no control plane has given one.
+//
+// It is the state most of these tests want, because most of them are about the destructive tier — where
+// the online key must make no difference whatsoever. Naming it rather than passing an empty literal is
+// what makes that intent readable at every call site.
+func noOnlineKey() *signing.SignerSet { return &signing.SignerSet{} }
+
+// routineJob builds a packages.applySecurity job, which the control plane signs for itself.
+func routineJob(nonce string) protocol.Job {
+	now := time.Now().UTC().Truncate(time.Second)
+	return protocol.Job{
+		ID:        "01JROUTINE",
+		Intent:    "packages.applySecurity",
+		Params:    map[string]any{},
+		Class:     "routine",
+		IssuedAt:  now,
+		NotBefore: now.Add(-time.Minute),
+		NotAfter:  now.Add(time.Hour),
+		Nonce:     nonce,
+	}
+}
+
+// TestGuaranteeARoutineJobIsRefusedWithoutTheOnlineKey is the check that had to exist before
+// packages.applySecurity could.
+//
+// Routine is the one privileged tier with no offline signature, so before there was an online key to
+// verify, running one would have been an operation authorised by mTLS alone. That is why the intent had
+// no executor for a whole phase. This asserts the check that replaced the absence: no key, no run.
+func TestGuaranteeARoutineJobIsRefusedWithoutTheOnlineKey(t *testing.T) {
+	trusted := newSignerFixture(t, "ops-laptop")
+	job := routineJob("nonce-routine-unverified")
+
+	got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(), newNonceStore(t), 0, time.Now())
+	if got.accepted() {
+		t.Fatal("a routine job was accepted by a host that has no online key to verify it against")
+	}
+	if got.status != protocol.StatusRefusedUnsigned {
+		t.Errorf("status %q, want %q", got.status, protocol.StatusRefusedUnsigned)
+	}
+}
+
+// TestGuaranteeARoutineJobIsRefusedWhenTheOnlineKeyDidNotSignIt covers the key set actually being
+// consulted rather than merely being present.
+func TestGuaranteeARoutineJobIsRefusedWhenTheOnlineKeyDidNotSignIt(t *testing.T) {
+	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	impostor := newSignerFixture(t, "somebody-else")
+
+	job := routineJob("nonce-routine-wrong-key")
+	job = signJobWith(t, job, impostor)
+
+	got := accept(job, testHostID, permissivePolicy(t), newSignerFixture(t, "ops-laptop").set,
+		controlPlane.set, newNonceStore(t), 0, time.Now())
+	if got.accepted() {
+		t.Fatal("a routine job signed by a key that is not the control plane's was accepted")
+	}
+	if got.status != protocol.StatusRefusedUnsigned {
+		t.Errorf("status %q, want %q", got.status, protocol.StatusRefusedUnsigned)
+	}
+}
+
+// TestARoutineJobSignedByTheOnlineKeyIsAccepted is the ordinary path, asserted alongside the refusals
+// so that a change which refused everything would not look like a pass.
+func TestARoutineJobSignedByTheOnlineKeyIsAccepted(t *testing.T) {
+	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	job := signJobWith(t, routineJob("nonce-routine-good"), controlPlane)
+
+	got := accept(job, testHostID, permissivePolicy(t), newSignerFixture(t, "ops-laptop").set,
+		controlPlane.set, newNonceStore(t), 0, time.Now())
+	if !got.accepted() {
+		t.Fatalf("a correctly signed routine job was refused: %s — %s", got.status, got.reason)
+	}
+}
+
+// TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob is the separation the whole tier design rests
+// on, made mechanical.
+//
+// The control plane holds the online key. If a signature by it could authorise a reboot, then an
+// attacker who owns the control plane could reboot the fleet — which is precisely what
+// docs/SECURITY.md §1 says cannot happen. The agent must consult trusted-signers for a destructive
+// intent and nothing else, however convenient the other key set is to reach.
+//
+// It is asserted from both directions, because a single merged key set would pass a one-directional
+// test: the online key must not authorise a destructive job, *and* an offline key must not authorise a
+// routine one. The second is not a security property so much as proof that the two anchors are
+// genuinely separate rather than one set consulted twice.
+func TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob(t *testing.T) {
+	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	operator := newSignerFixture(t, "ops-laptop")
+
+	t.Run("the online key cannot reboot a host", func(t *testing.T) {
+		// Signed by the control plane's own key, correctly, over the right payload. The only thing
+		// wrong with it is which key it is.
+		job := signJobWith(t, destructiveJob("nonce-online-signed-destructive"), controlPlane)
+
+		got := accept(job, testHostID, permissivePolicy(t), operator.set, controlPlane.set,
+			newNonceStore(t), 0, time.Now())
+		if got.accepted() {
+			t.Fatal("a destructive job signed by the control plane's own online key was accepted. " +
+				"An attacker owning the control plane could reboot this fleet.")
+		}
+		if got.status != protocol.StatusRefusedUnsigned {
+			t.Errorf("status %q, want %q", got.status, protocol.StatusRefusedUnsigned)
+		}
+	})
+
+	t.Run("an operator key does not sign routine work", func(t *testing.T) {
+		job := signJobWith(t, routineJob("nonce-offline-signed-routine"), operator)
+
+		got := accept(job, testHostID, permissivePolicy(t), operator.set, controlPlane.set,
+			newNonceStore(t), 0, time.Now())
+		if got.accepted() {
+			t.Fatal("a routine job signed by a trusted-signers key was accepted; the two anchors are " +
+				"being consulted as one set")
+		}
+	})
 }

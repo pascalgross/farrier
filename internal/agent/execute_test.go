@@ -271,7 +271,7 @@ func TestRunDoesNotGateReadIntentsOnTheJobAgeLimit(t *testing.T) {
 	privileged.IssuedAt = time.Now().Add(-time.Hour)
 	privileged.Signature = signers.sign(t, privileged)
 
-	decision := accept(privileged, testHostID, strict, signers.set, newNonceStore(t), 0, time.Now())
+	decision := accept(privileged, testHostID, strict, signers.set, noOnlineKey(), newNonceStore(t), 0, time.Now())
 	if decision.accepted() {
 		t.Error("an hour-old privileged job was accepted under a one-second age limit")
 	}

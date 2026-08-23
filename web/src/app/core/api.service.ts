@@ -91,11 +91,13 @@ export class ApiService {
   }
 
   /**
-   * Queues a read-only job.
+   * Queues a job the control plane can authorise by itself.
    *
-   * There is deliberately no method here for a destructive one. Such a job carries a signature made
-   * offline by a key the control plane does not hold, and a browser is the last place that key should
-   * ever be — so the API accepts one and this client cannot produce one, which is the right way round.
+   * That is a read intent, which needs no signature, or the routine one, which the control plane signs
+   * with its own key. There is deliberately no method here for a destructive one: such a job carries a
+   * signature made offline by a key the control plane does not hold, and a browser is the last place
+   * that key should ever be — so the API accepts one and this client cannot produce one, which is the
+   * right way round.
    */
   createReadJob(request: CreateReadJobRequest): Observable<Job> {
     return this.http.post<Job>('/api/v1/jobs', request, { headers: this.headers() });

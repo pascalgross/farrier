@@ -23,11 +23,13 @@
 
   <mat-card-content class="!pt-4">
     <p class="text-sm opacity-80 mt-0">
-      Read-only operations only, and that is not a gap in this page. A destructive job — applying every
-      update, starting, stopping or restarting a unit, rebooting — carries a signature made offline by a
-      key listed in that host's own <code>trusted-signers</code>, which this control plane does not hold
-      and a browser is the last place that should ever be. Sign one elsewhere and send it to
-      <code>POST /api/v1/jobs</code>; approving it is what this page can do.
+      Everything this control plane can authorise on its own: reports, and applying security updates,
+      which it signs with its own key and which each host bounds by its own policy. Not the destructive
+      tier — applying every update, starting, stopping or restarting a unit, rebooting. Those carry a
+      signature made offline by a key listed in that host's own <code>trusted-signers</code>, which this
+      control plane does not hold and a browser is the last place that should ever be. Sign one with
+      <code>farrier sign</code> and send it to <code>POST /api/v1/jobs</code>; releasing it is what this
+      page can do.
     </p>
 
     <div class="flex flex-wrap gap-4 items-baseline">

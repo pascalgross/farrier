@@ -8,10 +8,9 @@ rebooting — and each is bounded by a root-owned file the control plane cannot 
 can ask for them: `POST /api/v1/jobs` queues one, and whether it then waits for somebody to release it
 is a setting on your fleet — see [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
 
-**What is missing is `farrier sign`.** A destructive job carries a signature made offline by a key the
-control plane does not hold, and nothing yet produces one for a human — so until it lands, the API
-drives read-only work and a privileged operation is something an administrator runs on a host, through
-the same helpers and the same policy check the agent would have gone through.
+A destructive job carries a signature made offline by a key the control plane does not hold. `farrier
+sign` is what produces one, and it never contacts the server — it renders what you are about to
+authorise from the same payload it then signs.
 
 ## The control plane
 
@@ -142,15 +141,27 @@ needs two more things, and neither of them is the control plane's to give.
 1. A signature over the job, made offline with a key listed in that host's own
    `/etc/farrier/trusted-signers`. It is sent with the request, along with the `id`, `nonce`,
    `notBefore` and `notAfter` it covers; every one of those comes from the signer, because a value
-   chosen by the control plane would invalidate the signature. **`farrier sign` is not written yet**,
-   so there is no supported way for a person to produce one today.
-2. Approval by a *different* operator, through `POST /api/v1/jobs/{id}/approve`. Until that happens no
-   host can claim the job. A control plane with one operator account cannot do this at all — see
-   [`SECURITY.md`](SECURITY.md#destructive--signed-by-a-key-in-the-hosts-trusted-signers).
+   chosen by the control plane would invalidate the signature.
 
-A **routine** job — `packages.applySecurity` — is refused outright, and the refusal says why: it is the
-one tier that carries no offline signature, so an agent must verify a signature by the control plane's
-online key instead, and there is no online key yet.
+   ```bash
+   farrier sign --key ~/.farrier/ops.key --host 01J9ABC… \
+     --intent service.restart --params '{"unit":"nginx.service"}' \
+   | curl -sX POST "$FARRIER_URL/api/v1/jobs" \
+       -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" \
+       -H 'Content-Type: application/json' -d @-
+   ```
+
+   It shows you the operation, the host, the window and the exact bytes it is about to sign, and asks
+   before signing. It never talks to the control plane: if it signed a digest the server handed it, a
+   compromised control plane could display one operation and have another authorised.
+2. Release, if your fleet asks for it — `POST /api/v1/jobs/{id}/approve`. Whether that is required at
+   all, and whether the releaser must be somebody other than the job's creator, is your fleet's
+   `approvalMode`. A new fleet requires nothing; see
+   [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
+
+A **routine** job — `packages.applySecurity` — needs neither. The control plane signs it with its own
+key, and what bounds it is your host's `updates.allow`: the worst the control plane can do is make a
+host apply security updates sooner than its own timer would have.
 
 ## What a fresh host will and will not do
 
@@ -160,7 +171,8 @@ Straight after installation, before you change anything:
 | --- | --- |
 | Reports inventory, services, pending updates and reboot state | **yes** |
 | Applies security updates on its own timer, via `unattended-upgrades` | **yes** — and it keeps doing this if the control plane is unreachable, or if you never enrol it at all |
-| Applies updates because the control plane asked | **no** — `packages.applySecurity` has no executor, and `packages.applyAll` needs a signature from a key you place on the host |
+| Applies security updates because the control plane asked | **only if `updates.allow` permits it** — the control plane signs the request, and the host's own policy decides |
+| Applies *every* update because the control plane asked | **no** — `packages.applyAll` needs a signature from a key you place on the host |
 | Applies updates because an administrator ran the helper on the host | only security updates, and only what the policy below allows |
 | Restarts a service, or reboots | **no**, from anyone, until you change the two files below |
 
