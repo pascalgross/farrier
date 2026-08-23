@@ -29,26 +29,32 @@ Needs LXD: `sudo snap install lxd && sudo lxd init --auto`.
 
 | | |
 | --- | --- |
-| `010-install` | The package installs, the account cannot log in and is not in the `docker` group, the conffiles are root-owned and unwritable by the agent, `trusted-signers` ships empty, and the helper refuses a restart the local policy does not permit |
+| `010-install` | The package installs, the account cannot log in and is not in the `docker` group, the conffiles are root-owned and unwritable by the agent, `trusted-signers` ships empty, the three helper sockets are listening as `root:farrier 0660` with no sudoers entry beside them, and the helper refuses a restart the local policy does not permit |
 | `020-hardening` | The hardening the unit file claims is actually in force, read back from systemd — which silently ignores directives it does not understand — and the agent can write its state and cannot write its policy |
 | `030-facts` | The security/regular split, the reboot marker and Ubuntu Pro give the right answer *for this family*. All four of these differences fail quietly rather than loudly, so the answers are checked rather than the absence of an error |
 | `040-upgrade` | A locally edited `policy.toml` and `trusted-signers` survive a package upgrade untouched. The second half is a **security** test: an upgrade that reset the trust anchor would re-open every destructive operation an administrator had closed |
 | `050-conffile-prompt` | An update run with a changed conffile completes rather than hanging. `DEBIAN_FRONTEND=noninteractive` alone is not enough, and the run that hangs holds the apt lock until somebody notices days later |
 | `060-kill-switch` | `/etc/farrier/paused` and `systemctl stop` both stop the host acting, the agent cannot remove the marker itself, and nothing flips it back on |
 | `070-reboot-result` | A job result fsynced to the spool survives a **hard** reset and is still there afterwards. A result that only survives an orderly shutdown is not surviving anything |
-| `080-write-capability` | The installed package refuses every privileged operation for want of an executor, under a policy that permits everything — so the refusal cannot be the policy's doing. There are exactly three root helpers and none of them accepts a program to run |
+| `080-write-capability` | The write capability exists and is bounded by the policy file. The shipped policy refuses every privileged operation; a permissive one permits exactly what it names, and a unit it names is actually restarted; a unit it does not name is still refused; the pause marker outranks both. There are exactly three root helpers, none accepts a program to run, and there is no sudoers entry |
 
 ## What is pending
 
-Phase 0 ships no write capability, so some scenarios currently assert the *invariant a phase 1 executor
-must satisfy* rather than driving the executor itself. `050-conffile-prompt` demonstrates the dpkg
-options against real dpkg on the machine; `070-reboot-result` exercises the durability mechanism
-directly. Both are written now so that they fail the moment an executor lands without them, which is the
-point at which somebody would otherwise have to remember.
+`080-write-capability` was written to *stop passing* when phase 1 began, so that the failure would be
+the notification. Phase 1 has begun and it has been rewritten, deliberately and visibly, to assert the
+harder half: not that a host can be changed, but that the shipped policy refuses everything, that a
+permissive one permits exactly what it names, and that the answer comes from the file rather than from
+anything the caller said.
 
-`080-write-capability` is expected to *stop passing* when phase 1 begins. That failure is the
-notification, and updating it should be a deliberate, visible line in the diff rather than something
-that happens quietly.
+Two operations are still never carried out for real. Applying updates would dist-upgrade the instance
+and make every later assertion a measurement of a different machine, so it is exercised through
+`--dry-run`, which evaluates the same decision through the same code; `050-conffile-prompt` covers the
+dpkg options against real dpkg separately. Rebooting is `070-reboot-result`'s job and is not repeated.
+
+`packages.applySecurity` has no executor yet, and that is not an oversight — it is the one **routine**
+intent, and `docs/PROTOCOL.md` §5.1 says an agent MUST NOT execute one until it verifies a signature by
+the control plane's online key. No such key exists yet. Every scenario here drives the destructive tier,
+whose signature path is complete.
 
 ## Why shell
 
