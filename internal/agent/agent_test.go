@@ -293,6 +293,73 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 	}
 }
 
+// TestClockSkewFailsClosedForPrivilegedIntentsOnly covers the boundary CLAUDE.md names an invariant.
+//
+// Validity windows are checked against the local clock only, so a host whose clock is far from the
+// control plane's cannot reason about a window at all — it must refuse privileged work, and the refusal
+// must name the clock rather than send an operator hunting through the control plane's scheduling. The
+// "only" in the name is the other half, and it is asserted with the same weight: a read intent still
+// runs, because a skewed host is exactly the one an operator needs to keep hearing from, and blinding
+// them to its state is how a wrong clock stays wrong.
+func TestClockSkewFailsClosedForPrivilegedIntentsOnly(t *testing.T) {
+	trusted := newSignerFixture(t, "ops-laptop")
+	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	skew := 10 * time.Minute
+
+	t.Run("a signed destructive job is refused, and the refusal names the clock", func(t *testing.T) {
+		// Correctly signed, inside its window, fresh nonce, permissive policy: the skew is the only
+		// thing wrong with this job, so the status proves which check refused it.
+		job := signJobWith(t, destructiveJob("nonce-skewed-destructive"), trusted)
+
+		got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(),
+			newNonceStore(t), skew, time.Now())
+		if got.accepted() {
+			t.Fatal("a destructive job was accepted by a host whose clock is ten minutes out. Such a " +
+				"host cannot reason about the signature's validity window, which is checked against " +
+				"the local clock only.")
+		}
+		if got.status != protocol.StatusRefusedClockSkew {
+			t.Errorf("status %q, want %q — the diagnostic exists to say the clock is wrong",
+				got.status, protocol.StatusRefusedClockSkew)
+		}
+	})
+
+	t.Run("the direction of the skew does not matter", func(t *testing.T) {
+		// A host behind the control plane is as unable to reason about a window as one ahead of it.
+		job := signJobWith(t, destructiveJob("nonce-skewed-behind"), trusted)
+
+		got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(),
+			newNonceStore(t), -skew, time.Now())
+		if got.status != protocol.StatusRefusedClockSkew {
+			t.Errorf("status %q, want %q for a clock behind the control plane's",
+				got.status, protocol.StatusRefusedClockSkew)
+		}
+	})
+
+	t.Run("the routine tier is privileged too", func(t *testing.T) {
+		// Routine work is signed work, so it has a window a skewed host cannot reason about either.
+		job := signJobWith(t, routineJob("nonce-skewed-routine"), controlPlane)
+
+		got := accept(job, testHostID, permissivePolicy(t), trusted.set, controlPlane.set,
+			newNonceStore(t), skew, time.Now())
+		if got.status != protocol.StatusRefusedClockSkew {
+			t.Errorf("status %q, want %q for a routine job on a skewed host",
+				got.status, protocol.StatusRefusedClockSkew)
+		}
+	})
+
+	t.Run("a read intent still runs", func(t *testing.T) {
+		job := protocol.Job{ID: "01JSKEWEDREAD", Intent: "facts.collect", Params: map[string]any{}}
+
+		got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(),
+			newNonceStore(t), skew, time.Now())
+		if !got.accepted() {
+			t.Fatalf("a read intent was refused on a skewed host (%s: %s); a wrong clock must not "+
+				"blind an operator to the state of the host that has it", got.status, got.reason)
+		}
+	})
+}
+
 // TestGuaranteeATrustedSignatureIsNotAnOnlineKeySignature is what remains of the rule that once kept
 // packages.applySecurity out of the catalogue entirely.
 //
