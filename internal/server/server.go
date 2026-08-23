@@ -152,6 +152,10 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/tokens", s.requireOperator(s.handleListTokens))
 	s.mux.Handle("POST /api/v1/tokens", s.requireOperator(s.handleCreateToken))
 	s.mux.Handle("GET /api/v1/catalogue", s.requireOperator(s.handleCatalogue))
+	s.mux.Handle("GET /api/v1/jobs", s.requireOperator(s.handleListJobs))
+	s.mux.Handle("POST /api/v1/jobs", s.requireOperator(s.handleCreateJob))
+	s.mux.Handle("GET /api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
+	s.mux.Handle("POST /api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
 
 	// Unauthenticated, and deliberately so: a health check that needs a credential is a health check
 	// the load balancer cannot perform.

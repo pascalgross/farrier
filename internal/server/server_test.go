@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,8 +42,17 @@ type harness struct {
 	// caFile is the test server's own certificate, so the agent can verify it.
 	caFile string
 
-	// adminToken authenticates the administrative API.
+	// adminToken authenticates the administrative API as the first operator.
 	adminToken string
+
+	// secondToken authenticates a *different* operator.
+	//
+	// docs/SECURITY.md §3 requires a second person to approve a destructive job, and a second person is
+	// something the shipped auth.StaticToken cannot express: it holds one token and one subject. This
+	// stands in for the multi-operator provider auth.Provider exists as a seam for, so that the
+	// approval path can be exercised at all — and TestGuaranteeOneOperatorCannotApproveTheirOwnJob
+	// pins what a default installation actually does, which is refuse.
+	secondToken string
 }
 
 // newHarness starts a control plane for one test.
@@ -56,11 +66,14 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	memory := store.NewMemory()
-	const adminToken = "test-admin-token-0123456789"
-	provider, err := auth.NewStaticToken(adminToken, "tester")
-	if err != nil {
-		t.Fatalf("configuring auth: %v", err)
-	}
+	const (
+		adminToken  = "test-admin-token-0123456789"
+		secondToken = "test-second-operator-0123456789"
+	)
+	provider := &twoOperators{tokens: map[string]auth.Identity{
+		adminToken:  {Subject: "tester", Display: "Tester", Provider: "test"},
+		secondToken: {Subject: "second-operator", Display: "Second Operator", Provider: "test"},
+	}}
 
 	srv, err := server.New(server.Config{
 		Authority:        authority,
@@ -87,7 +100,35 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("writing the server CA: %v", err)
 	}
 
-	return &harness{server: ts, store: memory, dir: dir, caFile: caFile, adminToken: adminToken}
+	return &harness{
+		server: ts, store: memory, dir: dir, caFile: caFile,
+		adminToken: adminToken, secondToken: secondToken,
+	}
+}
+
+// twoOperators authenticates two bearer tokens as two distinct identities.
+//
+// It exists because approval needs a second person and auth.StaticToken has only one subject, so
+// without it the approval path could not be exercised anywhere. It is a stand-in for the OIDC or local
+// -accounts provider auth.Provider is a seam for, and it deliberately does nothing else: this is not a
+// boundary the guarantee rests on, and a more elaborate fake would only invite somebody to believe it
+// was testing the authentication rather than what happens after it.
+type twoOperators struct {
+	// tokens maps a bearer token to the identity it authenticates.
+	tokens map[string]auth.Identity
+}
+
+// Name identifies the provider.
+func (t *twoOperators) Name() string { return "test" }
+
+// Authenticate resolves a bearer token to one of the two identities.
+func (t *twoOperators) Authenticate(_ context.Context, r *http.Request) (*auth.Identity, error) {
+	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	identity, ok := t.tokens[strings.TrimSpace(raw)]
+	if !ok {
+		return nil, auth.ErrUnauthenticated
+	}
+	return &identity, nil
 }
 
 // issueToken creates an enrolment token through the administrative API.
