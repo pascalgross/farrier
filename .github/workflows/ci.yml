@@ -85,11 +85,22 @@ jobs:
       - name: The store tests actually ran rather than skipping
         # A skipped test is indistinguishable from a passing one in a summary, and these are the only
         # coverage the production store has.
+        #
+        # The second name is checked separately because it is the one that must not be wrong: it
+        # asserts that a job's signed payload canonicalises to the same bytes after a round trip
+        # through jsonb as it did when it was signed. Its PostgreSQL half is what makes it worth
+        # having, and a silent skip there would leave a correct signature failing on a host, looking
+        # like a broken key.
         run: |
-          go test -count=1 -v -run 'TestClaimJobsDeliversEachJobExactlyOnce' ./internal/store/ \
+          go test -count=1 -v ./internal/store/ \
+            -run 'TestClaimJobsDeliversEachJobExactlyOnce|TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned' \
             | tee /tmp/store.log
-          grep -q -- '--- PASS: TestClaimJobsDeliversEachJobExactlyOnce' /tmp/store.log \
-            || { echo "the PostgreSQL store tests skipped; the database service is not reachable" >&2; exit 1; }
+          for name in \
+            '--- PASS: TestClaimJobsDeliversEachJobExactlyOnce' \
+            '--- PASS: TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned/postgres'; do
+            grep -q -- "$name" /tmp/store.log \
+              || { echo "the PostgreSQL store tests skipped: $name did not run" >&2; exit 1; }
+          done
 
       - name: go mod tidy leaves no diff
         run: |

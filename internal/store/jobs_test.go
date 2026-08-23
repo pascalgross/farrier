@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/protocol"
 )
 
@@ -296,6 +297,70 @@ func TestAJobCarriesItsResultOnceTheHostReports(t *testing.T) {
 		}
 		if len(listed) != 1 || listed[0].Result == nil {
 			t.Fatalf("the listing is %+v", listed)
+		}
+	})
+}
+
+// TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned is the one that must not be wrong.
+//
+// A destructive job's signature is computed over the canonical encoding of
+// {jobId, hostId, intent, params, notBefore, notAfter, nonce}, and the agent recomputes those bytes
+// from the job it receives. Everything in between — a JSON round trip through map[string]any, jsonb's
+// own normalisation, timestamptz precision, whatever pgx decodes a JSON number into — sits between the
+// signer and the verifier, and any of it changing one byte makes a correct signature fail on a host.
+//
+// The failure would be perfectly silent until somebody needed a reboot, and it would look like a broken
+// key rather than a storage layer. It is asserted against both implementations because they store
+// parameters in completely different ways, and it is asserted on the bytes rather than on the decoded
+// value because the bytes are what is signed.
+func TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		// Every parameter shape the catalogue can produce: the two integers bounding a reboot delay,
+		// a message from the constrained character set, and the boolean an update job carries.
+		cases := []map[string]any{
+			{},
+			{"delaySeconds": 0, "message": ""},
+			{"delaySeconds": 3600, "message": "patching web tier, back in ten"},
+			{"rebootIfRequired": true},
+			{"rebootIfRequired": false},
+			{"unit": "getty@tty1.service"},
+		}
+
+		for i, params := range cases {
+			id := "01JOB" + string(rune('A'+i))
+			now := time.Now().UTC().Truncate(time.Second)
+			job := protocol.Job{
+				ID: id, Intent: "host.reboot", Params: params, Class: "destructive",
+				IssuedAt: now, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+				Nonce: "nonce-" + id, Signature: "c2ln", SignerKeyID: "ops", SignerAlgorithm: "ed25519",
+			}
+			signed, err := canonical.Marshal(job.SignedPayload(host.ID))
+			if err != nil {
+				t.Fatalf("canonicalising %v before storing: %v", params, err)
+			}
+
+			if err := s.CreateJob(ctx, NewJob{Job: job, HostID: host.ID}); err != nil {
+				t.Fatalf("creating a job with %v: %v", params, err)
+			}
+			claimed, err := s.ClaimJobs(ctx, host.ID, 1)
+			if err != nil {
+				t.Fatalf("claiming: %v", err)
+			}
+			if len(claimed) != 1 {
+				t.Fatalf("claimed %d jobs, want 1", len(claimed))
+			}
+
+			delivered, err := canonical.Marshal(claimed[0].SignedPayload(host.ID))
+			if err != nil {
+				t.Fatalf("canonicalising %v after the round trip: %v", params, err)
+			}
+			if string(delivered) != string(signed) {
+				t.Errorf("the signed payload changed in storage.\n signed:    %s\n delivered: %s",
+					signed, delivered)
+			}
 		}
 	})
 }
