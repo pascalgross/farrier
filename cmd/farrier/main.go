@@ -7,12 +7,11 @@
 // server, a compromised control plane could show one operation in the browser and have a different one
 // signed.
 //
-// Everything around it now exists: the control plane accepts a signed job on POST /api/v1/jobs, holds a
-// destructive one for release if the fleet asks for that, an agent verifies the signature against the
-// host's own trusted-signers, and a root helper acts on it. This command is the one remaining gap, and
-// it is the one an operator stands in. What is here is what is useful without it: enrolling a host,
-// generating and inspecting signing keys so the trust anchor can be established in advance, and
-// printing the catalogue.
+// The rest of the path was built first and this closes it: the control plane accepts a signed job on
+// POST /api/v1/jobs, holds a destructive one for release if the fleet asks for that, an agent verifies
+// the signature against the host's own trusted-signers, and a root helper acts on it. What this adds is
+// the end an operator stands at. The other commands are what made that end reachable: enrolling a host,
+// and generating and inspecting signing keys so a trust anchor can be established in advance.
 package main
 
 import (
@@ -21,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -73,12 +73,7 @@ func main() {
 			fmt.Printf("%-26s %-12s %s\n", s.Name, s.Class, s.Summary)
 		}
 	case "sign":
-		fmt.Fprintln(os.Stderr, "farrier: this build cannot sign a job yet.\n"+
-			"Everything around it works: POST /api/v1/jobs accepts a signed job, the fleet's approval\n"+
-			"mode decides whether it waits to be released, the agent verifies the signature against the\n"+
-			"host's own trusted-signers, and a root helper acts on it. This command is the remaining gap.\n"+
-			"`farrier key generate` works now, so a host's trust anchor can be in place beforehand.")
-		os.Exit(4)
+		os.Exit(signCommand(args[1:]))
 	case "version":
 		fmt.Println("farrier " + buildinfo.String())
 	default:
@@ -229,6 +224,29 @@ func keyShow(argv []string) int {
 	return 0
 }
 
+// promptInput is the one reader every prompt in this program shares.
+//
+// One, and not one per prompt, because a buffered reader reads ahead. Two prompts with two readers meant
+// the first swallowed the second's line and the second reported "no passphrase on standard input" while
+// standard input plainly had one — which made `farrier key generate`, whose second prompt is a
+// confirmation, impossible to script. Signing has the same shape: a passphrase, then a confirmation.
+var promptInput *bufio.Reader
+
+// readPromptLine reads one line from the shared reader, without its terminator.
+//
+// End of input is an empty line rather than an error, and each caller decides what that means. For a
+// passphrase it is a refusal; for a yes-or-no question it is a no.
+func readPromptLine() (string, error) {
+	if promptInput == nil {
+		promptInput = bufio.NewReader(os.Stdin)
+	}
+	line, err := promptInput.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
 // readPassphrase reads a passphrase without echoing it.
 //
 // When standard input is not a terminal — a script, a CI job — it is read as a line instead, so that
@@ -238,18 +256,17 @@ func keyShow(argv []string) int {
 func readPassphrase(prompt string) ([]byte, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		// A whole line, read with a Scanner rather than Fscanln, which stops at the first space — so a
-		// passphrase of four words would have been silently truncated to one. Only the trailing newline
-		// is stripped: leading and inner spaces are part of the passphrase.
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Buffer(make([]byte, 0, 4096), 1<<20)
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return nil, fmt.Errorf("reading a passphrase from standard input: %w", err)
-			}
+		// A whole line rather than Fscanln, which stops at the first space — so a passphrase of four
+		// words would have been silently truncated to one. Only the trailing newline is stripped:
+		// leading and inner spaces are part of the passphrase.
+		line, err := readPromptLine()
+		if err != nil {
+			return nil, fmt.Errorf("reading a passphrase from standard input: %w", err)
+		}
+		if line == "" {
 			return nil, errors.New("no passphrase on standard input")
 		}
-		return []byte(strings.TrimRight(scanner.Text(), "\r\n")), nil
+		return []byte(line), nil
 	}
 
 	fmt.Fprint(os.Stderr, prompt)
