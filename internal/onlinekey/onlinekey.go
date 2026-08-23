@@ -87,11 +87,46 @@ func Ensure(dir string) (*Key, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("onlinekey: creating %s: %w", dir, err)
 	}
-	// 0600, and written with O_EXCL so that two control planes starting together on shared storage
-	// cannot both generate a key and have one silently overwrite the other's — which would leave every
-	// agent holding a public key that no longer verifies anything.
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+
+	// Written to a temporary file and linked into place, at 0600.
+	//
+	// The obvious version — O_CREATE|O_EXCL and then a write — is wrong, and was here. O_EXCL makes
+	// *creation* exclusive, which is the property this needs, but creation and content are two
+	// syscalls: between them the file exists and is empty. A second control plane reading it in that
+	// window gets zero bytes, and Ensure fails with "does not contain a PEM block" — a message that
+	// sends an operator looking for a corrupt key file instead of at a startup race. The window is not
+	// theoretical: sixteen concurrent callers on a fresh directory hit it in most rounds.
+	//
+	// link(2) rather than rename(2), because rename would fix the content and break the exclusivity.
+	// It overwrites, so two control planes generating at once would each write a key and one would
+	// silently replace the other's — leaving every agent that had already cached the public half
+	// verifying nothing. link is atomic and fails with EEXIST instead, so both properties hold at
+	// once: a reader sees no file or a complete one, and a second generator loses rather than clobbers.
+	tmp, err := os.CreateTemp(dir, ".online.key-*")
 	if err != nil {
+		return nil, fmt.Errorf("onlinekey: creating a temporary file in %s: %w", dir, err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("onlinekey: setting permissions on the new key: %w", err)
+	}
+	if _, err := tmp.Write(encoded); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("onlinekey: writing the new key: %w", err)
+	}
+	// Synced before it is linked, and the directory synced after, because losing this file to a crash
+	// is not recoverable by regenerating: every agent that already cached the public half would stop
+	// verifying routine jobs, and the failure would look like the agents breaking.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("onlinekey: syncing the new key: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, fmt.Errorf("onlinekey: closing the new key: %w", err)
+	}
+
+	if err := os.Link(tmp.Name(), path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			existing, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -99,16 +134,29 @@ func Ensure(dir string) (*Key, error) {
 			}
 			return parse(existing, path)
 		}
-		return nil, fmt.Errorf("onlinekey: creating %s: %w", path, err)
+		return nil, fmt.Errorf("onlinekey: linking %s into place: %w", path, err)
 	}
-	if _, err := file.Write(encoded); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("onlinekey: writing %s: %w", path, err)
-	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("onlinekey: closing %s: %w", path, err)
+	if err := syncDir(dir); err != nil {
+		return nil, err
 	}
 	return parse(encoded, path)
+}
+
+// syncDir fsyncs a directory, making a link inside it durable.
+//
+// Its own function because the failure it prevents is invisible in testing: without it the key file's
+// directory entry can be lost to a power cut that the file's own contents survived, and the control
+// plane would come back up generating a second key that no enrolled agent trusts.
+func syncDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("onlinekey: opening %s to sync it: %w", dir, err)
+	}
+	defer func() { _ = handle.Close() }()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("onlinekey: syncing %s: %w", dir, err)
+	}
+	return nil
 }
 
 // parse reads a PEM private key into a Key.
