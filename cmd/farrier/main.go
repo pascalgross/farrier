@@ -8,7 +8,7 @@
 // signed.
 //
 // Everything around it now exists: the control plane accepts a signed job on POST /api/v1/jobs, holds a
-// destructive one until a second operator approves it, an agent verifies the signature against the
+// destructive one for release if the fleet asks for that, an agent verifies the signature against the
 // host's own trusted-signers, and a root helper acts on it. This command is the one remaining gap, and
 // it is the one an operator stands in. What is here is what is useful without it: enrolling a host,
 // generating and inspecting signing keys so the trust anchor can be established in advance, and
@@ -74,9 +74,9 @@ func main() {
 		}
 	case "sign":
 		fmt.Fprintln(os.Stderr, "farrier: this build cannot sign a job yet.\n"+
-			"Everything around it works: POST /api/v1/jobs accepts a signed job, a second operator\n"+
-			"approves it, the agent verifies the signature against the host's own trusted-signers,\n"+
-			"and a root helper acts on it. This command is the remaining gap.\n"+
+			"Everything around it works: POST /api/v1/jobs accepts a signed job, the fleet's approval\n"+
+			"mode decides whether it waits to be released, the agent verifies the signature against the\n"+
+			"host's own trusted-signers, and a root helper acts on it. This command is the remaining gap.\n"+
 			"`farrier key generate` works now, so a host's trust anchor can be in place beforehand.")
 		os.Exit(4)
 	case "version":

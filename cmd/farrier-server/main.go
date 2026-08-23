@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,7 +29,6 @@ import (
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/ca"
 	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/server"
 	"github.com/pascalgross/farrier/internal/store"
 )
@@ -91,8 +91,14 @@ func serve(argv []string) int {
 	tlsCert := fs.String("tls-cert", "", "PEM certificate for this server's own HTTPS identity")
 	tlsKey := fs.String("tls-key", "", "PEM key for this server's own HTTPS identity")
 	adminToken := fs.String("admin-token", envOr("FARRIER_ADMIN_TOKEN", ""),
-		"bearer token for the administrative API; one is generated and printed if omitted")
-	webhook := fs.String("webhook", "", "URL to POST events to; sinks send data out and nothing sends code in")
+		"bearer token for one tenant's operators; one is generated and printed if omitted")
+	tenantSlug := fs.String("tenant", envOr("FARRIER_TENANT", "default"),
+		"the tenant --admin-token acts in; created on first start if it does not exist")
+	platformToken := fs.String("platform-token", envOr("FARRIER_PLATFORM_TOKEN", ""),
+		"bearer token for tenant administration; reaches no tenant's hosts or jobs. Omit on a "+
+			"single-fleet installation")
+	webhook := fs.String("webhook", "",
+		"URL to POST this tenant's events to; sinks send data out and nothing sends code in")
 	heartbeat := fs.Int("heartbeat-seconds", 60, "pacing handed to agents, which they clamp to 15..3600")
 	if err := fs.Parse(argv); err != nil {
 		return 2
@@ -125,6 +131,23 @@ func serve(argv []string) int {
 		return 1
 	}
 
+	// Whether the boundary this installation claims is actually there.
+	//
+	// Tenant isolation is PostgreSQL row-level security, and a connection made as a superuser or as a
+	// role with BYPASSRLS ignores every policy in the schema. That is not a degraded mode, it is no
+	// isolation at all, and nothing about the running system would look different — so this refuses to
+	// start rather than serving many customers out of one database with the wall switched off.
+	if err := requireRowLevelSecurity(ctx, backing, *dsn); err != nil {
+		slog.Error("refusing to start", "error", err)
+		return 1
+	}
+
+	tenant, err := ensureTenant(ctx, backing, *tenantSlug, *webhook)
+	if err != nil {
+		slog.Error("could not prepare the tenant", "error", err)
+		return 1
+	}
+
 	token := *adminToken
 	if token == "" {
 		// Generating one rather than starting without authentication. A control plane that came up open
@@ -138,10 +161,24 @@ func serve(argv []string) int {
 			"It is not stored and will be different next time; set FARRIER_ADMIN_TOKEN to keep it.\n\n"+
 			"  export FARRIER_ADMIN_TOKEN=%s\n\n", token)
 	}
-	provider, err := auth.NewStaticToken(token, "operator")
+	operators, err := auth.NewStaticToken(token, "operator", string(tenant.ID))
 	if err != nil {
 		slog.Error("could not configure operator authentication", "error", err)
 		return 1
+	}
+	provider := auth.Provider(operators)
+
+	// The platform credential is optional, and its absence is the single-fleet case rather than a
+	// misconfiguration. Without one there is nothing that can create a second tenant, which is exactly
+	// right for somebody running Farrier for themselves: the tenancy is there, and it is one.
+	if *platformToken != "" {
+		platform, platformErr := auth.NewPlatformToken(*platformToken, "platform")
+		if platformErr != nil {
+			slog.Error("could not configure platform authentication", "error", platformErr)
+			return 1
+		}
+		provider = auth.Chain(operators, platform)
+		slog.Info("tenant administration is enabled", "route", "/api/v1/tenants")
 	}
 
 	// Client certificates require TLS, so a control plane with no certificate cannot serve the agent
@@ -162,11 +199,6 @@ func serve(argv []string) int {
 			"enrol_with", "farrier enroll --ca "+filepath.Join(*caDir, "ca.crt"))
 	}
 
-	var sinks []notify.Sink
-	if *webhook != "" {
-		sinks = append(sinks, notify.NewWebhook("webhook", *webhook))
-	}
-
 	srv, err := server.New(server.Config{
 		Addr:             *addr,
 		TLSCert:          *tlsCert,
@@ -174,7 +206,6 @@ func serve(argv []string) int {
 		Authority:        authority,
 		Store:            backing,
 		Auth:             provider,
-		Sinks:            sinks,
 		HeartbeatSeconds: *heartbeat,
 		TokenTTL:         24 * time.Hour,
 	})
@@ -188,6 +219,107 @@ func serve(argv []string) int {
 		return 1
 	}
 	return 0
+}
+
+// requireRowLevelSecurity refuses to start when the database role can see through the tenant boundary.
+//
+// Isolation between tenants is row-level security, and PostgreSQL exempts two kinds of role from every
+// policy: a superuser, and a role with BYPASSRLS. Connecting as either does not weaken the boundary,
+// it removes it — every query returns every tenant's rows — and nothing about the running system would
+// look wrong. A control plane that served several customers from one database in that state would be
+// discovered by a customer, so this is a refusal rather than a warning.
+//
+// The in-memory store has no roles and enforces the same scoping in Go, so it is exempt from the check
+// rather than from the rule.
+func requireRowLevelSecurity(ctx context.Context, backing store.Store, dsn string) error {
+	pg, ok := backing.(*store.Postgres)
+	if !ok {
+		return nil
+	}
+	role, superuser, bypass, err := pg.ConnectionRole(ctx)
+	if err != nil {
+		return fmt.Errorf("could not check the database role's privileges: %w", err)
+	}
+	if !superuser && !bypass {
+		slog.Info("tenant isolation is enforced by the database", "role", role)
+		return nil
+	}
+
+	why := "is a superuser"
+	if !superuser {
+		why = "has BYPASSRLS"
+	}
+	return fmt.Errorf(
+		"the database role %q %s, so PostgreSQL applies no row-level security policy to it and "+
+			"tenants are not isolated from one another. Connect as an ordinary role that owns the "+
+			"schema: CREATE ROLE farrier LOGIN PASSWORD '…'; GRANT ALL ON DATABASE … TO farrier; "+
+			"and point --database at it (currently %s)",
+		role, why, redactDSN(dsn))
+}
+
+// redactDSN removes the password from a connection URL so it can go in an error message.
+//
+// The message this appears in is one somebody will paste into an issue, and a connection string is the
+// single most likely secret in a control plane's configuration.
+func redactDSN(dsn string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil || parsed.User == nil {
+		return dsn
+	}
+	if _, hasPassword := parsed.User.Password(); hasPassword {
+		parsed.User = url.UserPassword(parsed.User.Username(), "…")
+	}
+	return parsed.String()
+}
+
+// ensureTenant finds the tenant this server's operator credential acts in, creating it if it is new.
+//
+// A single-fleet installation should not have to know that tenants exist: it starts the binary, gets a
+// token, and has a fleet. So the named tenant is created on first start and found on every start after
+// that, and an installation that never passes --tenant simply always uses "default" — which is also the
+// tenant migration 0004 assigns every pre-existing row to, so upgrading changes nothing.
+func ensureTenant(ctx context.Context, backing store.Store, slug, webhook string) (store.Tenant, error) {
+	tenants, err := backing.ListTenants(ctx)
+	if err != nil {
+		return store.Tenant{}, fmt.Errorf("reading the tenant list: %w", err)
+	}
+	for _, t := range tenants {
+		if t.Slug != slug {
+			continue
+		}
+		// The webhook flag is applied on every start, because it is how a single-fleet installation
+		// configures one at all. On a hosted installation the flag is left unset and the platform API
+		// is where a tenant's endpoint is set, so an unset flag must not clear what is stored.
+		if webhook != "" && webhook != t.WebhookURL {
+			t.WebhookURL = webhook
+			if err := backing.UpdateTenant(ctx, t); err != nil {
+				return store.Tenant{}, fmt.Errorf("recording the tenant's webhook: %w", err)
+			}
+		}
+		return t, nil
+	}
+
+	id, err := server.NewID()
+	if err != nil {
+		return store.Tenant{}, fmt.Errorf("allocating a tenant id: %w", err)
+	}
+	tenant := store.Tenant{
+		ID:          store.TenantID(id),
+		Slug:        slug,
+		DisplayName: slug,
+		CreatedAt:   time.Now().UTC(),
+		// A new fleet releases destructive jobs on the strength of their offline signature alone. That
+		// signature is what docs/SECURITY.md §1 rests on; approval is a control-plane control on top of
+		// it, and defaulting to one that a single operator cannot satisfy would ship a tier nobody
+		// could reach. Turn it on per tenant when there is a second person to turn it on for.
+		ApprovalMode: store.ApprovalNone,
+		WebhookURL:   webhook,
+	}
+	if err := backing.CreateTenant(ctx, tenant); err != nil {
+		return store.Tenant{}, fmt.Errorf("creating tenant %q: %w", slug, err)
+	}
+	slog.Info("created a tenant", "tenant", tenant.ID, "slug", slug)
+	return tenant, nil
 }
 
 // openStore connects to the configured backing store.

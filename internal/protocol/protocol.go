@@ -124,7 +124,7 @@ type EnrollRequest struct {
 // Bootstrap is a provisioning template returned during enrolment.
 //
 // This is the exception named in the second paragraph of the guarantee, and every guardrail in
-// docs/SECURITY.md §6 applies to it: the agent must verify Signature against a key already present in
+// docs/SECURITY.md §7 applies to it: the agent must verify Signature against a key already present in
 // its own trusted-signers, print Body in full and record it before executing, apply it exactly once
 // under an on-disk interlock, and refuse entirely when trusted-signers is empty. It never falls back
 // to trusting the server.

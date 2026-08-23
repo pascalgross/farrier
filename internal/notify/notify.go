@@ -23,6 +23,14 @@ type Event struct {
 	// Kind is a stable machine-readable event type, such as "host.enrolled".
 	Kind string `json:"kind"`
 
+	// TenantID is the fleet this event belongs to.
+	//
+	// Carried on the event rather than only known by the caller so that a sink, a log line or a future
+	// audit reader can say whose event it was without having to have been told separately — and so that
+	// an event which somehow reached the wrong endpoint is identifiable as such rather than looking
+	// like an ordinary one.
+	TenantID string `json:"tenantId,omitempty"`
+
 	// HostID is the host the event concerns, empty for fleet-wide events.
 	HostID string `json:"hostId,omitempty"`
 

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/protocol"
@@ -115,8 +114,14 @@ type jobView struct {
 	// SignerKeyID names the key that signed it, empty for an unsigned job.
 	SignerKeyID string `json:"signerKeyId,omitempty"`
 
-	// ApprovalRequired reports whether a second operator must agree before a host may claim it.
+	// ApprovalRequired reports whether somebody must release it before a host may claim it.
 	ApprovalRequired bool `json:"approvalRequired"`
+
+	// ApprovalDistinctOperator reports whether that somebody must be other than its creator.
+	//
+	// Rendered so that an interface can tell an operator whether they can release this job themselves
+	// before they press the button, rather than after.
+	ApprovalDistinctOperator bool `json:"approvalDistinctOperator"`
 
 	// ApprovedAt and ApprovedBy record that agreement, null and empty until it happens.
 	ApprovedAt *time.Time `json:"approvedAt"`
@@ -138,20 +143,21 @@ type jobView struct {
 // toJobView converts a stored record into its API representation.
 func toJobView(rec store.JobRecord) jobView {
 	view := jobView{
-		ID:               rec.Job.ID,
-		HostID:           rec.HostID,
-		Intent:           rec.Job.Intent,
-		Params:           rec.Job.Params,
-		Class:            rec.Job.Class,
-		CreatedAt:        rec.CreatedAt,
-		CreatedBy:        rec.CreatedBy,
-		NotAfter:         rec.Job.NotAfter,
-		Signed:           rec.Job.Signature != "",
-		SignerKeyID:      rec.Job.SignerKeyID,
-		ApprovalRequired: rec.ApprovalRequired,
-		ApprovedBy:       rec.ApprovedBy,
-		State:            jobState(rec),
-		Result:           rec.Result,
+		ID:                       rec.Job.ID,
+		HostID:                   rec.HostID,
+		Intent:                   rec.Job.Intent,
+		Params:                   rec.Job.Params,
+		Class:                    rec.Job.Class,
+		CreatedAt:                rec.CreatedAt,
+		CreatedBy:                rec.CreatedBy,
+		NotAfter:                 rec.Job.NotAfter,
+		Signed:                   rec.Job.Signature != "",
+		SignerKeyID:              rec.Job.SignerKeyID,
+		ApprovalRequired:         rec.ApprovalRequired,
+		ApprovalDistinctOperator: rec.ApprovalDistinctOperator,
+		ApprovedBy:               rec.ApprovedBy,
+		State:                    jobState(rec),
+		Result:                   rec.Result,
 	}
 	if view.Params == nil {
 		view.Params = map[string]any{}
@@ -195,7 +201,7 @@ func jobState(rec store.JobRecord) string {
 // One host per request, deliberately. A signature covers the host id, so a signed job is bound to
 // exactly one machine and a fan-out request could not be signed at all; making the unsigned case behave
 // differently would mean two shapes for one endpoint, and the client loop it saves is three lines.
-func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who operator) {
 	var req jobRequest
 	if err := decodeJSON(w, r, MaxJobRequestBytes, &req); err != nil {
 		switch {
@@ -219,7 +225,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who aut
 		return // validateJobRequest has already written the response.
 	}
 
-	host, err := s.cfg.Store.GetHost(r.Context(), req.HostID)
+	host, err := who.Store.GetHost(r.Context(), req.HostID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "unknown_host", "no such host")
@@ -243,25 +249,36 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who aut
 		return
 	}
 
-	// The destructive tier needs a second person. That is docs/SECURITY.md §3 and it is recorded on the
-	// row rather than re-derived on read, so a later build that classified an intent differently cannot
-	// change what an already-queued job required.
-	record := store.NewJob{
-		Job:              job,
-		HostID:           req.HostID,
-		CreatedBy:        who.Subject,
-		ApprovalRequired: spec.Class == intent.ClassDestructive,
+	// How this tenant releases a destructive job, read now and recorded on the row.
+	//
+	// Recorded rather than re-derived, and that matters more here than it did when the rule was a
+	// constant: this setting is one an operator can edit. Deriving it at approval time would mean
+	// queueing a job under the two-person rule, relaxing the tenant, and then releasing it yourself —
+	// which is the whole rule defeated by two API calls. A job records what it required.
+	tenant, err := s.cfg.Store.GetTenant(r.Context(), who.Store.Tenant())
+	if err != nil {
+		slog.Error("could not read the tenant's approval mode", "error", err, "tenant", who.Store.Tenant())
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the tenant")
+		return
 	}
-	switch err := s.cfg.Store.CreateJob(r.Context(), record); {
+	destructive := spec.Class == intent.ClassDestructive
+
+	record := store.NewJob{
+		Job:                      job,
+		HostID:                   req.HostID,
+		CreatedBy:                who.Principal(),
+		ApprovalRequired:         destructive && tenant.ApprovalMode.RequiresApproval(),
+		ApprovalDistinctOperator: destructive && tenant.ApprovalMode.RequiresDistinctOperator(),
+	}
+	switch err := who.Store.CreateJob(r.Context(), record); {
 	case errors.Is(err, store.ErrConflict):
 		// Two different uniqueness rules reach here and they are not the same news. The job id is the
-		// primary key and is global, so a collision on it may well belong to another host entirely;
-		// (host_id, nonce) is per host. Saying "for this host" of both told an operator their own
-		// queue already held the job when it did not, and they moved on.
+		// primary key within this tenant; (host_id, nonce) is per host. Both are this tenant's own —
+		// a job id another customer chose is not a collision and is not mentioned, because saying so
+		// would tell one customer what another had queued.
 		writeError(w, http.StatusConflict, "duplicate",
-			"this job was not queued: either its id is already in use — job ids are unique across the "+
-				"whole fleet, so it may belong to another host — or this host has already been sent a "+
-				"job with this nonce")
+			"this job was not queued: either its id is already in use in this fleet, or this host has "+
+				"already been sent a job with this nonce")
 		return
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "unknown_host", "no such host")
@@ -273,21 +290,23 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who aut
 	}
 
 	slog.Info("job created",
-		"job", job.ID, "host", req.HostID, "intent", job.Intent, "class", job.Class,
-		"params", params.Describe(), "operator", who.Subject,
+		"job", job.ID, "tenant", who.Store.Tenant(), "host", req.HostID,
+		"intent", job.Intent, "class", job.Class,
+		"params", params.Describe(), "operator", who.Principal(),
 		"signed", job.Signature != "", "signer", job.SignerKeyID,
-		"approval_required", record.ApprovalRequired)
+		"approval_required", record.ApprovalRequired,
+		"approval_distinct_operator", record.ApprovalDistinctOperator)
 
-	s.emit(r.Context(), notify.Event{
+	s.emit(r.Context(), who.Store.Tenant(), notify.Event{
 		Kind: "job.created", HostID: req.HostID, Hostname: host.Hostname, At: job.IssuedAt,
-		Summary: params.Describe() + " queued for " + host.Hostname + " by " + who.Subject,
+		Summary: params.Describe() + " queued for " + host.Hostname + " by " + who.Principal(),
 		Detail: map[string]any{
 			"jobId": job.ID, "intent": job.Intent, "class": job.Class,
 			"approvalRequired": record.ApprovalRequired, "signerKeyId": job.SignerKeyID,
 		},
 	})
 
-	stored, err := s.cfg.Store.GetJob(r.Context(), job.ID)
+	stored, err := who.Store.GetJob(r.Context(), job.ID)
 	if err != nil {
 		slog.Error("could not read back a created job", "error", err, "job", job.ID)
 		writeError(w, http.StatusInternalServerError, "internal", "the job was created but not readable")
@@ -435,16 +454,19 @@ func (s *Server) buildJob(req jobRequest, spec intent.Spec) (protocol.Job, error
 	return job, nil
 }
 
-// handleApproveJob records the second operator docs/SECURITY.md §3 requires.
+// handleApproveJob records an operator's release of a job.
 //
-// The rule that the approver is not the creator is enforced in the store, in the statement that does
-// the update, and not here. This handler reads the row first only to say *why* an approval was refused;
-// if it decided, two requests arriving together would let one operator approve their own job by racing
-// it against itself.
-func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+// Whether the releaser may be the creator is a property of the job, stamped from the tenant's approval
+// mode when it was created. Which rule applies is therefore fixed at creation and cannot be changed by
+// editing the tenant afterwards.
+//
+// Whichever rule it is, it is enforced in the store, in the statement that does the update, and not
+// here. This handler reads the row first only to say *why* an approval was refused; if it decided, two
+// requests arriving together would let one operator release their own job by racing it against itself.
+func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who operator) {
 	jobID := r.PathValue("id")
 
-	before, err := s.cfg.Store.GetJob(r.Context(), jobID)
+	before, err := who.Store.GetJob(r.Context(), jobID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "unknown_job", "no such job")
@@ -465,14 +487,15 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who au
 		writeError(w, http.StatusConflict, "already_approved",
 			"this job was already approved by "+before.ApprovedBy)
 		return
-	case before.CreatedBy == who.Subject:
+	case before.ApprovalDistinctOperator && before.CreatedBy == who.Principal():
 		writeError(w, http.StatusConflict, "self_approval",
-			"a destructive job needs a second person, and this credential created it. See "+
-				"docs/SECURITY.md §3.")
+			"this fleet requires a second person to release a destructive job, and this credential "+
+				"created it. An operator working alone can set the fleet's approval mode to \"self\" "+
+				"or \"none\" instead; see docs/SECURITY.md §3.")
 		return
 	}
 
-	if err := s.cfg.Store.ApproveJob(r.Context(), jobID, who.Subject, time.Now().UTC()); err != nil {
+	if err := who.Store.ApproveJob(r.Context(), jobID, who.Principal(), time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
 			// The row moved between the read above and the update. The store refused, which is the
 			// answer; this is only the message.
@@ -486,17 +509,18 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who au
 	}
 
 	slog.Info("job approved",
-		"job", jobID, "host", before.HostID, "intent", before.Job.Intent,
-		"created_by", before.CreatedBy, "approved_by", who.Subject)
+		"job", jobID, "tenant", who.Store.Tenant(), "host", before.HostID,
+		"intent", before.Job.Intent,
+		"created_by", before.CreatedBy, "approved_by", who.Principal())
 
-	s.emit(r.Context(), notify.Event{
+	s.emit(r.Context(), who.Store.Tenant(), notify.Event{
 		Kind: "job.approved", HostID: before.HostID, At: time.Now().UTC(),
-		Summary: before.Job.Intent + " on " + before.HostID + " approved by " + who.Subject +
+		Summary: before.Job.Intent + " on " + before.HostID + " approved by " + who.Principal() +
 			", created by " + before.CreatedBy,
 		Detail: map[string]any{"jobId": jobID, "intent": before.Job.Intent},
 	})
 
-	after, err := s.cfg.Store.GetJob(r.Context(), jobID)
+	after, err := who.Store.GetJob(r.Context(), jobID)
 	if err != nil {
 		slog.Error("could not read back an approved job", "error", err, "job", jobID)
 		writeError(w, http.StatusInternalServerError, "internal", "the job was approved but not readable")
@@ -511,7 +535,7 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who au
 // newest hundred reads as the whole truth, and the row it is most likely to be hiding is a destructive
 // job nobody has approved yet — the one thing docs/SECURITY.md §3 needs a second person to be able to
 // find. Hence both the disclosure and the awaiting filter, which is not subject to the same drift.
-func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, _ auth.Identity) {
+func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, who operator) {
 	query := r.URL.Query()
 	limit, err := jobLimit(query.Get("limit"))
 	if err != nil {
@@ -525,7 +549,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, _ auth.I
 		AwaitingApproval: query.Get("awaiting") == "true",
 	}
 
-	records, err := s.cfg.Store.ListJobs(r.Context(), filter)
+	records, err := who.Store.ListJobs(r.Context(), filter)
 	if err != nil {
 		slog.Error("could not list jobs", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not read the job list")
@@ -571,8 +595,8 @@ func jobLimit(raw string) (int, error) {
 }
 
 // handleGetJob returns one job and its result.
-func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request, _ auth.Identity) {
-	rec, err := s.cfg.Store.GetJob(r.Context(), r.PathValue("id"))
+func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request, who operator) {
+	rec, err := who.Store.GetJob(r.Context(), r.PathValue("id"))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "unknown_job", "no such job")

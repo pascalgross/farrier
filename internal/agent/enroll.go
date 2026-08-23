@@ -38,7 +38,7 @@ type EnrollOptions struct {
 
 	// SignersFile is a local trusted-signers file to install before anything is fetched.
 	//
-	// This is what solves the chicken-and-egg problem in docs/SECURITY.md §6: the trust anchor is
+	// This is what solves the chicken-and-egg problem in docs/SECURITY.md §7: the trust anchor is
 	// established from a local, administrator-chosen file *before* a bootstrap template is requested,
 	// so the template can be verified against a key the server never supplied.
 	SignersFile string
@@ -266,7 +266,7 @@ type bootstrapRecord struct {
 // verifyBootstrap checks a provisioning template against this host's own trust anchor, and shows it.
 //
 // This is the exception named in the second paragraph of the guarantee, and the guardrails in
-// docs/SECURITY.md §6 that constrain *authorising* a template are enforced here: the apply-once
+// docs/SECURITY.md §7 that constrain *authorising* a template are enforced here: the apply-once
 // interlock is checked first, the signature is verified against a key already in this host's own
 // trusted-signers, and the full text is printed before anything could happen.
 //
