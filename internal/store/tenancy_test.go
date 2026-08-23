@@ -34,8 +34,12 @@ const sharedJobID = "01JSHAREDJOB"
 // tenants built from entirely distinct identifiers would pass against a store with no isolation at all,
 // since there would be nothing for a broken query to hand back that a test could recognise as wrong.
 //
-// Alpha requires a second person to release a destructive job and beta requires nothing, so the two
-// also differ in the setting most likely to be read from the wrong row.
+// Both jobs are queued behind a release, because a job nothing would ever move is a job no write
+// probe can prove was left alone: the ApproveJob isolation probe needs beta's row to be exactly one
+// release away, or an update that leaked across the boundary would have had nothing to change. The two
+// still differ in the rule stamped on the row — alpha's release must come from a second person distinct
+// from the creator, beta's from anybody — which keeps a field here that reading the wrong tenant's row
+// would get wrong. The tenants' own settings differ the same way, second_person against none.
 func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 	t.Helper()
 
@@ -67,7 +71,7 @@ func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 			Job:                      job,
 			HostID:                   tenant.hostID,
 			CreatedBy:                "test:" + string(tenant.scoped.Tenant()),
-			ApprovalRequired:         tenant.scoped == alpha,
+			ApprovalRequired:         true,
 			ApprovalDistinctOperator: tenant.scoped == alpha,
 		}); err != nil {
 			t.Fatalf("creating a job for %s: %v", tenant.scoped.Tenant(), err)
@@ -89,6 +93,16 @@ const (
 
 	// betaJobID is a job only beta has, for the probes that must fail to reach it.
 	betaJobID = "01JBETAJOB"
+
+	// betaClaimedHostID is a second host only beta has, carrying the claimed job below.
+	betaClaimedHostID = "01JBETACLAIMEDHOST"
+
+	// betaClaimedJobID is a job of beta's that the fixture claims before any probe runs.
+	//
+	// A result can only be recorded for claimed work, so the RecordResult probe needs a row already in
+	// that state. Claiming it in the fixture rather than relying on the ClaimJobs probe having run
+	// first is what makes the probe hold in every map order instead of about half of them.
+	betaClaimedJobID = "01JBETACLAIMEDJOB"
 )
 
 // TestGuaranteeOneTenantCannotSeeAnother is the isolation boundary, asserted rather than assumed.
@@ -210,21 +224,40 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				}
 			},
 			"ApproveJob": func(t *testing.T) {
+				// The probe is only as good as the state it starts from: beta's job must be exactly one
+				// release away, or an approval that leaked across the boundary would have had nothing to
+				// change and the comparison below could never fail. That is not hypothetical — an
+				// earlier version of this probe ran against a beta job that did not require approval,
+				// so ApproveJob's own WHERE clause protected it and the probe passed against a store
+				// with no isolation at all.
 				before, err := beta.GetJob(ctx, sharedJobID)
 				if err != nil {
 					t.Fatalf("reading beta's job: %v", err)
 				}
+				if !before.ApprovalRequired || before.ApprovedBy != "" || !before.ApprovedAt.IsZero() {
+					t.Fatalf("beta's job is not waiting for a release, so nothing below can fail: %+v", before)
+				}
+
 				// Alpha releasing what it believes is its own job must not release beta's, even though
-				// the id is identical and beta's is waiting for exactly this.
-				_ = alpha.ApproveJob(ctx, sharedJobID, "test:someone-else", time.Now().UTC())
+				// the id is identical and beta's is waiting for exactly this. Alpha's own copy is the
+				// one that must move — the collision resolving to the caller's row is the property.
+				if err := alpha.ApproveJob(ctx, sharedJobID, "test:someone-else", time.Now().UTC()); err != nil {
+					t.Fatalf("alpha releasing its own job: %v", err)
+				}
 
 				after, err := beta.GetJob(ctx, sharedJobID)
 				if err != nil {
 					t.Fatalf("re-reading beta's job: %v", err)
 				}
-				if after.ApprovedBy != before.ApprovedBy || !after.ApprovedAt.Equal(before.ApprovedAt) {
+				if after.ApprovedBy != "" || !after.ApprovedAt.IsZero() {
 					t.Fatalf("alpha released beta's job: approved by %q at %s",
 						after.ApprovedBy, after.ApprovedAt)
+				}
+
+				// And the untouched row really was one release away: the same call from its own tenant
+				// succeeds, which is what proves the comparison above was able to fail.
+				if err := beta.ApproveJob(ctx, sharedJobID, "test:someone-else", time.Now().UTC()); err != nil {
+					t.Fatalf("beta releasing the job alpha's call must not have reached: %v", err)
 				}
 			},
 			"RevokeHost": func(t *testing.T) {
@@ -293,11 +326,31 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				}
 			},
 			"RecordResult": func(t *testing.T) {
-				err := alpha.RecordResult(ctx, betaHostID, protocol.ResultRequest{
-					JobID: betaJobID, Status: protocol.StatusSucceeded,
+				// Aimed at the job the fixture claimed, not at betaJobID: a result can only be recorded
+				// for claimed work, so a probe aimed at an unclaimed job is refused for the wrong
+				// reason and proves nothing about tenancy. An earlier version of this probe did exactly
+				// that whenever it ran before the ClaimJobs probe — a pass in about half of map orders,
+				// which is also a latent flake in the other half.
+				err := alpha.RecordResult(ctx, betaClaimedHostID, protocol.ResultRequest{
+					JobID: betaClaimedJobID, Status: protocol.StatusSucceeded,
 				})
 				if !errors.Is(err, ErrNotFound) {
 					t.Fatalf("alpha reported a result for beta's job and got %v, want ErrNotFound", err)
+				}
+				rec, err := beta.GetJob(ctx, betaClaimedJobID)
+				if err != nil {
+					t.Fatalf("reading beta's claimed job back: %v", err)
+				}
+				if rec.Result != nil || !rec.CompletedAt.IsZero() {
+					t.Fatalf("alpha's refused result still completed beta's job: %+v", rec)
+				}
+
+				// And the refusal was tenancy and nothing else: the identical call from the job's own
+				// tenant is accepted, which proves the row was in a recordable state all along.
+				if err := beta.RecordResult(ctx, betaClaimedHostID, protocol.ResultRequest{
+					JobID: betaClaimedJobID, Status: protocol.StatusSucceeded,
+				}); err != nil {
+					t.Fatalf("beta recording the result alpha was refused: %v", err)
 				}
 			},
 			"CreateEnrollmentToken": func(t *testing.T) {
@@ -354,6 +407,21 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 			Job: jobFor(betaJobID, "facts.collect"), HostID: betaHostID, CreatedBy: "test:beta",
 		}); err != nil {
 			t.Fatalf("creating beta's private job: %v", err)
+		}
+
+		// And a claimed job on a host only beta has, for the RecordResult probe. Claimed here, before
+		// any probe runs, because the probes run in map order: a probe that depended on the ClaimJobs
+		// probe having claimed first would be vacuous in the orders where it had not. On its own host
+		// so that no probe's claim can consume it and none of its state can leak into theirs.
+		enrolTestHostAs(t, beta, betaClaimedHostID, "web-02.example.org", "sha256:only-beta-has-this")
+		if err := beta.CreateJob(ctx, NewJob{
+			Job: jobFor(betaClaimedJobID, "facts.collect"), HostID: betaClaimedHostID,
+			CreatedBy: "test:beta",
+		}); err != nil {
+			t.Fatalf("creating beta's claimed job: %v", err)
+		}
+		if claimed, err := beta.ClaimJobs(ctx, betaClaimedHostID, 1); err != nil || len(claimed) != 1 {
+			t.Fatalf("claiming beta's job for the RecordResult probe: %v (%d claimed)", err, len(claimed))
 		}
 
 		assertEveryScopedMethodIsProbed(t, probes)
@@ -461,13 +529,11 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 		scoped Scoped
 		hostID string
 	}{{alpha, alphaHostID}, {beta, betaHostID}} {
-		// alpha's fixture job is queued under second-person approval, so nothing may claim it until a
-		// second operator releases it. Released by a different principal than created it, because that
-		// is the rule the row carries.
-		if tenant.scoped == alpha {
-			if err := tenant.scoped.ApproveJob(ctx, sharedJobID, "test:releaser", time.Now().UTC()); err != nil {
-				t.Fatalf("approving alpha's job: %v", err)
-			}
+		// Both fixture jobs are queued behind a release, so nothing may claim either until it is
+		// approved. Released by a different principal than created it, because that is the rule
+		// alpha's row carries; beta's accepts anybody, so the stricter form serves both.
+		if err := tenant.scoped.ApproveJob(ctx, sharedJobID, "test:releaser", time.Now().UTC()); err != nil {
+			t.Fatalf("approving the job for %s: %v", tenant.scoped.Tenant(), err)
 		}
 		if _, err := tenant.scoped.ClaimJobs(ctx, tenant.hostID, 10); err != nil {
 			t.Fatalf("claiming for %s: %v", tenant.scoped.Tenant(), err)

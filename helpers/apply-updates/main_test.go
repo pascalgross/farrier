@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +104,21 @@ func TestTheShippedAptConfigurationLivesWhereThePackagePutsIt(t *testing.T) {
 	if !filepath.IsAbs(AptConfigPath) {
 		t.Fatalf("%q is not an absolute path", AptConfigPath)
 	}
+
+	// The manifest is the authority on where the file lands on a host, so it is what the constant is
+	// compared against. An earlier version of this test never read it, which meant the one drift its
+	// name promises to catch — the file moved in packaging and not here, or here and not in
+	// packaging — kept it green.
+	dst, err := packagedDestination(filepath.Join("..", "..", "packaging", "nfpm.yaml"), "./apt.conf")
+	if err != nil {
+		t.Fatalf("reading where the package puts apt.conf: %v", err)
+	}
+	if dst != AptConfigPath {
+		t.Errorf("packaging/nfpm.yaml installs apt.conf at %q and this helper reads %q. apt ignores "+
+			"a missing APT_CONFIG silently, so if these disagree the conffile options are simply not "+
+			"applied — on every host, with every job reporting success", dst, AptConfigPath)
+	}
+
 	packaged, err := filepath.Abs("../../packaging/apt.conf")
 	if err != nil {
 		t.Fatalf("resolving the packaged fragment: %v", err)
@@ -120,6 +136,36 @@ func TestTheShippedAptConfigurationLivesWhereThePackagePutsIt(t *testing.T) {
 				"package whose conffile has been edited", required)
 		}
 	}
+}
+
+// packagedDestination reads the dst of the contents entry with the given src in an nfpm manifest.
+//
+// A line-based scan rather than a YAML parser, because the manifest is the only YAML this module
+// reads and a dependency for one two-line lookup would cost more than it guards. The scan fails
+// loudly — no entry, or an entry with no dst — so a restructured manifest breaks this test visibly
+// instead of letting the comparison above silently match nothing.
+func packagedDestination(manifest, src string) (string, error) {
+	raw, err := os.ReadFile(manifest)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "- src: "+src {
+			continue
+		}
+		for _, follow := range lines[i+1:] {
+			trimmed := strings.TrimSpace(follow)
+			if strings.HasPrefix(trimmed, "- src:") {
+				break
+			}
+			if value, ok := strings.CutPrefix(trimmed, "dst:"); ok {
+				return strings.TrimSpace(value), nil
+			}
+		}
+		return "", fmt.Errorf("the contents entry for %s in %s has no dst", src, manifest)
+	}
+	return "", fmt.Errorf("%s has no contents entry with src %s", manifest, src)
 }
 
 // readFileIfPresent returns a file's contents, or the empty string if it does not exist.
