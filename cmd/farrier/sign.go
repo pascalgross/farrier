@@ -46,7 +46,7 @@ func signCommand(argv []string) int {
 	name := fs.String("intent", "", "the catalogue member, for example service.restart")
 	params := fs.String("params", "{}", "the parameter object as JSON")
 	validFor := fs.Duration("valid-for", DefaultSignedValidity,
-		"how long the signature stays valid, from now")
+		"how long the signature stays valid, from now or from --not-before")
 	notBefore := fs.String("not-before", "",
 		"RFC3339 instant the job becomes valid; defaults to now, less a tolerance for clock skew")
 	jobID := fs.String("id", "", "the job id; one is generated when omitted")
@@ -166,18 +166,31 @@ func buildSignableJob(jobID, host, name, rawParams, notBefore string, validFor t
 		return protocol.Job{}, intent.Spec{}, nil, err
 	}
 
+	// One reading of the clock for all three instants below. Two calls to time.Now would put the
+	// issue time and the window on different sides of a second boundary often enough to matter, and a
+	// signature is the wrong place for a value that depends on how long the line above it took.
+	now := time.Now().UTC()
+
 	// The window opens a little before now by default, for the same reason the control plane backdates
 	// the one it signs itself: the host checks it against its own clock, and a machine a second behind
 	// would otherwise find a job whose window had not opened and report it expired. The tolerance is
 	// the skew a host would still act on at all; beyond it the agent refuses on the clock, which is the
 	// refusal that names the real problem.
-	start := time.Now().UTC().Add(-protocol.MaxClockSkewSeconds * time.Second)
+	//
+	// The backdating moves the opening edge only, which is why the expiry is measured from a separate
+	// instant. Deriving it from the backdated start instead would silently turn --valid-for=1h into
+	// fifty-five minutes, and the symptom — a job signed for an hour and refused as expired before the
+	// hour was up — reads as a clock problem on the host rather than as arithmetic here.
+	start, expireFrom := now.Add(-protocol.MaxClockSkewSeconds*time.Second), now
 	if notBefore != "" {
 		parsed, parseErr := time.Parse(time.RFC3339, notBefore)
 		if parseErr != nil {
 			return protocol.Job{}, intent.Spec{}, nil, fmt.Errorf("--not-before is not RFC3339: %w", parseErr)
 		}
-		start = parsed.UTC()
+		// An operator who names the start has said what the duration runs from: there is no useful
+		// "from now" for a window that opens next Tuesday, and no skew tolerance to add to an edge they
+		// chose deliberately.
+		start, expireFrom = parsed.UTC(), parsed.UTC()
 	}
 	if validFor <= 0 {
 		return protocol.Job{}, intent.Spec{}, nil, fmt.Errorf("--valid-for must be positive")
@@ -199,9 +212,9 @@ func buildSignableJob(jobID, host, name, rawParams, notBefore string, validFor t
 		Intent:    spec.Name.String(),
 		Params:    reencoded,
 		Class:     string(spec.Class),
-		IssuedAt:  time.Now().UTC().Truncate(time.Second),
+		IssuedAt:  now.Truncate(time.Second),
 		NotBefore: start.Truncate(time.Second),
-		NotAfter:  start.Add(validFor).Truncate(time.Second),
+		NotAfter:  expireFrom.Add(validFor).Truncate(time.Second),
 		Nonce:     nonce,
 	}, spec, decoded, nil
 }

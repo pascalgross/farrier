@@ -176,3 +176,62 @@ func TestSignedRequestCarriesEverythingTheSignatureCovers(t *testing.T) {
 		t.Error("the signed payload carries issuedAt, which docs/PROTOCOL.md §8 excludes on purpose")
 	}
 }
+
+// TestTheValidityRunsFromSigningAndNotFromTheBackdatedStart pins what --valid-for means.
+//
+// The window's opening edge is backdated by the clock-skew tolerance so that a host running a little
+// behind does not find a job whose window has not opened yet. Measuring the expiry from that backdated
+// edge would spend the tolerance twice: --valid-for=1h would produce a signature that expires
+// fifty-five minutes after it was made, and an operator whose job is refused in that last five minutes
+// would be looking for a clock problem on the host rather than for arithmetic in this file. So the two
+// edges are computed from different instants, and this is the test that says so.
+func TestTheValidityRunsFromSigningAndNotFromTheBackdatedStart(t *testing.T) {
+	before := time.Now().UTC()
+	job, _, _, err := buildSignableJob(
+		"", "01JTESTHOST", "service.restart", `{"unit":"nginx.service"}`, "", time.Hour)
+	if err != nil {
+		t.Fatalf("building a signable job: %v", err)
+	}
+	after := time.Now().UTC()
+
+	// Bracketed by the two readings rather than compared to one, because the instant inside is neither.
+	// Truncated on the lower bound because the payload carries whole seconds and the truncation can only
+	// move the expiry earlier.
+	if job.NotAfter.Before(before.Add(time.Hour).Truncate(time.Second)) {
+		t.Errorf("--valid-for=1h expires at %s, less than an hour after signing at about %s",
+			job.NotAfter.Format(time.RFC3339), before.Format(time.RFC3339))
+	}
+	if job.NotAfter.After(after.Add(time.Hour)) {
+		t.Errorf("--valid-for=1h expires at %s, more than an hour after signing at about %s",
+			job.NotAfter.Format(time.RFC3339), after.Format(time.RFC3339))
+	}
+
+	// And the opening edge is still backdated, which is the half this must not have broken.
+	if !job.NotBefore.Before(before) {
+		t.Errorf("notBefore is %s, which is not before the signing time %s: a host a second behind "+
+			"would refuse this job as not yet valid",
+			job.NotBefore.Format(time.RFC3339), before.Format(time.RFC3339))
+	}
+}
+
+// TestAnExplicitStartIsTheInstantTheValidityRunsFrom is the other half of the same rule.
+//
+// There is no useful "from now" for a window an operator has scheduled for next Tuesday, and no skew
+// tolerance to add to an edge they named deliberately. So --not-before both opens the window and starts
+// the clock on --valid-for, and the window is then exactly as wide as it was asked to be.
+func TestAnExplicitStartIsTheInstantTheValidityRunsFrom(t *testing.T) {
+	start := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Second)
+	job, _, _, err := buildSignableJob("", "01JTESTHOST", "service.restart",
+		`{"unit":"nginx.service"}`, start.Format(time.RFC3339), 30*time.Minute)
+	if err != nil {
+		t.Fatalf("building a signable job: %v", err)
+	}
+
+	if !job.NotBefore.Equal(start) {
+		t.Errorf("notBefore is %s; --not-before asked for %s",
+			job.NotBefore.Format(time.RFC3339), start.Format(time.RFC3339))
+	}
+	if got := job.NotAfter.Sub(job.NotBefore); got != 30*time.Minute {
+		t.Errorf("the window is %s wide; --valid-for asked for 30m", got)
+	}
+}
