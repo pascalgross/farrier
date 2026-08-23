@@ -69,6 +69,13 @@ jobs:
           sudo usermod -aG lxd "$USER"
           sudo chmod 0666 /var/snap/lxd/common/lxd/unix.socket
 
+          # Docker is present on the runner image and sets the iptables FORWARD policy to DROP. That
+          # silently breaks the LXD bridge: instances boot, get an address, resolve names, and cannot
+          # reach anything — which surfaces much later as apt failing to fetch from deb.debian.org, a
+          # very long way from the cause.
+          sudo iptables -P FORWARD ACCEPT
+          sudo ip6tables -P FORWARD ACCEPT || true
+
       - name: Run the fleet
         # `up` then `test`, rather than `ci`, so that a failure leaves the machines alive for the
         # journal-collection step below. `ci` installs a trap that deletes them on exit, which would
