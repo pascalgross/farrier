@@ -516,12 +516,12 @@ func truncate(t *testing.T, pg *Postgres) {
 	}
 }
 
-// enqueue inserts a job directly, standing in for the scheduler the control plane does not have.
+// enqueue inserts a job directly, bypassing CreateJob.
 //
-// It goes through SQL rather than a Store method because there is no Store method: nothing on the
-// server side creates a job, for a privileged intent or a read-only one. The delivery path is real and
-// needs exercising before there is anything to deliver — the same reason the agent's acceptance
-// sequence was written and tested a phase before any intent it gated had an executor.
+// It predates CreateJob and is kept deliberately: the tests below are about the *delivery* path, and
+// writing the row with plain SQL means they still fail if CreateJob is what breaks, rather than both
+// going quiet together. The tests that exercise CreateJob itself are in jobs_test.go and run against
+// both implementations.
 func enqueue(t *testing.T, pg *Postgres, hostID string, job protocol.Job) {
 	t.Helper()
 	params, err := json.Marshal(job.Params)

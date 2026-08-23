@@ -93,8 +93,10 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   (`agent.pem`, key and certificate together) promoted by one rename, so a renewal interrupted at any
   point leaves a matching pair. Results are fsynced *before* an operation that may not return.
 - `internal/server` — the control plane: five agent endpoints plus an admin API and the embedded UI.
-  Authentication is a certificate-fingerprint lookup on every request, which is also the whole
-  revocation mechanism — no CRL, no OCSP.
+  Agent authentication is a certificate-fingerprint lookup on every request, which is also the whole
+  revocation mechanism — no CRL, no OCSP. Job creation lives in `jobsapi.go`: what a request may carry
+  follows from what a signature covers, so a signed job's id, nonce and validity window all arrive from
+  the signer and none is chosen here.
 - `internal/intent` + `internal/run` — what may happen, and the only place it happens.
 - `internal/policy` + `internal/helper` + `helpers/` + `internal/privsep` — three root helpers, each
   reached over one systemd-activated unix socket in `/run/farrier` and each re-reading the local policy

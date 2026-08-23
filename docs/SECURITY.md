@@ -159,6 +159,23 @@ A design in which "small" destructive operations took a weaker authorisation wou
 "cannot reboot your fleet *in one action*" — and a control plane holding two operator accounts could
 simply walk the fleet host by host. One tier, no exceptions.
 
+**Second-person approval** is the other half, and it is a property of the control plane rather than of
+the host: a destructive job is created waiting for approval, and no host can claim it until a *different*
+operator agrees. `POST /api/v1/jobs/{id}/approve` records that, and the refusal to self-approve is
+enforced in the statement that performs the update rather than in the handler — two requests arriving
+together would otherwise let one operator approve their own job by racing it against itself.
+
+Note what follows for a small installation. The shipped `auth.StaticToken` provider holds one token and
+one subject, so **a single-operator control plane cannot approve a destructive job at all.** That is
+this requirement working rather than a gap in it: it asks for a second person, and there is only one.
+Reaching the destructive tier means configuring a provider with real accounts — which is what
+`auth.Provider` is a seam for.
+
+This is also the one part of the destructive tier the *host* does not check, and the distinction
+matters. The signature is what the guarantee rests on, because the key is one the control plane does not
+hold; approval is a control-plane control, and an attacker who owns the control plane owns it. It
+defends against a careless operator, not a compromised one, and it is written down here as that.
+
 ### Permanently refused
 
 The following will never be added. In an open-source project the request arrives eventually, usually

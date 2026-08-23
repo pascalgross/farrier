@@ -13,15 +13,18 @@ Documentation: [farrier.tools](https://farrier.tools).
 > stop or restart a unit, and reboot. They enforce the host's own policy as root, over a socket rather
 > than through `sudo`, and you can drive them from an administrator's shell on a host today.
 >
-> **The control plane cannot yet issue any of them.** There is no job-creation API and no
-> `farrier sign`, so nothing reaches a host from the server side — for a privileged intent or for a
-> read-only one. And `packages.applySecurity` deliberately has no executor at all: it is the one
-> *routine* intent, and [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §5.1 says an agent must not run one
-> until it verifies a signature by the control plane's online key, which does not exist yet.
+> The control plane can issue them: `POST /api/v1/jobs` creates a job, and a destructive one waits for
+> a second operator to approve it before any host may claim it.
 >
-> So: a fleet that reports, hosts whose privileged operations are real and bounded by a file the
-> control plane cannot touch, and no way to ask for one from the browser. Do not expect to patch a
-> fleet with this yet.
+> **What is missing is `farrier sign`.** A destructive job carries a signature made offline by a key
+> the control plane does not hold, and nothing yet produces one for a human — so in practice the fleet
+> is drivable through the API for read-only work, and the destructive tier is complete on every side
+> except the tool an operator would use. `packages.applySecurity` is separately unavailable, and
+> deliberately: it is the one *routine* intent, and [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §5.1 says an
+> agent must not run one until it verifies a signature by the control plane's online key, which does
+> not exist yet.
+>
+> There is also no jobs page in the UI. Do not expect to patch a fleet from a browser yet.
 
 ---
 

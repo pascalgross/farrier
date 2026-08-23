@@ -7,11 +7,12 @@
 // server, a compromised control plane could show one operation in the browser and have a different one
 // signed.
 //
-// The destructive intents have executors now, and the agent verifies their signatures. What is missing
-// is on the other side: the control plane creates no jobs, so there is no job request for this command
-// to render and nothing for a signature to be attached to. What is here is what is useful before that:
-// enrolling a host, generating and inspecting signing keys so the trust anchor can be established in
-// advance, and printing the catalogue.
+// Everything around it now exists: the control plane accepts a signed job on POST /api/v1/jobs, holds a
+// destructive one until a second operator approves it, an agent verifies the signature against the
+// host's own trusted-signers, and a root helper acts on it. This command is the one remaining gap, and
+// it is the one an operator stands in. What is here is what is useful without it: enrolling a host,
+// generating and inspecting signing keys so the trust anchor can be established in advance, and
+// printing the catalogue.
 package main
 
 import (
@@ -72,9 +73,10 @@ func main() {
 			fmt.Printf("%-26s %-12s %s\n", s.Name, s.Class, s.Summary)
 		}
 	case "sign":
-		fmt.Fprintln(os.Stderr, "farrier: there is nothing to sign in this build.\n"+
-			"The destructive intents have executors and the agent verifies their signatures, but the\n"+
-			"control plane creates no jobs yet — so there is no job request to render or sign.\n"+
+		fmt.Fprintln(os.Stderr, "farrier: this build cannot sign a job yet.\n"+
+			"Everything around it works: POST /api/v1/jobs accepts a signed job, a second operator\n"+
+			"approves it, the agent verifies the signature against the host's own trusted-signers,\n"+
+			"and a root helper acts on it. This command is the remaining gap.\n"+
 			"`farrier key generate` works now, so a host's trust anchor can be in place beforehand.")
 		os.Exit(4)
 	case "version":

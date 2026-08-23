@@ -4,10 +4,14 @@ What you get from this is a fleet that reports: inventory, systemd unit state, p
 security separated from the rest, and which services still hold replaced libraries.
 
 The privileged operations are real now — applying updates, starting, stopping and restarting a unit,
-rebooting — and each is bounded by a root-owned file the control plane cannot modify. But **the control
-plane cannot yet ask for one**: there is no job-creation API and no `farrier sign`, so nothing reaches a
-host from the server side. Until that lands, a privileged operation is something an administrator runs
-on a host, through the same helpers and the same policy check the agent would have gone through.
+rebooting — and each is bounded by a root-owned file the control plane cannot modify. The control plane
+can ask for them: `POST /api/v1/jobs` queues one, and a destructive one waits for a second operator to
+approve it before any host may claim it.
+
+**What is missing is `farrier sign`.** A destructive job carries a signature made offline by a key the
+control plane does not hold, and nothing yet produces one for a human — so until it lands, the API
+drives read-only work and a privileged operation is something an administrator runs on a host, through
+the same helpers and the same policy check the agent would have gone through.
 
 ## The control plane
 
@@ -69,6 +73,39 @@ The `.sources` file uses deb822 with `Signed-By:` naming an explicit keyring, so
 trusted for the Farrier repository only. `apt-key` is never used: it installs a key that is trusted for
 every repository on the system, which turns one compromised project into root on the machine.
 
+## Asking a host to do something
+
+```bash
+# Read-only work needs nothing but an operator credential.
+curl -sX POST https://farrier.example.org/api/v1/jobs \
+  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"hostId":"01J…","intent":"facts.collect","params":{}}'
+
+curl -s "https://farrier.example.org/api/v1/jobs?host=01J…" \
+  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN"
+```
+
+A job comes back with a `state`: `queued`, `awaiting_approval`, `running`, or whatever status the host
+reported. The `result` is null until the host reports one, which is how "not reported yet" stays
+distinguishable from "reported nothing".
+
+A **destructive** job — applying every update, starting, stopping or restarting a unit, rebooting —
+needs two more things, and neither of them is the control plane's to give.
+
+1. A signature over the job, made offline with a key listed in that host's own
+   `/etc/farrier/trusted-signers`. It is sent with the request, along with the `id`, `nonce`,
+   `notBefore` and `notAfter` it covers; every one of those comes from the signer, because a value
+   chosen by the control plane would invalidate the signature. **`farrier sign` is not written yet**,
+   so there is no supported way for a person to produce one today.
+2. Approval by a *different* operator, through `POST /api/v1/jobs/{id}/approve`. Until that happens no
+   host can claim the job. A control plane with one operator account cannot do this at all — see
+   [`SECURITY.md`](SECURITY.md#destructive--signed-by-a-key-in-the-hosts-trusted-signers-plus-second-person-approval).
+
+A **routine** job — `packages.applySecurity` — is refused outright, and the refusal says why: it is the
+one tier that carries no offline signature, so an agent must verify a signature by the control plane's
+online key instead, and there is no online key yet.
+
 ## What a fresh host will and will not do
 
 Straight after installation, before you change anything:
@@ -77,7 +114,7 @@ Straight after installation, before you change anything:
 | --- | --- |
 | Reports inventory, services, pending updates and reboot state | **yes** |
 | Applies security updates on its own timer, via `unattended-upgrades` | **yes** — and it keeps doing this if the control plane is unreachable, or if you never enrol it at all |
-| Applies updates because the control plane asked | **no** — the control plane cannot issue a job yet |
+| Applies updates because the control plane asked | **no** — `packages.applySecurity` has no executor, and `packages.applyAll` needs a signature from a key you place on the host |
 | Applies updates because an administrator ran the helper on the host | only security updates, and only what the policy below allows |
 | Restarts a service, or reboots | **no**, from anyone, until you change the two files below |
 
