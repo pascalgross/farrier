@@ -737,9 +737,18 @@ func (p *Postgres) RecordResult(ctx context.Context, hostID string, r protocol.R
 	// The job must belong to the reporting host. Every enrolled host is authenticated and none is
 	// trusted: without this, any host could post a result for another host's job, and because recording
 	// is idempotent the forged result would then suppress the real one when it arrived.
+	//
+	// It must also have been claimed. A result for work this host was never given is not a result:
+	// without that condition a compromised host could complete a destructive job still waiting for its
+	// second operator, which sets completed_at and excludes the row from the claim for ever — and it
+	// could not be re-queued either, because the partial unique index has taken its signed nonce. The
+	// dashboard would show "succeeded" for work nobody authorised, let alone performed.
 	var owned bool
 	err = tx.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND host_id = $2)`, r.JobID, hostID,
+		`SELECT EXISTS (
+		     SELECT 1 FROM jobs
+		      WHERE id = $1 AND host_id = $2 AND claimed_at IS NOT NULL
+		 )`, r.JobID, hostID,
 	).Scan(&owned)
 	if err != nil {
 		return wrap(err, "checking job ownership")

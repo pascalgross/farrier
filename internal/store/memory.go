@@ -162,11 +162,25 @@ func (m *Memory) DeleteHost(_ context.Context, hostID string) error {
 		}
 	}
 	delete(m.jobs, hostID)
+
+	// The jobs go with the host, which is what ON DELETE CASCADE does on the other side. Leaving the
+	// records behind is not merely untidy: a deleted host's pending destructive job would stay listed
+	// and stay approvable, and approving it puts the job back on the queue of a host row that no longer
+	// exists — so deleting a host would not cancel the work waiting for it.
 	for id, host := range m.jobHost {
 		if host == hostID {
 			delete(m.jobHost, id)
+			delete(m.records, id)
+			delete(m.results, id)
 		}
 	}
+	kept := m.order[:0]
+	for _, id := range m.order {
+		if _, live := m.records[id]; live {
+			kept = append(kept, id)
+		}
+	}
+	m.order = kept
 	return nil
 }
 
@@ -506,6 +520,13 @@ func (m *Memory) RecordResult(_ context.Context, hostID string, r protocol.Resul
 	// refused rather than stored, because recording is idempotent and a forged result would otherwise
 	// suppress the real one when it arrived.
 	if owner, known := m.jobHost[r.JobID]; !known || owner != hostID {
+		return ErrNotFound
+	}
+	// And a result for work this host was never given is not a result. Without this a compromised host
+	// could complete a destructive job that was still waiting for its second operator — the job is then
+	// permanently excluded from the claim, cannot be re-queued because its signed nonce is taken, and
+	// the dashboard shows "succeeded" for work nobody ever authorised, let alone performed.
+	if rec, ok := m.records[r.JobID]; ok && rec.ClaimedAt.IsZero() {
 		return ErrNotFound
 	}
 	if _, exists := m.results[r.JobID]; exists {

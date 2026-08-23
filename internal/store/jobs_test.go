@@ -512,3 +512,97 @@ func TestGuaranteeJobsAreListedByCreationTimeNotByIdentifier(t *testing.T) {
 		}
 	})
 }
+
+// TestGuaranteeDeletingAHostCancelsTheWorkWaitingForIt keeps the two implementations agreeing.
+//
+// PostgreSQL cascades the jobs away with the host row and the in-memory store has to be told, which is
+// the shape of divergence that goes unnoticed — every server test runs against Memory, and the shipped
+// binary offers a memory-backed mode. Left alone, a deleted host's pending destructive job stays listed
+// and stays approvable, and approving it puts the job back on the queue of a host that no longer
+// exists: deleting a host would not cancel the work waiting for it.
+func TestGuaranteeDeletingAHostCancelsTheWorkWaitingForIt(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		job := jobFor("01JOB1", "host.reboot")
+		job.Class = "destructive"
+		job.Signature = "c2ln"
+		if err := s.CreateJob(ctx, NewJob{
+			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
+		}); err != nil {
+			t.Fatalf("creating: %v", err)
+		}
+
+		if err := s.DeleteHost(ctx, host.ID); err != nil {
+			t.Fatalf("deleting the host: %v", err)
+		}
+
+		if _, err := s.GetJob(ctx, "01JOB1"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a deleted host's job is still readable, producing %v; want ErrNotFound", err)
+		}
+		listed, err := s.ListJobs(ctx, JobFilter{})
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(listed) != 0 {
+			t.Errorf("a deleted host's job is still listed: %+v", listed)
+		}
+		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a deleted host's job was approvable, producing %v; want ErrNotFound", err)
+		}
+	})
+}
+
+// TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven closes a way to burn an authorisation.
+//
+// A host is authenticated and is not trusted. Without this check a compromised one could report a
+// result for a destructive job that was still waiting for its second operator: that stamps the job
+// completed, excludes it from the claim for ever, and leaves it impossible to re-queue because the
+// partial unique index has taken its signed nonce. The dashboard would show "succeeded" for work nobody
+// had authorised, let alone performed.
+//
+// A host can always lie about work it actually did — that is inside the threat model, and the policy
+// file and the signature are what bound it. What it must not be able to do is answer for work it was
+// never given.
+func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		host := enrolTestHost(t, s, "01JHOSTA", "a.example.org")
+
+		job := jobFor("01JOB1", "host.reboot")
+		job.Class = "destructive"
+		job.Signature = "c2ln"
+		if err := s.CreateJob(ctx, NewJob{
+			Job: job, HostID: host.ID, CreatedBy: "alice", ApprovalRequired: true,
+		}); err != nil {
+			t.Fatalf("creating: %v", err)
+		}
+
+		forged := protocol.ResultRequest{
+			JobID: "01JOB1", Status: protocol.StatusSucceeded,
+			StartedAt: time.Now(), FinishedAt: time.Now(), Output: "definitely rebooted",
+		}
+		if err := s.RecordResult(ctx, host.ID, forged); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("a result was accepted for a job the host was never given, producing %v; "+
+				"want ErrNotFound", err)
+		}
+
+		// And the job survives it: approved by a second operator, it is still delivered.
+		if err := s.ApproveJob(ctx, "01JOB1", "bob", time.Now()); err != nil {
+			t.Fatalf("approving: %v", err)
+		}
+		claimed, err := s.ClaimJobs(ctx, host.ID, 10)
+		if err != nil {
+			t.Fatalf("claiming: %v", err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("the approved job was not delivered after the forged result: %+v", claimed)
+		}
+
+		// Once it has genuinely been given out, the real result is accepted.
+		if err := s.RecordResult(ctx, host.ID, forged); err != nil {
+			t.Errorf("the result of a claimed job was refused: %v", err)
+		}
+	})
+}
