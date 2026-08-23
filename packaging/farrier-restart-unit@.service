@@ -8,6 +8,13 @@
 Description=Farrier restart-unit helper (connection %i)
 Documentation=file:///usr/share/doc/farrier-agent/SECURITY.md
 
+# Per-connection instances are garbage-collected even when they fail. Without this, a helper that
+# exited non-zero — a refused peer, a request that would not decode — stays behind in the "failed"
+# state, and systemd counts it against the socket's MaxConnections for ever. Two of those and the
+# socket stops accepting: a host that reports perfectly and can never be patched again, which is
+# precisely the kind of permanent wedge this project has closed twice elsewhere.
+CollectMode=inactive-or-failed
+
 [Service]
 ExecStart=/usr/libexec/farrier/restart-unit --serve
 

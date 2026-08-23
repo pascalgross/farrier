@@ -125,6 +125,11 @@ catalogue in which the only thing they can be asked for is one of six named oper
 `restart-unit` and `reboot-host` do set `NoNewPrivileges=yes`, `ProtectHome=yes` and `PrivateTmp=yes`,
 because neither has any use for a setuid binary and the line costs them nothing.
 
+All three set `CollectMode=inactive-or-failed`, which is not cosmetic. A per-connection instance that
+exits non-zero — a refused peer, a request that would not decode — otherwise stays behind in the
+`failed` state and is counted against the socket's `MaxConnections` for ever. Two of those and the
+socket stops accepting: a host that reports perfectly and can never be patched again.
+
 ## Two additions to the specified unit
 
 `RestrictAddressFamilies` includes `AF_NETLINK` as well as `AF_UNIX`. `AF_UNIX` is required to reach
