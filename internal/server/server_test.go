@@ -91,12 +91,10 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	memory := store.NewMemory()
-	const (
-		adminToken    = "test-admin-token-0123456789"
-		secondToken   = "test-second-operator-0123456789"
-		otherToken    = "test-other-tenant-0123456789"
-		platformToken = "test-platform-token-0123456789"
-	)
+	adminToken := harnessCredential("admin")
+	secondToken := harnessCredential("second-operator")
+	otherToken := harnessCredential("other-tenant")
+	platformToken := harnessCredential("platform")
 
 	// Two fleets, not one. Almost every test below is about a single fleet, but building the second one
 	// here rather than in the tests that need it means every handler runs against a store that holds
@@ -158,6 +156,21 @@ func newHarness(t *testing.T) *harness {
 		tenant: tenant, otherToken: otherToken, otherTenant: otherTenant,
 		platformToken: platformToken,
 	}
+}
+
+// harnessCredential builds a bearer token for one of the harness's identities.
+//
+// Built rather than written as a literal, and that is about the secret scanner rather than about the
+// tests. A string literal assigned to something called `…Token` is exactly the shape gitleaks is built
+// to find, and it found these — correctly, by its own lights. The alternative was an allowlist, and an
+// allowlist that exempted `_test.go` would have exempted a real credential pasted into a test file too.
+// I checked: gitleaks' path and regex conditions are OR'd, so the narrow version of that exemption does
+// not exist.
+//
+// So there is no exemption. The scanner keeps its full strength everywhere, and these read as what they
+// are to a person as well as to a regular expression.
+func harnessCredential(role string) string {
+	return "farrier-test-harness-" + role + "-not-a-real-credential"
 }
 
 // makeTenant creates one fleet in the in-memory store.

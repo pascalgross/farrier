@@ -60,6 +60,24 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Make the test role subject to row-level security
+        # The postgres image creates POSTGRES_USER as a superuser, and a superuser is exempt from every
+        # row-level security policy in the schema — with no symptom. Tenant isolation is those policies,
+        # so without this the tenancy tests would run against a connection that cannot observe the thing
+        # they exist to observe. TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate fails rather than
+        # skipping in that state, which is how this was found.
+        #
+        # The role demotes itself, which it can do while it is still a superuser and not afterwards. It
+        # keeps ownership of the database, so it can still migrate and truncate.
+        env:
+          PGPASSWORD: farrier_test
+        run: |
+          psql -h 127.0.0.1 -U farrier_test -d farrier_test \
+            -c 'ALTER ROLE farrier_test NOSUPERUSER NOBYPASSRLS;'
+          psql -h 127.0.0.1 -U farrier_test -d farrier_test -tAc \
+            'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
+            | grep -qx f
+
       - name: The catalogue is exactly the expected set, and nothing reaches a shell
         # Verbose on purpose. When this fails, the output is the first thing a reviewer reads, and the
         # test names and failure messages are written to explain the design rather than the assertion.
