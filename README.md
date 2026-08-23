@@ -8,11 +8,20 @@ By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
-> Farrier is in **phase 0**. It ships **no write capability at all**. The intent catalogue is complete —
-> four read-only operations, one routine and five destructive — but only the read-only four have an
-> executor behind them; every privileged one is refused with a distinguishable error. The protocol, the
-> policy enforcement and the packaging are real and tested, so that phase 1 adds executors rather than
-> foundations. Do not expect to patch a fleet with this yet.
+> Farrier is in **phase 1**, and phase 1 is half done. Nine of the ten catalogue members now have an
+> executor: the four read-only operations, and all five destructive ones — apply every update, start,
+> stop or restart a unit, and reboot. They enforce the host's own policy as root, over a socket rather
+> than through `sudo`, and you can drive them from an administrator's shell on a host today.
+>
+> **The control plane cannot yet issue any of them.** There is no job-creation API and no
+> `farrier sign`, so nothing reaches a host from the server side — for a privileged intent or for a
+> read-only one. And `packages.applySecurity` deliberately has no executor at all: it is the one
+> *routine* intent, and [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §5.1 says an agent must not run one
+> until it verifies a signature by the control plane's online key, which does not exist yet.
+>
+> So: a fleet that reports, hosts whose privileged operations are real and bounded by a file the
+> control plane cannot touch, and no way to ask for one from the browser. Do not expect to patch a
+> fleet with this yet.
 
 ---
 

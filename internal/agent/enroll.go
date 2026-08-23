@@ -246,7 +246,7 @@ const BootstrapRecordFile = "bootstrap-applied.json"
 
 // bootstrapRecord is the permanent record of a template that was applied.
 //
-// Phase 0 reads it and never writes it: the interlock has to be honoured by every build, and only a
+// This build reads it and never writes it: the interlock has to be honoured by every build, and only a
 // build that applies something has anything to record. Writing it here would consume the apply-once
 // interlock for an application that did not happen.
 type bootstrapRecord struct {
@@ -271,7 +271,8 @@ type bootstrapRecord struct {
 // trusted-signers, and the full text is printed before anything could happen.
 //
 // It stops there, and returns the key that authorised it. Applying — and writing the permanent record
-// that consumes the interlock — belongs to the code that actually applies, which phase 0 does not have.
+// that consumes the interlock — belongs to the code that actually applies, which this build does not
+// have: Tier 2 provisioning is a later phase, and none of phase 1's executors touch a template.
 // Recording an application that did not happen would be both a false audit entry and a spent interlock,
 // leaving a host that could never apply the template it was enrolled for.
 func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.PublicKey, error) {

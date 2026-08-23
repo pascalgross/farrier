@@ -17,8 +17,9 @@ import (
 // a managed host is compile-time closed, and this runs on the operator's own machine.
 //
 // Backends: file is implemented. sshagent, pkcs11, gpgagent and kms are specified in
-// docs/EXTENDING.md and not yet written; phase 0 has no destructive intent with an executor, so there
-// is nothing to sign yet, and shipping backends that cannot be exercised end to end would be shipping
+// docs/EXTENDING.md and not yet written. The destructive intents have executors now, but the control
+// plane issues no jobs and `farrier sign` is still a stub, so no signature this package could produce
+// has anywhere to go — and shipping backends that cannot be exercised end to end would be shipping
 // untested code into the one path where being wrong is unrecoverable. No token vendor is hard-coded
 // anywhere — pkcs11 will cover YubiKey PIV, Nitrokey and SoftHSM alike, and kms will cover AWS, GCP
 // and Azure.

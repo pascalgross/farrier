@@ -1,9 +1,13 @@
 # Installing Farrier
 
-Phase 0 ships **no write capability**. What you get from this is a fleet that reports: inventory,
-systemd unit state, pending updates with security separated from the rest, and which services still
-hold replaced libraries. Nothing here can change anything on a host, and the parts that eventually will
-are refused with a distinguishable error rather than being absent.
+What you get from this is a fleet that reports: inventory, systemd unit state, pending updates with
+security separated from the rest, and which services still hold replaced libraries.
+
+The privileged operations are real now — applying updates, starting, stopping and restarting a unit,
+rebooting — and each is bounded by a root-owned file the control plane cannot modify. But **the control
+plane cannot yet ask for one**: there is no job-creation API and no `farrier sign`, so nothing reaches a
+host from the server side. Until that lands, a privileged operation is something an administrator runs
+on a host, through the same helpers and the same policy check the agent would have gone through.
 
 ## The control plane
 
@@ -73,8 +77,9 @@ Straight after installation, before you change anything:
 | --- | --- |
 | Reports inventory, services, pending updates and reboot state | **yes** |
 | Applies security updates on its own timer, via `unattended-upgrades` | **yes** — and it keeps doing this if the control plane is unreachable, or if you never enrol it at all |
-| Applies updates because the control plane asked | not in phase 0 |
-| Restarts a service, or reboots | **no**, and not once phase 1 lands either, until you change the two files below |
+| Applies updates because the control plane asked | **no** — the control plane cannot issue a job yet |
+| Applies updates because an administrator ran the helper on the host | only security updates, and only what the policy below allows |
+| Restarts a service, or reboots | **no**, from anyone, until you change the two files below |
 
 The two files are the whole of it:
 

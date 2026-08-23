@@ -310,8 +310,9 @@ func (m *Memory) RevokeHost(_ context.Context, hostID string) error {
 
 // Enqueue adds a job for a host and wakes any long-poll waiting for it.
 //
-// It is not part of the Store interface because phase 0 issues no jobs. It exists so that tests and the
-// integration harness can exercise the delivery path — including the wake-up — before there is
+// It is not part of the Store interface because the control plane does not create jobs yet: there is no
+// job-creation API, so no job of any class reaches a host from the server side. It exists so that tests
+// and the integration harness can exercise the delivery path — including the wake-up — before there is
 // anything to deliver.
 func (m *Memory) Enqueue(hostID string, job protocol.Job) {
 	m.mu.Lock()

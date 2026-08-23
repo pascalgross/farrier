@@ -42,7 +42,7 @@ directly, which embeds the built bundle and needs no proxy at all.
 
 ## Authentication
 
-Phase 0 authenticates operators with a single bearer token, held in `localStorage`. That is a
+The control plane authenticates operators with a single bearer token, held in `localStorage`. That is a
 deliberate trade and it is written down in `src/app/core/token-store.ts`: it is readable by any script
 on this origin, which is acceptable only because the control plane serves nothing but its own bundle
 from it.

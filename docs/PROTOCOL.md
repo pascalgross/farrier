@@ -362,9 +362,11 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
 5. **Check the class**:
    - `read` — no signature required, mTLS is sufficient;
    - `routine` — signature by the control plane's online key required. Note that Farrier's agent does
-     not yet verify this: phase 0 has no executor behind the routine intent and no online key to verify
-     against, so the check arrives with the first routine executor. An agent MUST NOT execute a routine
-     intent until it does;
+     not yet verify this, and that this is the reason the routine intent still has no executor while
+     the destructive ones do: routine is the one class for which no offline signature is required, so
+     an agent that ran one without the online-key check would be acting on mTLS alone. An agent MUST
+     NOT execute a routine intent until it verifies that signature, and Farrier's refuses one with
+     `unsupported_intent`;
    - `destructive` — signature by a key present in this host's `/etc/farrier/trusted-signers`
      required. A signature by the online key is **not** acceptable for this class.
 6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **check the

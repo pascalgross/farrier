@@ -166,6 +166,11 @@ The permanently-refused list is in
 `apply-updates`, `restart-unit`, `reboot-host`. There is no fourth one that "runs the configured
 command", and none of the three will grow a parameter that names a program.
 
+The agent reaches them over one unix socket each, activated by systemd, and never through `sudo` —
+nothing in Farrier is setuid. The routing table in `internal/privsep` is the complete statement of which
+intent reaches which helper, and it is checked against the catalogue on every build. Adding a socket, or
+widening the group on one of the three, is the same request as adding a fourth helper.
+
 ### Runtime plugins in the agent
 
 Never. Any mechanism that loads code into the agent at run time is remote code execution wearing a
@@ -198,7 +203,9 @@ This is the process, not an invitation.
 4. Update `internal/intent`, and update the expected-set literal in the guarantee test in the same
    commit — CI will fail until you do.
 5. If it needs root, it goes in one of the three existing helpers, and that helper re-reads and
-   re-enforces `/etc/farrier/policy.toml` itself. It does not get a new helper.
+   re-enforces `/etc/farrier/policy.toml` itself. It does not get a new helper, and it does not get a
+   new socket: add it to the routing table in `internal/privsep` naming the helper that already
+   performs work of that kind, or the guarantee suite fails.
 6. Add the policy knob that lets a host refuse it. Every privileged intent must be refusable locally,
    or the guarantee is no longer true.
 7. Document it in `SECURITY.md` §3 and `PROTOCOL.md`.

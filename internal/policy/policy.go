@@ -121,12 +121,18 @@ type Updates struct {
 	// control plane may ask for; AutoApply decides whether the host also does it unprompted, which is
 	// what keeps a fleet patched through a control-plane outage.
 	//
-	// **Farrier does not implement it yet.** The timer that applies updates unprompted is
-	// unattended-upgrades', configured by the distribution and not by Farrier, so in phase 0 this
-	// setting is reported to the control plane and acted on by nothing. It is here from the first
-	// release because it belongs in this file, and because adding a policy key later means every host
-	// in a fleet has a policy file older than the software reading it. Phase 1 makes it real by
-	// rendering the corresponding unattended-upgrades configuration.
+	// **Farrier still does not implement it.** The timer that applies updates unprompted is
+	// unattended-upgrades', configured by the distribution and not by Farrier, so this setting is
+	// reported to the control plane and acted on by nothing. It is in the file from the first release
+	// because it belongs there, and because adding a policy key later means every host in a fleet has a
+	// policy file older than the software reading it.
+	//
+	// Making it real means writing /etc/apt/apt.conf.d on the host, and that is a larger decision than
+	// it looks. Farrier deliberately configures nothing about the host's own apt — the fragment the
+	// update helper uses is named by APT_CONFIG for one invocation, precisely so that it changes
+	// nothing for anything else — and there is no intent that writes a file, no helper that could own
+	// one, and docs/EXTENDING.md rules out a fourth. So it waits for a design rather than for an
+	// afternoon.
 	AutoApply bool `toml:"auto_apply"`
 
 	// Window is the maintenance window, empty meaning any time.

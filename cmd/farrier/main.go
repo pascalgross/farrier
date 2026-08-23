@@ -1,15 +1,17 @@
 // Command farrier is the operator's command-line tool.
 //
-// Its most important job, once phase 1 lands, is `farrier sign`: decoding and rendering a job request
+// Its most important job, still unwritten, is `farrier sign`: decoding and rendering a job request
 // offline, without contacting the server, and signing it with a key the control plane does not hold.
 // That the rendering happens locally from the full signed payload is a requirement on the wire format
 // rather than a nicety of this program — if the tool signed an opaque digest handed to it by the
 // server, a compromised control plane could show one operation in the browser and have a different one
 // signed.
 //
-// Phase 0 ships no destructive capability, so there is nothing to sign yet. What is here is what is
-// useful before that: enrolling a host, generating and inspecting signing keys so the trust anchor can
-// be established in advance, and printing the catalogue.
+// The destructive intents have executors now, and the agent verifies their signatures. What is missing
+// is on the other side: the control plane creates no jobs, so there is no job request for this command
+// to render and nothing for a signature to be attached to. What is here is what is useful before that:
+// enrolling a host, generating and inspecting signing keys so the trust anchor can be established in
+// advance, and printing the catalogue.
 package main
 
 import (
@@ -71,7 +73,8 @@ func main() {
 		}
 	case "sign":
 		fmt.Fprintln(os.Stderr, "farrier: there is nothing to sign in this build.\n"+
-			"Phase 0 ships no destructive intents with executors, so no job requires a signature.\n"+
+			"The destructive intents have executors and the agent verifies their signatures, but the\n"+
+			"control plane creates no jobs yet — so there is no job request to render or sign.\n"+
 			"`farrier key generate` works now, so a host's trust anchor can be in place beforehand.")
 		os.Exit(4)
 	case "version":

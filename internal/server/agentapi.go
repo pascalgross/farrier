@@ -128,7 +128,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		Summary: req.Hostname + " enrolled into group " + token.Group,
 	})
 
-	// Phase 0 issues no bootstrap templates: Tier 1 provisioning renders cloud-init for a human or for
+	// This build issues no bootstrap templates: Tier 1 provisioning renders cloud-init for a human or for
 	// Terraform and never delivers it to a host, and Tier 2 arrives in phase 3 with every guardrail in
 	// docs/SECURITY.md §6. A request for one is refused rather than ignored, because an agent that
 	// asked for a template and silently received none would proceed as though it had been applied.
