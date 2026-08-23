@@ -94,6 +94,21 @@ var allowed = map[Program]bool{
 // ErrNotAllowed reports an attempt to execute a program outside the allowlist.
 var ErrNotAllowed = errors.New("run: program is not in the allowlist")
 
+// WaitDelay bounds how long Wait lingers after the program itself has gone.
+//
+// It exists because of one specific shape, and that shape is the whole reason updates are the slowest
+// thing this package runs: apt-get spawns dpkg, and dpkg inherits the pipes this package reads the
+// output from. When a deadline fires, exec.CommandContext signals the *direct* child only. Without a
+// wait delay, Wait then blocks on a pipe the surviving dpkg still holds — for as long as the
+// transaction takes — so the helper hangs well past its own timeout and the agent is left waiting on a
+// helper that has, as far as it knows, simply stopped answering.
+//
+// The surviving dpkg is deliberately left alone. Killing the process group would return the pipes
+// sooner and leave the package system half-configured on somebody's server, which is a much worse
+// outcome than an orphan that finishes its transaction, releases /var/lib/dpkg/lock and exits. The job
+// is reported as timed out either way; this only decides whether the host is also broken.
+const WaitDelay = 10 * time.Second
+
 // DefaultTimeout bounds an invocation that does not ask for its own.
 //
 // Two minutes is generous for everything except applying updates, which passes its own. The point is
@@ -187,6 +202,10 @@ func CommandWith(ctx context.Context, opts Options, p Program, args ...string) (
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &stdout, limit: MaxOutputBytes}
 	cmd.Stderr = &limitedWriter{buf: &stderr, limit: MaxOutputBytes}
+
+	// See WaitDelay. Without this, a timed-out apt run leaves this call blocked on a pipe held by a
+	// dpkg that outlived its parent, and the timeout above stops meaning anything at all.
+	cmd.WaitDelay = WaitDelay
 
 	started := time.Now()
 	err := cmd.Run()
