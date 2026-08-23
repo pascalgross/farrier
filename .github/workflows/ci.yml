@@ -157,15 +157,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: The sudoers file is valid
-        # An invalid sudoers file breaks sudo for the whole system, so it is validated before it can
-        # reach a package rather than after somebody installs one.
-        run: sudo visudo -c -f packaging/sudoers
-
-      - name: The systemd unit is valid
+      - name: Every systemd unit is valid
+        # systemd silently ignores a directive it does not understand and will happily start a unit
+        # whose sandboxing was dropped by a typo. That applies to the three helper sockets as much as to
+        # the agent, and the sockets are now the privilege boundary: a socket unit that does not parse
+        # is a host that cannot be patched.
         run: |
           sudo install -Dm755 /bin/true /usr/bin/farrier-agent
-          systemd-analyze verify packaging/farrier-agent.service
+          for helper in apply-updates restart-unit reboot-host; do
+            sudo install -Dm755 /bin/true "/usr/libexec/farrier/$helper"
+          done
+          make units
 
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
@@ -181,11 +183,18 @@ jobs:
           farrier-agent version
           farrier version
           farrier-agent policy check
-          # The whole product in one command: the agent's own account, going through the only
-          # privileged path that exists, being told no by a file the control plane cannot touch.
+
+          # The privilege boundary, from the agent's own account. This connects to each of the three
+          # helper sockets and is refused by each, which proves the sockets exist, that this account may
+          # reach them, that systemd started the helper as root, and that the helper refuses what it
+          # does not serve. It changes nothing: the intent it sends is in no catalogue.
+          sudo -u farrier farrier-agent doctor
+
+          # And the whole product in one command: an operation the local policy does not permit, going
+          # through the only privileged path that exists, being told no by a file the control plane
+          # cannot touch.
           set +e
-          sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit \
-            --action restart --unit nginx.service
+          sudo /usr/libexec/farrier/restart-unit --action restart --unit nginx.service
           status=$?
           set -e
           if [ "$status" -ne 3 ]; then
@@ -215,8 +224,17 @@ jobs:
       - name: Purge leaves nothing behind
         run: |
           sudo dpkg --purge farrier-agent
-          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier /usr/bin/farrier; do
+          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier /usr/bin/farrier \
+                      /usr/share/farrier /usr/lib/systemd/system/farrier-apply-updates.socket \
+                      /usr/lib/tmpfiles.d/farrier.conf; do
             [ ! -e "$path" ] || { echo "$path survived a purge" >&2; exit 1; }
+          done
+          # An enabled socket unit left behind would activate a binary that no longer exists, turning
+          # every connection into a failed unit start on a machine where Farrier is not installed.
+          for socket in farrier-apply-updates farrier-restart-unit farrier-reboot-host; do
+            if systemctl is-enabled "$socket.socket" >/dev/null 2>&1; then
+              echo "$socket.socket is still enabled after a purge" >&2; exit 1
+            fi
           done
           ! getent passwd farrier
 

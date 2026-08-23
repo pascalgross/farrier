@@ -83,10 +83,10 @@ arbitrary code execution as `farrier` still cannot exceed the policy, because th
 trust its caller.
 
 "Does not trust its caller" includes not taking the policy's location from it. The helpers accept no
-`--policy` flag: the path is the packaged constant, always. The sudoers entry pins the program and not
-its arguments, and the agent can write `/var/lib/farrier`, so a helper that read a caller-supplied path
-would enforce — carefully, as root — whatever policy the attacker had just written. A test in
-`internal/intent` parses each helper's source and fails if one grows such a flag.
+`--policy` flag: the path is the packaged constant, always. The agent can write `/var/lib/farrier`, so
+a helper that read a caller-supplied path would enforce — carefully, as root — whatever policy the
+attacker had just written. Nor is there a field for one in the request that crosses the socket. A test
+in `internal/intent` parses each helper's source and fails if one grows such a flag.
 
 `systemctl stop farrier-agent` and the presence of `/etc/farrier/paused` are a kill switch that the
 control plane cannot override. There is deliberately **no `agent.resume` intent** — an off switch that
@@ -261,7 +261,7 @@ as shown in `packaging/farrier-agent.service`. Notably it sets `MemoryDenyWriteE
 one of the reasons the agent is written in Go: any JIT runtime is incompatible with that setting, so
 choosing a JIT language would have silently cost this mitigation.
 
-Privileged work happens in exactly three root helpers, invoked through `sudo` with fixed argv:
+Privileged work happens in exactly three root helpers:
 
 ```
 /usr/libexec/farrier/apply-updates
@@ -269,9 +269,53 @@ Privileged work happens in exactly three root helpers, invoked through `sudo` wi
 /usr/libexec/farrier/reboot-host
 ```
 
-Each helper re-reads and enforces `/etc/farrier/policy.toml` itself. None of them accepts a command to
-run, a path to execute, or a shell fragment. The sudoers entry is command-specific and resets the
-environment.
+Each helper re-reads and enforces `/etc/farrier/policy.toml` itself, as root, on every invocation. None
+of them accepts a command to run, a path to execute, or a shell fragment.
+
+**The agent reaches them over a unix socket, not through `sudo`.** Nothing in Farrier is setuid and
+there is no `/etc/sudoers.d/farrier`. That is forced rather than chosen: with `NoNewPrivileges=yes` in
+force, `execve` drops the setuid bit, so `sudo` cannot become root at all — and systemd *implies*
+`NoNewPrivileges=yes` from `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectClock`,
+`RestrictNamespaces`, `RestrictSUIDSGID`, `MemoryDenyWriteExecute`, `LockPersonality` and
+`SystemCallFilter`, every one of which the agent's unit sets. Keeping `sudo` would have meant dropping
+most of this section.
+
+```
+/run/farrier/apply-updates.sock   root:farrier 0660  → farrier-apply-updates@N.service (root)
+/run/farrier/restart-unit.sock    root:farrier 0660  → farrier-restart-unit@N.service  (root)
+/run/farrier/reboot-host.sock     root:farrier 0660  → farrier-reboot-host@N.service   (root)
+```
+
+Each socket is `Accept=yes`: systemd accepts the connection and starts one instance of one helper with
+the connection as its standard input. There is no listening socket inside a privileged process, no
+accept loop of Farrier's own, and **no resident root daemon** — a helper exists for exactly as long as
+one operation does.
+
+The three properties that made the sudoers entry safe are kept, and each is asserted by the guarantee
+suite rather than reviewed for:
+
+1. **The set of reachable operations is closed and visible in one place.** It is the routing table in
+   `internal/privsep`, checked against the catalogue on every build. An intent that is not in it has no
+   route from the agent to root at all, whatever the policy file says and however well the job was
+   signed.
+2. **A caller names an intent, never a program.** The request carries an intent and a parameter object
+   and has no field a path, a command or an argument vector could occupy — and the helper decodes the
+   parameters again, itself, with the same catalogue decoder, on its own side of the boundary.
+3. **Authorisation is by identity the caller cannot forge.** The socket's mode names the `farrier`
+   group; the helper additionally reads the peer's credentials with `SO_PEERCRED`, which the kernel
+   records at connect time. Only the agent's own account and root are served.
+
+A helper also refuses an intent it does not serve. systemd routes a connection to exactly one helper,
+but the request arriving on it still names an intent, and nothing about the socket would stop a
+compromised agent from sending `host.reboot` to the one that restarts units.
+
+The helper units themselves are **not** sandboxed, and that is deliberate rather than an omission: a
+program whose job is to install packages cannot be confined against writing to `/usr` and `/etc`. What
+bounds them is the root-owned policy file and the closed catalogue, not a systemd directive.
+
+`farrier-agent doctor` checks the whole path from the agent's own account and changes nothing: it sends
+an intent that is in no catalogue and on no route, which every helper refuses at its first check. A
+refusal is what success looks like, because there is no harmless privileged intent to send instead.
 
 **`farrier` is never added to the `docker` group.** Docker socket access is root equivalence and would
 silently undo everything in this section. If you package Farrier for a system where the agent needs to
@@ -375,8 +419,8 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   strictly worse.
 - Set `policy.toml` to the least permission each host actually needs. It is the only control that
   survives a total control-plane compromise.
-- Do not widen the sudoers file. If you find yourself wanting a fourth helper, that is a request for a
-  new typed intent upstream.
+- Do not add a socket unit, and do not widen the group on the three that exist. If you find yourself
+  wanting a fourth helper, that is a request for a new typed intent upstream.
 - Back up the control plane's CA key separately from its database. An attacker with both can
   impersonate hosts; an attacker with the database alone cannot.
 - Review `/var/lib/farrier/bootstrap-applied.json` on hosts you did not personally enrol.

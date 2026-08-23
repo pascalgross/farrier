@@ -247,11 +247,18 @@ func (h Helper) Perform(ctx context.Context, req Request) privsep.Response {
 func (h Helper) performWith(ctx context.Context, req Request, policyPath string) privsep.Response {
 	// Whose work is this? Asked before anything is decoded, because the cheapest refusal is the one
 	// that happens before the parser runs.
-	endpoint, ok := privsep.Endpoint(req.Intent)
-	if !ok || endpoint != h.Socket {
+	endpoint, routed := privsep.Endpoint(req.Intent)
+	switch {
+	case !routed:
 		return privsep.Response{
 			ExitCode: ExitUsage,
-			Error: fmt.Sprintf("%s does not perform %q; that intent is served by %q",
+			Error: fmt.Sprintf("%s does not perform %q, and no helper does: it is not a privileged "+
+				"member of the intent catalogue", h.Component, req.Intent),
+		}
+	case endpoint != h.Socket:
+		return privsep.Response{
+			ExitCode: ExitUsage,
+			Error: fmt.Sprintf("%s does not perform %q; that intent is served by %s",
 				h.Component, req.Intent, endpoint),
 		}
 	}

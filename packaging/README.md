@@ -12,7 +12,10 @@ binary that only reports than against one that also has a protocol to debug.
 packaging/
 ├─ nfpm.yaml                the package definition
 ├─ farrier-agent.service    the hardened systemd unit
-├─ sudoers                  the fixed-argv entry for the three root helpers
+├─ farrier-*.socket         the privilege boundary: one socket per root helper
+├─ farrier-*@.service       one root helper instance per connection
+├─ farrier-tmpfiles.conf    /run/farrier, recreated on every boot
+├─ apt.conf                 the conffile options unattended-upgrade cannot be given on a command line
 ├─ policy.toml              conffile, conservative defaults
 ├─ trusted-signers          conffile, empty on purpose
 ├─ scripts/                 preinst, postinst, prerm, postrm
@@ -26,8 +29,10 @@ make deb                        # ./dist/packages/farrier-agent_<version>_<arch>
 make deb VERSION=0.1.0 ARCH=arm64
 ```
 
-Needs [`nfpm`](https://nfpm.goreleaser.com/install/). `make deb` builds the binaries first and
-validates the sudoers file with `visudo` when it is available.
+Needs [`nfpm`](https://nfpm.goreleaser.com/install/). `make deb` builds the binaries first and runs
+`systemd-analyze verify` over every packaged unit when it is available — `make units` does the same
+thing on its own. systemd silently ignores a directive it does not understand, so a typo in a socket
+unit is not an error, it is a privilege boundary that quietly is not there.
 
 ## What the package contains
 
@@ -38,8 +43,13 @@ validates the sudoers file with `visudo` when it is available.
 | `/usr/lib/systemd/system/farrier-agent.service` | Hardened unit, zero capabilities |
 | `/etc/farrier/policy.toml` | **conffile**, `root:root 0644` |
 | `/etc/farrier/trusted-signers` | **conffile**, `root:root 0644`, empty |
-| `/etc/sudoers.d/farrier` | **conffile**, `root:root 0440` |
+| `/usr/lib/systemd/system/farrier-{apply-updates,restart-unit,reboot-host}.socket` | The privilege boundary. `root:farrier`, mode `0660` |
+| `/usr/lib/systemd/system/farrier-{apply-updates,restart-unit,reboot-host}@.service` | One root helper instance per connection |
+| `/usr/lib/tmpfiles.d/farrier.conf` | `/run/farrier`, recreated on every boot |
+| `/usr/share/farrier/apt.conf` | Named by `APT_CONFIG` during an update run. **Not** in `/etc/apt/apt.conf.d` |
 | `/var/lib/farrier`, `/var/lib/farrier/pending-results`, `/var/log/farrier` | `farrier:farrier 0750` |
+
+There is no `/etc/sudoers.d/farrier` and no `Depends: sudo`. See below.
 
 Both configuration files ship as `config|noreplace`, so dpkg never overwrites a local edit. There is a
 test in `testfleet/` that asserts this across an upgrade. For `trusted-signers` that is a **security**
@@ -52,31 +62,68 @@ would be correlatable between fleets by anyone who saw both — and enable the u
 remove the state directories and the account; on ordinary removal they leave state alone, so that
 removing and reinstalling does not lose the host's identity or its pending job results.
 
-## ⚠ Unresolved before phase 1: `NoNewPrivileges` and `sudo`
+## Resolved: `NoNewPrivileges` and `sudo`
 
-`farrier-agent.service` sets `NoNewPrivileges=yes`, and the design calls for the agent to reach the
-root helpers through `sudo`. **Those two are mutually exclusive.** With the no-new-privileges bit set,
-`execve` silently drops the setuid bit, so `sudo` cannot become root and fails with *"effective uid is
-not 0"*.
+Phase 0 shipped with this open, here and in the unit file, as the thing that had to be settled before
+the first executor landed. It is settled, and the note is kept rather than deleted because the reasoning
+is the reason the packaging looks the way it does.
 
-Phase 0 ships no write capability, so nothing invokes a helper and the conflict is not yet live. It
-must be resolved before the first executor lands. The two credible options, both of which keep the
-fixed-argv property:
+`farrier-agent.service` sets `NoNewPrivileges=yes`, and the original design called for the agent to
+reach the root helpers through `sudo`. **Those two are mutually exclusive.** With the no-new-privileges
+bit set, `execve` silently drops the setuid bit, so `sudo` cannot become root and fails with *"effective
+uid is not 0"*. Deleting the `NoNewPrivileges=yes` line is *not* sufficient either: systemd implies it
+from `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectClock`, `RestrictNamespaces`,
+`RestrictSUIDSGID`, `MemoryDenyWriteExecute`, `LockPersonality` and `SystemCallFilter` — every one of
+which this unit sets. Making `sudo` work would have meant dropping most of the hardening.
 
-1. **Replace `sudo` with a root-owned helper service** the agent reaches over a unix socket in
-   `/run/farrier`, authorised by the socket's peer credentials. More code, and it preserves every
-   hardening line while removing setuid from the picture entirely.
-2. **Drop enough of the sandbox that `sudo` works.** Note that deleting the `NoNewPrivileges=yes` line
-   is *not* sufficient and would be a trap for whoever tries it: systemd implies `NoNewPrivileges=yes`
-   from a long list of other directives, including `ProtectKernelTunables`, `ProtectKernelModules`,
-   `ProtectClock`, `RestrictNamespaces`, `RestrictSUIDSGID`, `MemoryDenyWriteExecute`,
-   `LockPersonality` and `SystemCallFilter` — every one of which this unit sets. Making `sudo` work
-   means dropping most of them, which is most of the hardening.
+**The privilege boundary is now a socket per helper, activated by systemd.** `/etc/sudoers.d/farrier` is
+gone, `Depends: sudo` is gone, and nothing in Farrier is setuid.
 
-Option 1 is the one to take. Option 2 is listed so that nobody spends an afternoon on the obvious
-version of it and concludes that systemd is broken. Whichever is chosen, `docs/SECURITY.md` §5 must be
-updated in the same change; the note is repeated in the unit file so nobody meets this for the first
-time while debugging a failing helper.
+```
+/run/farrier/apply-updates.sock   root:farrier 0660  → farrier-apply-updates@N.service (root)
+/run/farrier/restart-unit.sock    root:farrier 0660  → farrier-restart-unit@N.service  (root)
+/run/farrier/reboot-host.sock     root:farrier 0660  → farrier-reboot-host@N.service   (root)
+```
+
+Each socket is `Accept=yes`, which is the inetd arrangement: systemd accepts the connection and starts
+one instance of one helper with the connection as its standard input. So there is no listening socket
+inside a privileged process, no accept loop of Farrier's own, and **no resident root daemon** — a helper
+exists for exactly as long as one operation does.
+
+Every property that made the sudoers entry safe is kept, and each is now asserted by a test rather than
+reviewed for:
+
+| The sudoers entry did this | The socket does this |
+| --- | --- |
+| Named three programs and no others | `internal/privsep`'s routing table, checked against the catalogue by `TestGuaranteeEveryPrivilegedIntentHasExactlyOneEndpoint` |
+| Pinned the argv | The request carries an intent and a parameter object, and `TestGuaranteeARequestCannotNameAProgram` asserts there is no field a path could hide in |
+| Named the `farrier` user | The socket's group, **and** the helper's own reading of `SO_PEERCRED` — the one claim about a caller that a caller cannot make |
+| Reset the environment | `internal/run` replaces the environment on every invocation, and always did |
+
+The helper also refuses an intent it does not serve. systemd routes a connection to exactly one helper,
+but the request arriving on it still names an intent, and nothing about the socket would stop a
+compromised agent sending `host.reboot` to the one that restarts units.
+
+`farrier-agent doctor` checks the whole path from the agent's own account, without changing anything:
+it sends an intent that is in no catalogue and on no route, so each helper refuses it at its very first
+check. A refusal is what success looks like — there is no harmless privileged intent to send instead,
+because every one of them changes the machine.
+
+```bash
+sudo -u farrier farrier-agent doctor
+```
+
+### The helper units are not sandboxed, and that is not an oversight
+
+`farrier-apply-updates@.service` has no `ProtectSystem`, no `ReadOnlyPaths` and no `NoNewPrivileges`.
+Its job is to install packages: a directive that stopped it writing to `/usr` or `/etc` would stop it
+doing the thing it exists for, and `NoNewPrivileges` would break any maintainer script that uses a
+setuid helper — during a security upgrade, on somebody else's machine. What bounds these programs is
+not a sandbox. It is `/etc/farrier/policy.toml`, re-read as root on every invocation, and a closed
+catalogue in which the only thing they can be asked for is one of six named operations.
+
+`restart-unit` and `reboot-host` do set `NoNewPrivileges=yes`, `ProtectHome=yes` and `PrivateTmp=yes`,
+because neither has any use for a setuid binary and the line costs them nothing.
 
 ## Two additions to the specified unit
 
@@ -132,19 +179,23 @@ that.
 make deb VERSION=0.1.0
 dpkg-deb --info    dist/packages/farrier-agent_0.1.0_amd64.deb
 dpkg-deb --contents dist/packages/farrier-agent_0.1.0_amd64.deb
-visudo -c -f packaging/sudoers
-systemd-analyze verify packaging/farrier-agent.service
+make units
 
 sudo dpkg -i dist/packages/farrier-agent_0.1.0_amd64.deb
-sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit --action restart --unit nginx.service
+
+# The privilege boundary, from the agent's own account, changing nothing.
+sudo -u farrier farrier-agent doctor
+
+sudo /usr/libexec/farrier/restart-unit --action restart --unit nginx.service
 #   -> refused by local policy (unit_not_restartable), exit 3, on a default install
 #
-# The helper takes no --policy flag. Its path is the packaged constant, because the sudoers entry pins
-# the program and not its arguments and the agent can write /var/lib/farrier — so a caller-supplied
-# path would let a compromised agent choose the policy that gets enforced.
+# The helper takes no --policy flag. Its path is the packaged constant, because the agent can write
+# /var/lib/farrier — so a caller-supplied path would let a compromised agent choose the policy that
+# gets enforced. `--dry-run` evaluates the same decision without needing root.
 farrier-agent policy check
 sudo dpkg --purge farrier-agent
 ```
 
-The refusal above is the whole product in one command: the agent's own account, going through the only
-privileged path that exists, being told no by a file the control plane cannot touch.
+The refusal above is the whole product in one command: an operation going through the only privileged
+path that exists and being told no by a file the control plane cannot touch. Run as root, deliberately —
+if even root going through the helper is refused, the agent certainly is.

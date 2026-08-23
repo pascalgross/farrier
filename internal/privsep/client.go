@@ -51,16 +51,44 @@ func NewClient() *Client { return &Client{} }
 
 // Invoke sends one request across the privilege boundary and returns the helper's reply.
 //
-// The context's deadline is the caller's bound on the whole operation, and it must be generous:
-// applying updates on a slow host with a full mirror behind it is minutes of work, and a deadline that
-// expired mid-upgrade would leave the host patched half way with the job reported as failed. The
-// helper has its own bounds on the parts it controls; this one bounds the agent's patience.
+// The socket is chosen from the intent by the routing table and never by the caller, so there is no
+// argument to this function that could name a program, a path or an endpoint. The helper on the far
+// side makes the same check in the other direction.
 func (c *Client) Invoke(ctx context.Context, req Request) (Response, error) {
 	path, ok := Endpoint(req.Intent)
 	if !ok {
 		return Response{}, fmt.Errorf("%w: %s", ErrNoEndpoint, req.Intent)
 	}
+	return c.invokeOn(ctx, path, req)
+}
 
+// ProbeIntent is the intent name a reachability probe sends, and it is deliberately not a real one.
+//
+// Every privileged intent this product has changes the machine; there is no harmless one to send. So a
+// probe sends a name that is in no catalogue and on no route, which the helper refuses at its very
+// first check — before a parameter is decoded and long before a policy is consulted. Reaching that
+// refusal proves the socket exists, that this process may connect to it, that systemd started the
+// helper as root, and that the helper answered. Proving all of that with an operation that cannot do
+// anything is the whole point.
+const ProbeIntent intent.Name = "farrier.unroutable.probe"
+
+// Probe reports whether a helper socket is reachable and answering.
+//
+// A reachable helper refuses ProbeIntent with ExitUsage, so that — and not a zero exit — is what
+// success looks like here. The distinction matters: a socket that answered zero to a name nothing
+// serves would mean a helper that acts on requests it does not recognise, which is worth failing
+// loudly about rather than reporting as healthy.
+func (c *Client) Probe(ctx context.Context, socket string) (Response, error) {
+	return c.invokeOn(ctx, socket, Request{Intent: ProbeIntent, Params: []byte(`{}`)})
+}
+
+// invokeOn sends one request to an explicit socket path and returns the helper's reply.
+//
+// The context's deadline is the caller's bound on the whole operation, and it must be generous:
+// applying updates on a slow host with a full mirror behind it is minutes of work, and a deadline that
+// expired mid-upgrade would leave the host patched half way with the job reported as failed. The
+// helper has its own bounds on the parts it controls; this one bounds the agent's patience.
+func (c *Client) invokeOn(ctx context.Context, path string, req Request) (Response, error) {
 	dial := c.dialer
 	if dial == nil {
 		dial = dialUnix

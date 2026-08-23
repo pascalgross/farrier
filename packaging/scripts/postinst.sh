@@ -1,5 +1,5 @@
 #!/bin/sh
-# Finish installation: state directories, the machine-id salt, and the systemd unit.
+# Finish installation: state directories, the machine-id salt, the helper sockets and the agent unit.
 #
 # Nothing here touches /etc/farrier/policy.toml or /etc/farrier/trusted-signers. They are dpkg
 # conffiles and an administrator's edits must survive every upgrade; testfleet/ has a test that asserts
@@ -29,6 +29,21 @@ case "$1" in
 
 		if [ -d /run/systemd/system ]; then
 			systemctl daemon-reload >/dev/null 2>&1 || true
+
+			# /run is a tmpfs, so at boot the directory comes from tmpfiles.d before sockets.target.
+			# This is the install-time case, where the sockets are about to start and the directory
+			# they live in does not exist yet.
+			systemd-tmpfiles --create /usr/lib/tmpfiles.d/farrier.conf >/dev/null 2>&1 || true
+
+			# The three helper sockets are the agent's only route to root. They are enabled and started
+			# here rather than left to the agent, because a host whose sockets never came up is one that
+			# reports perfectly and silently cannot be patched — and the symptom would appear weeks
+			# later, as a job that failed.
+			for socket in farrier-apply-updates farrier-restart-unit farrier-reboot-host; do
+				systemctl enable "$socket.socket" >/dev/null 2>&1 || true
+				systemctl restart "$socket.socket" >/dev/null 2>&1 || true
+			done
+
 			systemctl enable farrier-agent.service >/dev/null 2>&1 || true
 			if systemctl is-active --quiet farrier-agent.service; then
 				systemctl try-restart farrier-agent.service >/dev/null 2>&1 || true

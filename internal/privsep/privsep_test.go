@@ -364,3 +364,46 @@ func TestInvokeTimeoutsMatchWhatTheOperationsActuallyCost(t *testing.T) {
 		}
 	}
 }
+
+// TestGuaranteeTheProbeIntentIsOnNoRouteAndInNoCatalogue asserts the probe cannot do anything.
+//
+// The reachability probe works by being refused. If the name it sends were ever routed, or ever became
+// a catalogue member, a diagnostic somebody runs to check a host would start performing an operation on
+// it — which is a much worse failure than the one the diagnostic exists to find.
+func TestGuaranteeTheProbeIntentIsOnNoRouteAndInNoCatalogue(t *testing.T) {
+	if intent.Has(ProbeIntent) {
+		t.Errorf("%q is in the intent catalogue; the probe must name something nothing serves", ProbeIntent)
+	}
+	if path, ok := Endpoint(ProbeIntent); ok {
+		t.Errorf("%q is routed to %q; the probe must reach no helper's executor", ProbeIntent, path)
+	}
+}
+
+// TestProbeReachesAHelperAndIsRefused is what `farrier-agent doctor` reports on.
+//
+// Success is a refusal. A helper that answered zero to a name nothing serves would be one acting on
+// requests it does not recognise, so the probe asserts the refusal rather than merely the reply.
+func TestProbeReachesAHelperAndIsRefused(t *testing.T) {
+	path := listenerFor(t, func(_ context.Context, req Request) Response {
+		if _, routed := Endpoint(req.Intent); routed {
+			t.Errorf("the probe sent %q, which is routed", req.Intent)
+		}
+		return Response{ExitCode: 2, Error: "restart-unit does not perform " + string(req.Intent)}
+	})
+
+	resp, err := clientFor(path).Probe(context.Background(), path)
+	if err != nil {
+		t.Fatalf("probing: %v", err)
+	}
+	if resp.ExitCode != 2 {
+		t.Errorf("the probe got exit %d, expected the usage refusal", resp.ExitCode)
+	}
+}
+
+// TestProbeReportsAnAbsentSocket asserts an unreachable helper is distinguishable from a refused one.
+func TestProbeReportsAnAbsentSocket(t *testing.T) {
+	client := clientFor(filepath.Join(t.TempDir(), "absent.sock"))
+	if _, err := client.Probe(context.Background(), "unused"); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("probing a missing socket returned %v, want ErrUnreachable", err)
+	}
+}
