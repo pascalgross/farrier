@@ -1,0 +1,19 @@
+# Findings gitleaks has already reported and a human has already judged.
+#
+# Each line is an exact fingerprint — commit, file, rule, line. It exempts that one occurrence and
+# nothing else: the same file at a different line, or the same string in a later commit, has a different
+# fingerprint and is reported again. That precision is why this file is the right mechanism and a config
+# allowlist was not. An allowlist keyed on the path would have exempted `_test.go` entirely, because
+# gitleaks ORs its path and regex conditions rather than ANDing them — so a real credential pasted into
+# a test file would have gone unreported. I checked, by pasting one.
+#
+# Both entries below are the test harness's bearer tokens, written as string literals in commits that
+# are already published. The current tree no longer contains them: harnessCredential() builds them
+# instead, so nothing new can add a literal here. These two lines exist only because history cannot be
+# edited without rewriting every commit after them, which is not a trade worth making for a fixture.
+#
+# Before adding a line here: the question is not "is this finding annoying" but "has somebody looked at
+# this exact occurrence and confirmed it is not a credential". If the answer is no, it does not go in.
+
+403be9a144a849562b0a77bc72c56f448b945aea:internal/server/server_test.go:generic-api-key:95
+7c2f084e7763670100f72ea16f5ecb1fbffbc1e1:internal/server/server_test.go:generic-api-key:71

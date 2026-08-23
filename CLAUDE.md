@@ -38,12 +38,23 @@ One test, one package:
 go test ./internal/agent/ -run TestCredentialPromotesTheNewPairInOneStep -v
 ```
 
-The store tests **skip silently** without a database, which hides real failures. Give them one:
+The store tests **skip silently** without a database, which hides real failures. Give them one — and
+give them an *ordinary* role, not a superuser:
 
 ```bash
-FARRIER_TEST_DATABASE_URL='postgres://farrier_test:farrier_test@127.0.0.1:5432/farrier_test?sslmode=disable' \
+sudo -u postgres psql -c "CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';" \
+                     -c "CREATE DATABASE farrier_app OWNER farrier_app;"
+
+FARRIER_TEST_DATABASE_URL='postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable' \
   go test ./internal/store/ -count=1
 ```
+
+A superuser, or a role with `BYPASSRLS`, is exempt from every row-level security policy in the schema —
+so the tenancy tests would run against a connection that cannot observe the boundary they exist to
+prove. `TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate` fails rather than skipping in that state,
+deliberately: a guarantee test that quietly opted out would be worse than none. Note also that the
+bootstrap superuser of a cluster cannot drop its own `SUPERUSER` attribute, so demoting it is not a way
+out — the tests need a role of their own.
 
 `golangci-lint` is pinned in the Makefile (`GOLANGCI_VERSION`) and CI installs that exact version via
 `make golangci-install`. A different local version reports different findings; if CI disagrees with

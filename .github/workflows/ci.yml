@@ -61,7 +61,7 @@ jobs:
           --health-retries 10
 
     env:
-      FARRIER_TEST_DATABASE_URL: postgres://farrier_test:farrier_test@127.0.0.1:5432/farrier_test?sslmode=disable
+      FARRIER_TEST_DATABASE_URL: postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4
@@ -70,21 +70,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Make the test role subject to row-level security
-        # The postgres image creates POSTGRES_USER as a superuser, and a superuser is exempt from every
-        # row-level security policy in the schema — with no symptom. Tenant isolation is those policies,
-        # so without this the tenancy tests would run against a connection that cannot observe the thing
-        # they exist to observe. TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate fails rather than
-        # skipping in that state, which is how this was found.
+      - name: Create a database role that row-level security applies to
+        # The postgres image's POSTGRES_USER is the cluster's bootstrap superuser, and a superuser is
+        # exempt from every row-level security policy in the schema — with no symptom. Tenant isolation
+        # *is* those policies, so tests run as that role cannot observe the thing they exist to observe;
+        # TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate fails rather than skipping in that
+        # state, which is how this was found.
         #
-        # The role demotes itself, which it can do while it is still a superuser and not afterwards. It
-        # keeps ownership of the database, so it can still migrate and truncate.
+        # The bootstrap user cannot drop its own SUPERUSER attribute — PostgreSQL refuses, and that is
+        # not a permissions accident but a rule about the bootstrap role. So the tests get an ordinary
+        # role of their own, owning its own database. That is also exactly what docs/INSTALL.md tells an
+        # operator to do, which means CI now runs against the documented production arrangement rather
+        # than a more privileged one.
         env:
           PGPASSWORD: farrier_test
         run: |
-          psql -h 127.0.0.1 -U farrier_test -d farrier_test \
-            -c 'ALTER ROLE farrier_test NOSUPERUSER NOBYPASSRLS;'
-          psql -h 127.0.0.1 -U farrier_test -d farrier_test -tAc \
+          psql -h 127.0.0.1 -U farrier_test -d farrier_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';
+          CREATE DATABASE farrier_app OWNER farrier_app;
+          SQL
+          PGPASSWORD=farrier_app psql -h 127.0.0.1 -U farrier_app -d farrier_app -tAc \
             'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
             | grep -qx f
 
