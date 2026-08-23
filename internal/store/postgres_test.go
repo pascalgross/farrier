@@ -516,11 +516,12 @@ func truncate(t *testing.T, pg *Postgres) {
 	}
 }
 
-// enqueue inserts a job directly, standing in for the scheduler phase 0 does not have.
+// enqueue inserts a job directly, standing in for the scheduler the control plane does not have.
 //
-// It goes through SQL rather than a Store method because there is no Store method: the control plane
-// issues no jobs yet. The delivery path is real and needs exercising before there is anything to
-// deliver, which is the same reason the root helpers enforce policy with no executor behind them.
+// It goes through SQL rather than a Store method because there is no Store method: nothing on the
+// server side creates a job, for a privileged intent or a read-only one. The delivery path is real and
+// needs exercising before there is anything to deliver — the same reason the agent's acceptance
+// sequence was written and tested a phase before any intent it gated had an executor.
 func enqueue(t *testing.T, pg *Postgres, hostID string, job protocol.Job) {
 	t.Helper()
 	params, err := json.Marshal(job.Params)

@@ -316,16 +316,17 @@ func resolveStringExpr(e ast.Expr, consts map[string]string) (string, bool) {
 	}
 }
 
-// TestGuaranteeRootHelpersTakeNoPolicyPath is local policy sovereignty at the command line.
+// TestGuaranteeRootHelpersTakeNoPolicyPath is local policy sovereignty at the helper's own inputs.
 //
-// The sudoers entry pins the program and not its arguments, and the agent can write /var/lib/farrier.
-// A helper that accepted --policy would therefore be a helper a compromised agent could point at a file
-// it had just written itself, and local policy would end there: the enforcement would still run, as
-// root, against exactly the policy the attacker chose.
+// The agent can write /var/lib/farrier. A helper that accepted --policy would therefore be a helper a
+// compromised agent could point at a file it had just written itself, and local policy would end there:
+// the enforcement would still run, as root, against exactly the policy the attacker chose. The same
+// applies to the socket the agent reaches the helper on, which is why privsep.Request carries no field
+// a path could occupy — TestGuaranteeARequestCannotNameAProgram asserts that half.
 //
 // The check is on the source rather than on behaviour because the failure is a flag somebody adds back
 // for testing and forgets to remove. internal/helper.Authorise still takes a path, which is what tests
-// and `farrier-agent policy check` use; nothing reachable through sudo does.
+// and `farrier-agent policy check` use; nothing reachable from the agent does.
 func TestGuaranteeRootHelpersTakeNoPolicyPath(t *testing.T) {
 	root := repoRoot(t)
 	fset := token.NewFileSet()

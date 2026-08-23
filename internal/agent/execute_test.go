@@ -137,12 +137,12 @@ func readJob(id, intent string) protocol.Job {
 	}
 }
 
-// TestRunExecutesReadIntentsAndProducesAResult is the agent's job path end to end.
+// TestRunExecutesReadIntentsAndProducesAResult is the agent's job path for work it does itself.
 //
-// Read intents are the only ones with an executor in phase 0, so this is the whole of what an agent can
-// currently be asked to do. It asserts the result carries the collected data rather than merely
-// reporting success, because a job that succeeded and returned nothing is indistinguishable from one
-// that worked, right up until somebody looks at the dashboard.
+// Read intents are the only ones the agent performs in its own process; everything privileged crosses
+// the socket to a root helper and is covered further down this file. It asserts the result carries the
+// collected data rather than merely reporting success, because a job that succeeded and returned
+// nothing is indistinguishable from one that worked, right up until somebody looks at the dashboard.
 func TestRunExecutesReadIntentsAndProducesAResult(t *testing.T) {
 	plat := newStubPlatform()
 	runner := testRunner(t, plat, nil)

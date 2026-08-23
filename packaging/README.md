@@ -184,9 +184,13 @@ that.
 make deb VERSION=0.1.0
 dpkg-deb --info    dist/packages/farrier-agent_0.1.0_amd64.deb
 dpkg-deb --contents dist/packages/farrier-agent_0.1.0_amd64.deb
-make units
 
 sudo dpkg -i dist/packages/farrier-agent_0.1.0_amd64.deb
+
+# After the install, not before: systemd-analyze checks that each unit's ExecStart exists, so on a
+# machine where the package is not yet unpacked `make units` fails on four missing binaries rather
+# than on anything about the units. CI installs /bin/true stubs at those paths for the same reason.
+make units
 
 # The privilege boundary, from the agent's own account, changing nothing.
 sudo -u farrier farrier-agent doctor

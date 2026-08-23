@@ -179,6 +179,12 @@ func CombineRebootSignals(markerPresent bool, markerReasons []string, nr Needres
 				"kernel "+nr.ExpectedKernel+" installed, "+nr.CurrentKernel+" running")
 		}
 	}
+	// Conclusive means at least one mechanism actually spoke. A missing marker file and an absent
+	// needrestart produce Required=false, and that false is an absence of evidence rather than
+	// evidence of absence: nothing writes /var/run/reboot-required unless update-notifier-common is
+	// installed, so its absence says nothing on its own.
+	report.Conclusive = markerPresent || nr.Available
+
 	switch {
 	case len(sources) > 0:
 		report.Source = strings.Join(sources, ", ")

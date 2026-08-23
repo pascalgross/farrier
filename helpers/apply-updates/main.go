@@ -232,12 +232,26 @@ func rebootIfRequired(ctx context.Context, jobID string) (string, error) {
 	}
 	status, err := plat.RebootRequired(ctx)
 	if err != nil {
-		// Degraded rather than fatal: RebootRequired returns a usable report alongside its error, and
-		// the marker file is authoritative on Ubuntu even when needrestart is missing.
+		// Degraded rather than fatal on its own: RebootRequired returns a usable report alongside its
+		// error. Whether that report can be acted on is the next check's business, not this one's.
 		fmt.Fprintf(os.Stderr, "farrier-helper: reading the reboot signal: %v\n", err)
 	}
+
+	// "No reboot is needed" and "nothing here can tell me whether one is needed" both arrive as
+	// Required=false, and the second is the common case on a Debian host: the marker file is an Ubuntu
+	// update-notifier convention, needrestart is a Recommends rather than a Depends, and an install
+	// with --no-install-recommends has neither. Reporting that host as finished after a kernel upgrade
+	// would leave it running the replaced kernel with a green job beside it — which is precisely the
+	// silent wrong answer the whole platform seam exists to prevent, and it must not be reintroduced
+	// here at the end of it.
+	if !status.Conclusive {
+		return "", fmt.Errorf("apply-updates: the updates were applied, but nothing on this host can "+
+			"say whether they left it needing a reboot (%s), and the job asked for one if they did. "+
+			"Reporting that as finished would be a guess. Install needrestart: on Debian it is the "+
+			"only reliable signal", status.Source)
+	}
 	if !status.Required {
-		return "no reboot was required", nil
+		return "no reboot was required (" + status.Source + ")", nil
 	}
 
 	p, loadErr := policy.Load()

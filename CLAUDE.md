@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Farrier is fleet management for Ubuntu and Debian servers whose distinguishing property is the
 **absence** of a remote execution channel. Everything below follows from that. Before changing anything
-under `internal/intent`, `internal/run`, `internal/policy`, `helpers/`, `internal/signing` or
-`packaging/sudoers`, read [`docs/SECURITY.md`](docs/SECURITY.md) — it is the specification, not a
-description of one.
+under `internal/intent`, `internal/run`, `internal/policy`, `internal/privsep`, `helpers/`,
+`internal/signing` or the socket units in `packaging/`, read [`docs/SECURITY.md`](docs/SECURITY.md) —
+it is the specification, not a description of one.
 
 The guarantee, stated in `README.md` and `docs/SECURITY.md` §1, is enforced by tests rather than by
 convention:
@@ -69,7 +69,10 @@ conversation, not a commit.
   `ssh.authorizedKeys.add`, `agent.updateFromURL`.
 - **Local policy is enforced in the root helper, not in the agent.** `effective = min(central request,
   local policy)` — never the max. The helpers take no `--policy` flag; the path is a package constant,
-  because a helper that reads a caller-supplied policy file is a helper that trusts its caller.
+  because a helper that reads a caller-supplied policy file is a helper that trusts its caller. The
+  routing table in `internal/privsep` is the successor to the sudoers entry: it is the complete
+  statement of which intent reaches root through which helper, and the guarantee suite checks it
+  against the catalogue.
 - **The trust anchor is `/etc/farrier/trusted-signers`, not the package**, and it ships empty. A fresh
   agent executes nothing destructive until an administrator puts a key there.
 - **Clock skew is a security boundary.** Signature validity windows are checked against the **local**
@@ -93,8 +96,11 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   Authentication is a certificate-fingerprint lookup on every request, which is also the whole
   revocation mechanism — no CRL, no OCSP.
 - `internal/intent` + `internal/run` — what may happen, and the only place it happens.
-- `internal/policy` + `internal/helper` + `helpers/` — three root helpers behind a pinned sudoers
-  entry. Each re-reads the local policy itself.
+- `internal/policy` + `internal/helper` + `helpers/` + `internal/privsep` — three root helpers, each
+  reached over one systemd-activated unix socket in `/run/farrier` and each re-reading the local policy
+  itself. There is no sudo and nothing setuid: `NoNewPrivileges` makes `execve` drop the setuid bit, and
+  systemd implies that setting from eight directives the agent's unit sets, so `sudo` could not have
+  worked without dismantling the sandbox.
 - `internal/signing` + `internal/canonical` — offline signature verification over canonical JSON
   (sorted keys, no HTML escaping, integers only). Every authorisation decision is downstream of these.
 - `internal/collect` — facts, with a `Platform` seam for the four distribution differences that
