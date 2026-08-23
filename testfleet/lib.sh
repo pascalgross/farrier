@@ -57,10 +57,18 @@ instance_name() {
 	printf '%s-%s' "$FARRIER_PREFIX" "${release//[\/.]/-}"
 }
 
-# lxd_image renders the image alias for a release.
+# lxd_image renders the image alias for a release, choosing the remote by distribution.
+#
+# Ubuntu comes from the `ubuntu:` remote and everything else from `images:`. They used to be the same
+# remote; the community `images:` server stopped publishing Ubuntu, so `images:ubuntu/24.04` is now not
+# a stale image but no image at all — which is a launch failure that reads like a broken harness rather
+# than like a changed upstream.
 lxd_image() {
 	local release=$1
-	printf 'images:%s' "$release"
+	case "$release" in
+	ubuntu/*) printf 'ubuntu:%s' "${release#ubuntu/}" ;;
+	*) printf 'images:%s' "$release" ;;
+	esac
 }
 
 # run executes a command inside an instance and returns its exit status.

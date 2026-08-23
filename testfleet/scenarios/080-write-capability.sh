@@ -128,8 +128,14 @@ count=$(run_sh "$INSTANCE" 'ls -1 /usr/libexec/farrier | wc -l')
 [ "$count" -eq 3 ] || fail "there are $count root helpers, expected exactly 3"
 pass "there are exactly three root helpers"
 
+# And none of them accepts a program to run.
+#
+# The "Usage of ..." header is dropped before matching. It carries the helper's own path, and
+# that path contains /usr/libexec — so searching the whole output finds `exec` in the install
+# directory and reports every helper as advertising an option it does not have. The property
+# being asserted belongs to the options, so only the option lines are searched.
 for helper in apply-updates restart-unit reboot-host; do
-	run_sh "$INSTANCE" "! /usr/libexec/farrier/$helper --help 2>&1 | grep -qiE 'command|script|exec|shell'" \
+	run_sh "$INSTANCE" "! /usr/libexec/farrier/$helper --help 2>&1 | grep -v '^Usage of ' | grep -qiE 'command|script|exec|shell'" \
 		|| fail "$helper advertises an option that names a program to run"
 done
 pass "no helper accepts a command, a script or a path to execute"
