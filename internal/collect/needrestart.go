@@ -56,8 +56,20 @@ type NeedrestartReport struct {
 	// Services are the NEEDRESTART-SVC units that still hold replaced libraries.
 	Services []string
 
-	// Available reports whether needrestart could be run at all.
+	// Available reports whether needrestart is installed on this host.
+	//
+	// It says the binary is there, not that it answered — that is Failed's job. The two are separate
+	// facts because they call for different responses: an absent needrestart is a package to install,
+	// a failing one is a host to look at.
 	Available bool
+
+	// Failed reports that needrestart ran and produced no usable answer.
+	//
+	// It exists so that a needrestart which errored — a half-configured perl right after a
+	// dist-upgrade, a timeout on a busy host — is never mistaken for one that said "no reboot
+	// needed". CombineRebootSignals treats a failed run as inconclusive: the one case where the
+	// mechanism genuinely could not tell must not be the one reported as a conclusive no.
+	Failed bool
 
 	// ScanComplete reports whether the scan could see every process.
 	//
@@ -84,13 +96,28 @@ func RunNeedrestart(ctx context.Context) (NeedrestartReport, error) {
 	// helper program's default.
 	res, err := run.Command(ctx, run.Needrestart, "-b", "-r", "l")
 	if res == nil {
-		return NeedrestartReport{}, err
+		// The binary exists — the Stat above proved it — so this is a run that failed, not a package
+		// that is missing, and the report must say which: "install needrestart" is the wrong advice
+		// for a host where it is installed and broken.
+		return NeedrestartReport{Available: true, Failed: true}, err
 	}
-	report := ParseNeedrestart(res.Stdout)
+	return finishNeedrestart(res.Stdout, err)
+}
+
+// finishNeedrestart decides what a finished needrestart invocation actually said.
+//
+// It is separate from RunNeedrestart so the one security-relevant judgement here — when does a non-zero
+// exit still count as an answer — can be tested without a needrestart binary on the test machine.
+// A run that errored but still printed a kernel status or a service list answered the question; a run
+// that errored with nothing parsable did not, and is marked Failed so that CombineRebootSignals reports
+// "cannot tell" rather than a conclusive "no reboot needed".
+func finishNeedrestart(stdout []byte, runErr error) (NeedrestartReport, error) {
+	report := ParseNeedrestart(stdout)
 	report.Available = true
 	report.ScanComplete = os.Geteuid() == 0
-	if err != nil && len(report.Services) == 0 && report.KernelStatus == KernelStatusUnknown {
-		return report, err
+	if runErr != nil && len(report.Services) == 0 && report.KernelStatus == KernelStatusUnknown {
+		report.Failed = true
+		return report, runErr
 	}
 	return report, nil
 }
@@ -182,12 +209,16 @@ func CombineRebootSignals(markerPresent bool, markerReasons []string, nr Needres
 	// Conclusive means at least one mechanism actually spoke. A missing marker file and an absent
 	// needrestart produce Required=false, and that false is an absence of evidence rather than
 	// evidence of absence: nothing writes /var/run/reboot-required unless update-notifier-common is
-	// installed, so its absence says nothing on its own.
-	report.Conclusive = markerPresent || nr.Available
+	// installed, so its absence says nothing on its own. A needrestart that ran and failed spoke no
+	// more than an absent one did — "installed" is not "answered" — so a failed run only counts when
+	// the marker answered for it.
+	report.Conclusive = markerPresent || (nr.Available && !nr.Failed)
 
 	switch {
 	case len(sources) > 0:
 		report.Source = strings.Join(sources, ", ")
+	case nr.Failed:
+		report.Source = "needrestart failed"
 	case nr.Available:
 		report.Source = "needrestart reports no reboot needed"
 	default:
