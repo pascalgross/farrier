@@ -156,6 +156,15 @@ type Certificate struct {
 	// HostID is the host this certificate identifies.
 	HostID string
 
+	// TenantID is the tenant that host belongs to.
+	//
+	// It is carried here because this lookup is where an agent request finds out which tenant it is:
+	// the certificate is presented before anything else is known, and everything the request goes on to
+	// touch is scoped by the answer. Storing it on the row rather than joining to hosts also means the
+	// composite foreign key can refuse a certificate that claims one tenant and points at another's
+	// host, which is the exact shape of a successful cross-tenant write.
+	TenantID TenantID
+
 	// Serial is the certificate serial, hex, for correlating with logs.
 	Serial string
 
@@ -222,13 +231,21 @@ type NewJob struct {
 	// asked for this reboot" afterwards, which is a different and still necessary thing.
 	CreatedBy string
 
-	// ApprovalRequired reports whether a second operator must agree before a host may claim it.
+	// ApprovalRequired reports whether somebody must release this job before a host may claim it.
 	//
-	// docs/SECURITY.md §3 requires it for the destructive tier. It is a field rather than something
-	// derived from the class on read, so that the row records the rule as it stood when the job was
-	// created: a later build that classified an intent differently must not change what an
-	// already-queued job needed.
+	// It comes from the tenant's approval mode and the intent's class, and it is a field rather than
+	// something derived on read so that the row records the rule as it stood when the job was created.
+	// Two different changes would otherwise rewrite history: a later build that classified an intent
+	// differently, and — since the rule became a tenant setting — an operator who relaxed the setting
+	// after queueing the job.
 	ApprovalRequired bool
+
+	// ApprovalDistinctOperator reports whether the release must come from somebody other than CreatedBy.
+	//
+	// Separate from ApprovalRequired because they are separate questions, and a tenant answers them
+	// separately: "somebody must deliberately release this" is worth having in an installation with one
+	// operator, where "somebody else must" would be a requirement nobody could meet.
+	ApprovalDistinctOperator bool
 }
 
 // JobRecord is one job as the control plane holds it, with its result if one has arrived.
@@ -245,13 +262,19 @@ type JobRecord struct {
 	// CreatedBy is the operator who asked for it.
 	CreatedBy string
 
-	// ApprovalRequired reports whether a second operator had to agree.
+	// ApprovalRequired reports whether somebody had to release it.
 	ApprovalRequired bool
 
-	// ApprovedAt is when the second operator agreed, zero if they have not.
+	// ApprovalDistinctOperator reports whether that somebody had to be other than its creator.
+	//
+	// Carried out of the store so that a client can say which rule this job was created under, rather
+	// than reporting the tenant's current setting beside a job the setting no longer governs.
+	ApprovalDistinctOperator bool
+
+	// ApprovedAt is when it was released, zero if it has not been.
 	ApprovedAt time.Time
 
-	// ApprovedBy is who agreed, empty if nobody has.
+	// ApprovedBy is who released it, empty if nobody has.
 	ApprovedBy string
 
 	// ClaimedAt is when a host took it, zero if none has.
@@ -307,14 +330,188 @@ const DefaultJobLimit = 100
 // question behind the request usually is.
 const MaxJobLimit = 500
 
+// TenantID identifies one tenant: one isolated fleet, with its own hosts, its own operators and its
+// own settings.
+//
+// It is a defined type rather than a string so that a host id, a job id or an operator subject cannot
+// be passed where a tenant belongs. Every one of those is also a bare identifier, and the compiler is
+// the only reader that will reliably notice.
+type TenantID string
+
+// ApprovalMode is how one tenant releases a destructive job.
+//
+// It is a property of the tenant rather than of the installation because a control plane that serves a
+// one-person shop and a regulated customer at the same time cannot answer the question once for both.
+// See docs/SECURITY.md §3.
+type ApprovalMode string
+
+// The three ways a tenant can answer "who has to agree before a host may claim this".
+const (
+	// ApprovalNone releases a destructive job as soon as it is created.
+	//
+	// The offline signature is then the whole of the control-plane-side authorisation, which is also
+	// the only part the guarantee in docs/SECURITY.md §1 rests on: the key is one this control plane
+	// does not hold, and the host verifies it against its own trust anchor. This is the default.
+	ApprovalNone ApprovalMode = "none"
+
+	// ApprovalSelf requires somebody to release the job, and lets that be whoever created it.
+	//
+	// It buys the deliberate second act and an audit row naming who took it, in an installation with
+	// one operator where requiring a second person would mean requiring the impossible.
+	ApprovalSelf ApprovalMode = "self"
+
+	// ApprovalSecondPerson requires somebody other than the creator to release the job.
+	ApprovalSecondPerson ApprovalMode = "second_person"
+)
+
+// Valid reports whether a mode is one of the three.
+//
+// Checked on the way in rather than trusted, because the column has the same CHECK constraint and a
+// value that fails it would surface as a database error at the moment somebody was configuring their
+// tenant.
+func (m ApprovalMode) Valid() bool {
+	switch m {
+	case ApprovalNone, ApprovalSelf, ApprovalSecondPerson:
+		return true
+	default:
+		return false
+	}
+}
+
+// RequiresApproval reports whether a destructive job under this mode waits for a release.
+func (m ApprovalMode) RequiresApproval() bool { return m == ApprovalSelf || m == ApprovalSecondPerson }
+
+// RequiresDistinctOperator reports whether the release must come from somebody other than the creator.
+func (m ApprovalMode) RequiresDistinctOperator() bool { return m == ApprovalSecondPerson }
+
+// Tenant is one isolated fleet.
+type Tenant struct {
+	// ID is the identifier every scoped row carries.
+	ID TenantID
+
+	// Slug is a short stable handle for URLs, logs and support tickets.
+	//
+	// Separate from DisplayName because a customer renaming themselves must not change the identifier
+	// everything else refers to.
+	Slug string
+
+	// DisplayName is what the tenant is called in the interface.
+	DisplayName string
+
+	// CreatedAt is when the tenant was created.
+	CreatedAt time.Time
+
+	// ApprovalMode is how this tenant releases a destructive job.
+	ApprovalMode ApprovalMode
+
+	// WebhookURL is where this tenant's events are posted, empty for nowhere.
+	//
+	// It belongs to the tenant rather than to the process because the alternative was not a missing
+	// feature but a leak: one list of sinks for the whole installation delivers one customer's
+	// hostnames and operator names to another customer's endpoint.
+	WebhookURL string
+}
+
 // Store is the control plane's persistence.
 //
 // Every method takes a context because every one of them can be waiting on a database that has stopped
 // answering, and a control plane that cannot shed a stuck query is a control plane a single slow host
 // can take down.
+//
+// What is on *this* interface rather than on Scoped is the complete list of operations that are not
+// scoped to a tenant, and it is short on purpose. Two of them are the lookups that *discover* which
+// tenant a caller belongs to, so they cannot be behind a gate that requires already knowing the answer;
+// the rest administer tenants themselves, or belong to no tenant at all. Everything that touches a
+// tenant's data is on Scoped and is unreachable without naming a tenant — see In.
 type Store interface {
 	// Migrate brings the schema up to date. It is safe to call on every start.
 	Migrate(ctx context.Context) error
+
+	// In returns everything an operator or an agent can reach, scoped to one tenant.
+	//
+	// This is the whole isolation design in one method. A tenant-scoped operation is not a method you
+	// remember to pass a tenant to; it is a method you cannot reach without one, and in PostgreSQL the
+	// returned handle runs every statement inside a transaction that has set the tenant, so
+	// row-level security refuses a row from anywhere else even if the statement's own WHERE clause
+	// forgot to.
+	In(tenant TenantID) Scoped
+
+	// LookupCertificate returns a certificate by fingerprint, or ErrNotFound.
+	//
+	// This is called on every authenticated agent request, it is the revocation check, and it is how an
+	// agent request finds out which tenant it belongs to — which is why it is here and not on Scoped.
+	// The fingerprint is the SHA-256 of a certificate this CA issued, so naming one is not a way of
+	// discovering another.
+	LookupCertificate(ctx context.Context, fingerprint string) (Certificate, error)
+
+	// TenantForEnrollmentToken returns the tenant a token belongs to, or ErrTokenUnusable.
+	//
+	// Enrolment needs the tenant before it has anything else: the machine-id check is per tenant, and a
+	// token is how a new machine joins one. It deliberately returns nothing but the tenant, and it does
+	// not consume the token — a host retrying an enrolment it has already completed must not burn a
+	// second token in the course of being told no.
+	TenantForEnrollmentToken(ctx context.Context, hash string) (TenantID, error)
+
+	// CreateTenant records a new tenant.
+	CreateTenant(ctx context.Context, t Tenant) error
+
+	// GetTenant returns one tenant, or ErrNotFound.
+	GetTenant(ctx context.Context, id TenantID) (Tenant, error)
+
+	// ListTenants returns every tenant, oldest first.
+	ListTenants(ctx context.Context) ([]Tenant, error)
+
+	// UpdateTenant applies a tenant's display name, approval mode and webhook.
+	//
+	// The slug is not among them. It is what logs, support tickets and any external system refer to a
+	// tenant by, so a rename would leave every one of those pointing at a name that no longer answers.
+	//
+	// Changing the approval mode affects jobs created afterwards and nothing already queued. That is
+	// deliberate and it is the same rule migration 0002 wrote down for approval_required: a job records
+	// what it required, so relaxing the setting cannot release work that was queued under a stricter
+	// one.
+	UpdateTenant(ctx context.Context, t Tenant) error
+
+	// DeleteTenant removes a tenant and everything belonging to it.
+	DeleteTenant(ctx context.Context, id TenantID) error
+
+	// Subscribe registers interest in work for a host and returns a channel closed when some arrives.
+	//
+	// It is deliberately separate from claiming, and the caller must subscribe *before* it looks at the
+	// queue. Doing it the other way round leaves a gap: a job inserted between the empty read and the
+	// subscription fires its notification with nobody listening, and the agent then holds a long-poll
+	// for its full duration over work that was already waiting. The gap is small and the consequence is
+	// only latency, which is exactly why it would never be diagnosed.
+	//
+	// This is what makes the long-poll a long-poll rather than a sleep. In PostgreSQL it is LISTEN on a
+	// channel the job insert NOTIFYs, which is why Farrier needs no Redis. The channel may be closed
+	// spuriously — the caller re-checks the queue — but a wake-up must not be missed indefinitely.
+	//
+	// It is not tenant-scoped, and that is a decision rather than an omission. A wake-up carries no
+	// data — a waiter is either closed or it is not — and it is keyed on a host id, which is 128 bits
+	// of randomness generated here. Scoping it would mean one LISTEN connection per tenant, which is
+	// the resource problem the single fan-out connection exists to avoid, and with hosting the tenant
+	// count is the number that grows. What somebody who guessed a host id could learn is that work
+	// arrived for it; the work itself is behind the claim, which is scoped.
+	//
+	// The returned function releases the subscription and must always be called, or a fleet whose
+	// agents reconnect every twenty-five seconds accumulates one dead waiter per poll.
+	Subscribe(hostID string) (<-chan struct{}, func())
+
+	// Close releases the store's resources.
+	Close() error
+}
+
+// Scoped is every operation that touches one tenant's data.
+//
+// It is a separate interface rather than a tenant argument on twenty-four methods because the two fail
+// differently. An argument is something a caller can pass wrongly and a reviewer has to notice; a
+// handle is something a caller cannot obtain without saying whose data they are asking for. The
+// PostgreSQL implementation then sets that tenant on the transaction, so the database refuses rows
+// from anywhere else — the predicate in each statement is the optimisation, and the policy is the rule.
+type Scoped interface {
+	// Tenant reports whose data this handle reaches, for logs and for assertions.
+	Tenant() TenantID
 
 	// CreateEnrollmentToken records a new token by its hash.
 	CreateEnrollmentToken(ctx context.Context, t EnrollmentToken) error
@@ -325,7 +522,7 @@ type Store interface {
 	// both enrol, and checking-then-updating in the handler would let them.
 	ConsumeEnrollmentToken(ctx context.Context, hash, hostID string, now time.Time) (EnrollmentToken, error)
 
-	// ListEnrollmentTokens returns tokens for the UI, newest first.
+	// ListEnrollmentTokens returns this tenant's tokens for the UI, newest first.
 	ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken, error)
 
 	// CreateEnrolledHost records a newly enrolled host and its first certificate together.
@@ -343,9 +540,12 @@ type Store interface {
 	//
 	// Revoked hosts are excluded, which is what makes a revoked machine able to enrol again. Its old row
 	// stays for the audit trail; what it loses is its claim on the machine id.
+	//
+	// The claim is per tenant. Across the installation it would be an oracle: enrolling a machine that
+	// belongs to somebody else would tell you that it belongs to somebody else.
 	GetHostByMachineID(ctx context.Context, hash string) (Host, error)
 
-	// ListHosts returns every host, ordered by hostname.
+	// ListHosts returns every host in this tenant, ordered by hostname.
 	ListHosts(ctx context.Context) ([]Host, error)
 
 	// RecordHeartbeat applies a heartbeat's fields to a host.
@@ -363,11 +563,6 @@ type Store interface {
 	// AddCertificate records an issued certificate by fingerprint.
 	AddCertificate(ctx context.Context, c Certificate) error
 
-	// LookupCertificate returns a certificate by fingerprint, or ErrNotFound.
-	//
-	// This is called on every authenticated request. It is the revocation check.
-	LookupCertificate(ctx context.Context, fingerprint string) (Certificate, error)
-
 	// RevokeHost marks a host and all its certificates as revoked, taking effect on the next request.
 	RevokeHost(ctx context.Context, hostID string) error
 
@@ -381,21 +576,23 @@ type Store interface {
 
 	// CreateJob records a job for a host and wakes any long-poll waiting for it.
 	//
-	// It returns ErrConflict when a signed job's nonce has already been queued for that host. The host
-	// refuses a replayed nonce itself and that is the check the guarantee rests on; this one is earlier
-	// and cheaper, because a job queued twice is delivered twice, refused on the host, and reported as
-	// a failure nobody can explain.
+	// It returns ErrConflict when the job id is already taken in this tenant, or when a signed job's
+	// nonce has already been queued for that host. The host refuses a replayed nonce itself and that is
+	// the check the guarantee rests on; this one is earlier and cheaper, because a job queued twice is
+	// delivered twice, refused on the host, and reported as a failure nobody can explain.
 	CreateJob(ctx context.Context, j NewJob) error
 
-	// ApproveJob records a second operator's agreement, making the job claimable.
+	// ApproveJob records an operator's release of a job, making it claimable.
 	//
-	// The refusal to self-approve is enforced here rather than only in the handler, because it must
+	// Whether the approver may be the job's creator is recorded on the job row at creation, from the
+	// tenant's approval mode, and is enforced *here* rather than only in the handler — because it must
 	// hold against two requests arriving at once. A read-then-write in the caller would let the same
 	// operator approve their own job by racing it against itself, which is the one way this check could
 	// be defeated by someone who already has the credential.
 	//
 	// It returns ErrNotFound for a job that does not exist, and ErrConflict for one that needs no
-	// approval, already has it, or would be approved by whoever created it.
+	// approval, already has it, or would be released by whoever created it under a mode that forbids
+	// that.
 	ApproveJob(ctx context.Context, jobID, approver string, now time.Time) error
 
 	// ListJobs returns jobs newest first, with their results.
@@ -410,9 +607,9 @@ type Store interface {
 	// SELECT … FOR UPDATE SKIP LOCKED against a partial index; the interface says nothing about that,
 	// but the guarantee it makes — a job is delivered to one agent, once — is the one callers rely on.
 	//
-	// A job still waiting for its second operator is never returned. That check belongs here rather
-	// than in the handler: the handler is not the only thing that will ever claim, and an approval
-	// requirement enforced by whoever remembers to ask is not a requirement.
+	// A job still waiting to be released is never returned. That check belongs here rather than in the
+	// handler: the handler is not the only thing that will ever claim, and an approval requirement
+	// enforced by whoever remembers to ask is not a requirement.
 	ClaimJobs(ctx context.Context, hostID string, limit int) ([]protocol.Job, error)
 
 	// RecordResult stores a job result idempotently, keyed by job id.
@@ -426,25 +623,6 @@ type Store interface {
 	// another host's job, and because recording is idempotent the forged result would then suppress the
 	// real one when it arrived.
 	RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) error
-
-	// Subscribe registers interest in work for a host and returns a channel closed when some arrives.
-	//
-	// It is deliberately separate from claiming, and the caller must subscribe *before* it looks at the
-	// queue. Doing it the other way round leaves a gap: a job inserted between the empty read and the
-	// subscription fires its notification with nobody listening, and the agent then holds a long-poll
-	// for its full duration over work that was already waiting. The gap is small and the consequence is
-	// only latency, which is exactly why it would never be diagnosed.
-	//
-	// This is what makes the long-poll a long-poll rather than a sleep. In PostgreSQL it is LISTEN on a
-	// channel the job insert NOTIFYs, which is why Farrier needs no Redis. The channel may be closed
-	// spuriously — the caller re-checks the queue — but a wake-up must not be missed indefinitely.
-	//
-	// The returned function releases the subscription and must always be called, or a fleet whose
-	// agents reconnect every twenty-five seconds accumulates one dead waiter per poll.
-	Subscribe(hostID string) (<-chan struct{}, func())
-
-	// Close releases the store's resources.
-	Close() error
 }
 
 // Compile-time proof that both implementations satisfy the interface.
