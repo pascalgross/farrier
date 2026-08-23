@@ -623,6 +623,10 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, who oper
 		// reported rather than inferred from len(jobs) == limit, because a client that has to work that
 		// out for itself is a client that will not.
 		"truncated": len(views) >= effective,
+		// The control plane's clock, for the same reason /api/v1/hosts sends it: ages on this page are
+		// decision inputs — "asked 4h ago" is why a second operator releases or investigates — and a
+		// browser's clock is nobody's authority on anything.
+		"serverTime": time.Now().UTC(),
 	})
 }
 

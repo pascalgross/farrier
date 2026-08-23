@@ -66,6 +66,27 @@ export class JobsList {
    */
   protected readonly awaiting = signal<Job[]>([]);
 
+  /**
+   * Whether the approval queue itself was cut short, so its oldest entries are missing.
+   *
+   * Its own flag rather than a share of `truncated`, because the two truncations mean opposite
+   * things: a bounded history is routine, a bounded approval queue is hiding exactly the jobs that
+   * have waited longest from exactly the person who must see them. It is rendered inside the card as
+   * a warning, not as a footnote.
+   */
+  protected readonly awaitingTruncated = signal(false);
+
+  /**
+   * The last error from fetching the approval queue, rendered where the queue would have been.
+   *
+   * Its own signal rather than a share of `error`, and that is the fix for a real defect: the two
+   * requests raced into one signal, the job list usually answered last, and its success handler wiped
+   * the queue's failure — so the operator saw a full page of history, no card and no error, and
+   * concluded there was nothing to release. A failure to load the queue must appear in the queue's
+   * own place.
+   */
+  protected readonly awaitingError = signal('');
+
   /** Whether the list below was cut short, so there are older jobs it does not show. */
   protected readonly truncated = signal(false);
 
@@ -75,8 +96,21 @@ export class JobsList {
   /** The catalogue, for the form's operation picker. */
   protected readonly intents = signal<CatalogueEntry[]>([]);
 
-  /** The last error from loading the page, empty when it loaded. */
-  protected readonly error = signal('');
+  /** The last error from fetching the job list, cleared when a later fetch succeeds. */
+  private readonly jobsError = signal('');
+
+  /** The last error from loading the hosts and the catalogue, which the form cannot offer without. */
+  private readonly referenceError = signal('');
+
+  /**
+   * What the page-level error card shows.
+   *
+   * Composed from the fetches whose failure means the page is broken, each kept in its own signal so
+   * that one request's success can only ever clear its own failure. The approval queue is deliberately
+   * not in here — its error renders inside its own card, where the missing information would have
+   * been.
+   */
+  protected readonly error = computed(() => this.referenceError() || this.jobsError());
 
   /** The last error from creating or approving, shown beside the form rather than replacing the page. */
   protected readonly actionError = signal('');
@@ -90,7 +124,14 @@ export class JobsList {
   /** Whether a create or approve request is in flight, so the buttons can be disabled. */
   protected readonly busy = signal(false);
 
-  /** The browser's clock, refreshed on each load, for rendering ages. */
+  /**
+   * The control plane's clock, taken from the last jobs response, for rendering ages.
+   *
+   * Never the browser's, for the rule `formatAge` states: ages on this page are decision inputs — the
+   * approval card shows "asked 4h ago" to the second operator deciding whether to release — and a
+   * laptop ten minutes slow would understate every one of them while showing every recent job as "0s
+   * ago". The browser's clock is only the placeholder until the first response arrives.
+   */
   protected readonly now = signal(new Date().toISOString());
 
   /**
@@ -118,11 +159,11 @@ export class JobsList {
     this.reload();
     this.api.fleet().subscribe({
       next: (fleet) => this.hosts.set(fleet.hosts),
-      error: (err: unknown) => this.error.set(describeError(err)),
+      error: (err: unknown) => this.referenceError.set(describeError(err)),
     });
     this.api.catalogue().subscribe({
       next: (catalogue) => this.intents.set(catalogue.intents),
-      error: (err: unknown) => this.error.set(describeError(err)),
+      error: (err: unknown) => this.referenceError.set(describeError(err)),
     });
   }
 
@@ -138,14 +179,19 @@ export class JobsList {
       next: (response) => {
         this.jobs.set(response.jobs);
         this.truncated.set(response.truncated);
-        this.now.set(new Date().toISOString());
-        this.error.set('');
+        this.now.set(response.serverTime);
+        this.jobsError.set('');
       },
-      error: (err: unknown) => this.error.set(describeError(err)),
+      error: (err: unknown) => this.jobsError.set(describeError(err)),
     });
     this.api.jobsAwaitingApproval().subscribe({
-      next: (response) => this.awaiting.set(response.jobs),
-      error: (err: unknown) => this.error.set(describeError(err)),
+      next: (response) => {
+        this.awaiting.set(response.jobs);
+        this.awaitingTruncated.set(response.truncated);
+        this.now.set(response.serverTime);
+        this.awaitingError.set('');
+      },
+      error: (err: unknown) => this.awaitingError.set(describeError(err)),
     });
   }
 

@@ -346,6 +346,15 @@ export interface JobsResponse {
    * to derive it is a client that will eventually forget to.
    */
   truncated: boolean;
+
+  /**
+   * The control plane's clock, so job ages can be rendered without trusting the browser's.
+   *
+   * The rule is the one `formatAge` states: everything on these pages measures against the server's
+   * clock, because an age here is a decision input — "asked 4h ago" is why a second operator releases
+   * a job — and a laptop ten minutes slow would understate every one of them.
+   */
+  serverTime: string;
 }
 
 /** The body of `POST /api/v1/jobs` for an unsigned, read-only job. */
