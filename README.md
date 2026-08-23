@@ -8,7 +8,7 @@ By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
-> Farrier is in **phase 1**, and phase 1 is half done. Nine of the ten catalogue members now have an
+> Farrier is in **phase 1**, and two things are missing from it. Nine of the ten catalogue members have an
 > executor: the four read-only operations, and all five destructive ones — apply every update, start,
 > stop or restart a unit, and reboot. They enforce the host's own policy as root, over a socket rather
 > than through `sudo`, and you can drive them from an administrator's shell on a host today.
@@ -25,7 +25,11 @@ Documentation: [farrier.tools](https://farrier.tools).
 > agent must not run one until it verifies a signature by the control plane's online key, which does
 > not exist yet.
 >
-> There is also no jobs page in the UI. Do not expect to patch a fleet from a browser yet.
+> The jobs page exists, and it offers exactly what a browser may legitimately authorise: it queues
+> read-only work and releases destructive work somebody else signed. It will never offer to *create* a
+> destructive job, because that needs a key the control plane does not hold and a browser is the last
+> place it should ever be. So: do not expect to patch a fleet from a browser — not yet, and not by this
+> route afterwards either.
 
 ---
 
