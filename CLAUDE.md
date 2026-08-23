@@ -81,8 +81,17 @@ conversation, not a commit.
   `--force-confold` and `DPkg::Lock::Timeout`.
 - **Never add `farrier` to the `docker` group** — Docker socket access is root equivalence.
 - **`store.Store` is not a portability seam.** JSONB + GIN, a partial index for the job claim,
-  `LISTEN`/`NOTIFY`, and `SELECT … FOR UPDATE SKIP LOCKED` are load-bearing. Do not abstract for
-  another database.
+  `LISTEN`/`NOTIFY`, `SELECT … FOR UPDATE SKIP LOCKED` and row-level security are load-bearing. Do not
+  abstract for another database.
+- **Tenant isolation is enforced by PostgreSQL, not by remembering.** Every tenant-owned table has RLS
+  `ENABLE`d *and* `FORCE`d; every scoped statement runs inside a transaction that `SET LOCAL`s
+  `farrier.tenant`. `Store.In(tenant)` is the only way to reach tenant data, and the short list of
+  operations left on `Store` itself is the complete statement of what is not scoped. `farrier-server`
+  refuses to start on a database role that bypasses RLS, because that removes the boundary with no
+  symptom. See [`docs/SECURITY.md`](docs/SECURITY.md) §5.
+- **Approval is a per-tenant setting, and it is stamped on the job row at creation.** `none`, `self` or
+  `second_person`; new tenants get `none`. It is never re-derived at approval time — that would let
+  somebody queue a job under the two-person rule, relax the setting and release it themselves.
 - **Tier 3 — pushing configuration to an already-enrolled host — is never built.**
 
 ## Architecture
@@ -92,11 +101,12 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
 - `internal/agent` — enrolment, heartbeat, job acceptance, result spooling. The credential is one file
   (`agent.pem`, key and certificate together) promoted by one rename, so a renewal interrupted at any
   point leaves a matching pair. Results are fsynced *before* an operation that may not return.
-- `internal/server` — the control plane: five agent endpoints plus an admin API and the embedded UI.
-  Agent authentication is a certificate-fingerprint lookup on every request, which is also the whole
-  revocation mechanism — no CRL, no OCSP. Job creation lives in `jobsapi.go`: what a request may carry
-  follows from what a signature covers, so a signed job's id, nonce and validity window all arrive from
-  the signer and none is chosen here.
+- `internal/server` — the control plane: five agent endpoints, an admin API, a platform-only tenant API
+  and the embedded UI. Agent authentication is a certificate-fingerprint lookup on every request, which
+  is also the whole revocation mechanism — no CRL, no OCSP — and is where an agent request acquires its
+  tenant. Job creation lives in `jobsapi.go`: what a request may carry follows from what a signature
+  covers, so a signed job's id, nonce and validity window all arrive from the signer and none is chosen
+  here.
 - `internal/intent` + `internal/run` — what may happen, and the only place it happens.
 - `internal/policy` + `internal/helper` + `helpers/` + `internal/privsep` — three root helpers, each
   reached over one systemd-activated unix socket in `/run/farrier` and each re-reading the local policy

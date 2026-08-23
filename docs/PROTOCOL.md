@@ -102,7 +102,7 @@ record the host and its first certificate atomically — a host row whose certif
 would hold the claim while being unable to authenticate, wedging that machine permanently.
 
 `requestedBootstrap` is present only when the operator passed `--bootstrap NAME`, and is subject to
-every guardrail in [`SECURITY.md` §6](SECURITY.md#6-provisioning-and-the-enrolment-time-exception).
+every guardrail in [`SECURITY.md` §7](SECURITY.md#7-provisioning-and-the-enrolment-time-exception).
 
 ### Response `200`
 

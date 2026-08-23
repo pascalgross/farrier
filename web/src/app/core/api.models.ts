@@ -296,10 +296,18 @@ export interface Job {
   /** The key that signed it, absent for an unsigned job. */
   signerKeyId?: string;
 
-  /** Whether a second operator must agree before any host may claim it. */
+  /** Whether somebody must release it before any host may claim it. */
   approvalRequired: boolean;
 
-  /** When the second operator agreed, null until one does. */
+  /**
+   * Whether the release must come from somebody other than the job's creator.
+   *
+   * Recorded on the job when it was created, from the fleet's approval mode at that moment — so a
+   * fleet that has since changed its mind does not change what this job requires.
+   */
+  approvalDistinctOperator: boolean;
+
+  /** When it was released, null until it is. */
   approvedAt: string | null;
 
   /** Which operator agreed, absent until one does. */
@@ -350,4 +358,49 @@ export interface CreateReadJobRequest {
 
   /** The parameter object. Every read intent takes an empty one. */
   params: Record<string, unknown>;
+}
+
+/** One tenant: an isolated fleet with its own hosts, operators and settings. */
+export interface Tenant {
+  /** The identifier every scoped row carries. */
+  id: string;
+
+  /** The short stable handle used in URLs, logs and support tickets. */
+  slug: string;
+
+  /** What the fleet is called in the interface. */
+  displayName: string;
+
+  /** When the tenant was created. */
+  createdAt: string;
+
+  /** How this fleet releases a destructive job: "none", "self" or "second_person". */
+  approvalMode: string;
+
+  /** Where this fleet's events are posted, empty for nowhere. */
+  webhookUrl: string;
+}
+
+/**
+ * The body of `GET /api/v1/whoami`.
+ *
+ * The application asks for it on start, for the same reason a shell prompt shows the hostname: an
+ * operator with two fleets open in two tabs needs the page to say which one they are looking at before
+ * they queue a reboot in it.
+ */
+export interface Whoami {
+  /** The identifier the identity provider knows this operator by. */
+  subject: string;
+
+  /** A human-readable name. */
+  display: string;
+
+  /** Which provider authenticated them. */
+  provider: string;
+
+  /** The provider-qualified string recorded as the author of anything they do. */
+  principal: string;
+
+  /** The fleet this credential acts in. */
+  tenant: Tenant;
 }

@@ -9,6 +9,7 @@ import {
   Host,
   Job,
   JobsResponse,
+  Whoami,
 } from './api.models';
 import { TokenStore } from './token-store';
 
@@ -35,6 +36,17 @@ export class ApiService {
    */
   private headers(): HttpHeaders {
     return new HttpHeaders({ Authorization: `Bearer ${this.tokens.token()}` });
+  }
+
+  /**
+   * Fetches who this credential is and which fleet it acts in.
+   *
+   * There is no tenant selector to go with it, and that is the design rather than a gap: a credential
+   * reaches exactly one fleet, so there is nothing in a request an operator could change to reach
+   * another one. This call reports the answer; it does not choose it.
+   */
+  whoami(): Observable<Whoami> {
+    return this.http.get<Whoami>('/api/v1/whoami', { headers: this.headers() });
   }
 
   /** Fetches the fleet. */
@@ -90,11 +102,11 @@ export class ApiService {
   }
 
   /**
-   * Records this operator's approval of a destructive job.
+   * Records this operator's release of a destructive job.
    *
-   * It fails when the operator approving is the one who created the job, which is the point: a
-   * destructive job needs a second person. A control plane with one operator account therefore cannot
-   * approve one at all, and the message the server returns says so.
+   * Whether the releaser may be the job's creator depends on the fleet's approval mode, and on the mode
+   * as it stood when the job was created rather than now. Under `second_person` this fails for the
+   * operator who queued it, and the message the server returns says which setting to change.
    */
   approveJob(id: string): Observable<Job> {
     return this.http.post<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/approve`, null, {

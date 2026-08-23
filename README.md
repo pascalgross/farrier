@@ -13,8 +13,9 @@ Documentation: [farrier.tools](https://farrier.tools).
 > stop or restart a unit, and reboot. They enforce the host's own policy as root, over a socket rather
 > than through `sudo`, and you can drive them from an administrator's shell on a host today.
 >
-> The control plane can issue them: `POST /api/v1/jobs` creates a job, and a destructive one waits for
-> a second operator to approve it before any host may claim it.
+> The control plane can issue them: `POST /api/v1/jobs` creates a job. It is multi-tenant — one control
+> plane, many isolated fleets — and each fleet decides for itself whether a destructive job waits for
+> somebody to release it, and whether that somebody has to be a second person.
 >
 > **What is missing is `farrier sign`.** A destructive job carries a signature made offline by a key
 > the control plane does not hold, and nothing yet produces one for a human — so in practice the fleet
@@ -160,4 +161,4 @@ Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Two rules catch most fir
   comment about why the function exists.
 
 Security issues go through GitHub's private advisory flow, not the public tracker —
-[`docs/SECURITY.md` §9](docs/SECURITY.md#9-reporting-a-vulnerability).
+[`docs/SECURITY.md` §10](docs/SECURITY.md#10-reporting-a-vulnerability).

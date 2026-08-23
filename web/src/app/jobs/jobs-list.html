@@ -63,14 +63,14 @@
 @if (awaiting().length > 0) {
   <mat-card class="mb-8 max-w-3xl !border-l-4 !border-l-farrier-warn">
     <mat-card-header>
-      <mat-card-title>Waiting for a second operator</mat-card-title>
+      <mat-card-title>Waiting to be released</mat-card-title>
     </mat-card-header>
 
     <mat-card-content class="!pt-4">
       <p class="text-sm opacity-80 mt-0">
         Listed here as well as below, because the list below is bounded and a job that has been waiting
-        a while drops off the end of it. Approving is a decision, not a formality: you are agreeing that
-        this operation should happen on this host now, and you cannot approve one you queued yourself.
+        a while drops off the end of it. Releasing is a decision, not a formality: you are agreeing that
+        this operation should happen on this host now.
       </p>
 
       <ul class="list-none p-0 m-0 flex flex-col gap-3">
@@ -81,8 +81,11 @@
             <span class="text-xs opacity-70">
               {{ authorisation(job) }}, asked {{ age(job) }} by {{ job.createdBy || 'an unnamed operator' }}
             </span>
-            <button mat-stroked-button class="ml-auto" [disabled]="busy()" (click)="approve(job)">
-              Approve
+            <button mat-stroked-button class="ml-auto" [disabled]="busy()" (click)="approve(job)"
+                    [matTooltip]="job.approvalDistinctOperator
+                      ? 'This fleet requires somebody other than the job\'s creator to release it.'
+                      : 'This fleet requires a deliberate release before any host may claim the job.'">
+              Release
             </button>
           </li>
         }
@@ -131,8 +134,10 @@
           </mat-chip>
         } @else if (awaitingApproval(job)) {
           <mat-chip class="!bg-farrier-warn/20"
-                    matTooltip="A destructive job needs a second operator to agree before any host may claim it.">
-            awaiting approval
+                    [matTooltip]="job.approvalDistinctOperator
+                      ? 'This fleet requires somebody other than the creator to release a destructive job.'
+                      : 'This fleet requires a deliberate release before any host may claim the job.'">
+            awaiting release
           </mat-chip>
         } @else {
           <mat-chip class="!bg-farrier-ok/20">{{ job.state }}</mat-chip>
@@ -162,7 +167,7 @@
       <th mat-header-cell *matHeaderCellDef></th>
       <td mat-cell *matCellDef="let job">
         @if (awaitingApproval(job)) {
-          <button mat-stroked-button [disabled]="busy()" (click)="approve(job)">Approve</button>
+          <button mat-stroked-button [disabled]="busy()" (click)="approve(job)">Release</button>
         }
       </td>
     </ng-container>

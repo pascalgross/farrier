@@ -24,9 +24,10 @@ import { formatAge } from '../core/format';
  * last place that key should ever be — so the form offers what a browser can legitimately authorise and
  * says plainly why the rest is not there, rather than presenting a control that cannot work.
  *
- * What the page *can* do for a destructive job is approve one, which is the half that belongs in a
- * control plane. On an installation with a single operator account that always fails, and the failure
- * is shown as the control plane wrote it: a second person is the requirement, and there is only one.
+ * What the page *can* do for a destructive job is release one, which is the half that belongs in a
+ * control plane. Whether a job needs releasing at all, and whether the releaser has to be somebody
+ * other than its creator, is a setting on the fleet — and it is read from the job rather than from the
+ * fleet, because a job records the rule it was created under.
  */
 @Component({
   selector: 'farrier-jobs-list',
@@ -57,12 +58,11 @@ export class JobsList {
   protected readonly jobs = signal<Job[] | null>(null);
 
   /**
-   * Every job waiting for a second operator, whether or not it is on the page below.
+   * Every job waiting to be released, whether or not it is on the page below.
    *
    * Fetched separately for the reason the separate endpoint exists: the list is bounded, and a
-   * destructive job on a busy fleet leaves the newest page within a working day. A second operator who
-   * can only approve what happens to still be on screen is not the second operator
-   * docs/SECURITY.md §3 describes.
+   * destructive job on a busy fleet leaves the newest page within a working day. An approver who can
+   * only release what happens to still be on screen is not the approver docs/SECURITY.md §3 describes.
    */
   protected readonly awaiting = signal<Job[]>([]);
 
@@ -163,7 +163,7 @@ export class JobsList {
       });
   }
 
-  /** Records this operator's approval of a destructive job. */
+  /** Records this operator's release of a destructive job. */
   protected approve(job: Job): void {
     this.busy.set(true);
     this.actionError.set('');
@@ -203,7 +203,7 @@ export class JobsList {
     return `signed by ${job.signerKeyId ?? 'an unnamed key'}`;
   }
 
-  /** Reports whether this job is waiting for a second operator. */
+  /** Reports whether this job is waiting to be released. */
   protected awaitingApproval(job: Job): boolean {
     return job.state === 'awaiting_approval';
   }

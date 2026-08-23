@@ -5,8 +5,8 @@ security separated from the rest, and which services still hold replaced librari
 
 The privileged operations are real now — applying updates, starting, stopping and restarting a unit,
 rebooting — and each is bounded by a root-owned file the control plane cannot modify. The control plane
-can ask for them: `POST /api/v1/jobs` queues one, and a destructive one waits for a second operator to
-approve it before any host may claim it.
+can ask for them: `POST /api/v1/jobs` queues one, and whether it then waits for somebody to release it
+is a setting on your fleet — see [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
 
 **What is missing is `farrier sign`.** A destructive job carries a signature made offline by a key the
 control plane does not hold, and nothing yet produces one for a human — so until it lands, the API
@@ -21,7 +21,7 @@ You need PostgreSQL 14 or newer, and one binary.
 # 1. The certificate authority that issues agent certificates.
 sudo farrier-server ca init --ca-dir /var/lib/farrier-server/ca
 
-# 2. A database.
+# 2. A database. An ordinary role that owns the schema — not the postgres superuser.
 sudo -u postgres createuser farrier --pwprompt
 sudo -u postgres createdb --owner farrier farrier
 
@@ -30,6 +30,13 @@ export FARRIER_DATABASE_URL='postgres://farrier:...@localhost/farrier?sslmode=di
 export FARRIER_ADMIN_TOKEN="$(openssl rand -hex 32)"
 farrier-server serve --addr :8443 --ca-dir /var/lib/farrier-server/ca
 ```
+
+**Connect as an ordinary role, not as `postgres`.** Fleets are isolated from one another by PostgreSQL
+row-level security, and a superuser — or any role with `BYPASSRLS` — is exempt from every policy in the
+schema. The exemption has no symptom whatsoever: the policies are still there, the queries still carry
+their predicates, and every query returns every fleet's rows. `farrier-server` checks its own role at
+startup and refuses to run on either, so you will be told rather than left to find out. See
+[`SECURITY.md` §5](SECURITY.md#5-tenants).
 
 Two things about TLS are worth knowing before you reach them.
 
@@ -43,6 +50,45 @@ certificates before operators use the interface in earnest.
 Back up `ca.key` **separately from the database**. An attacker with both can impersonate hosts to this
 control plane; an attacker with the database alone cannot. Neither lets them run code on a host: an
 agent authorises a job by its class and its signature, not by who asked.
+
+### More than one fleet
+
+The command above gives you a fleet called `default`, and if that is all you want you can stop reading
+this section — everything below is optional and nothing above changes.
+
+One control plane can serve several independent fleets. They share the binary, the database and the
+certificate authority, and they share nothing else: no fleet can see another's hosts, tokens, jobs or
+results, and an operator credential reaches exactly one of them. There is no fleet in any URL, so there
+is nothing an operator could edit to be somewhere else.
+
+Provisioning one is a separate credential's job:
+
+```bash
+export FARRIER_PLATFORM_TOKEN="$(openssl rand -hex 32)"
+farrier-server serve --addr :8443 --ca-dir /var/lib/farrier-server/ca
+
+curl -sX POST https://control.example.org/api/v1/tenants \
+  -H "Authorization: Bearer $FARRIER_PLATFORM_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"acme","displayName":"Acme Ltd","approvalMode":"second_person"}'
+```
+
+The platform token administers fleets and **reaches no fleet's hosts or jobs** — every operator route
+refuses it, and every fleet route refuses an operator credential. That separation is the point of
+having two tokens rather than one: running Farrier for other people should not require being able to
+read what they run.
+
+It also cannot issue a fleet's operator credential. That belongs to whatever authenticates your
+operators — `auth.Provider` is the seam, and the shipped token provider binds one token to one fleet
+with `--tenant`:
+
+```bash
+farrier-server serve --tenant acme --admin-token "$ACME_TOKEN" ...
+```
+
+`approvalMode` is that fleet's answer to "who has to agree before a host may act on a destructive job",
+and it is per fleet because a one-person shop and a regulated customer cannot share an answer. The three
+values and the reasoning are in [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
 
 ## A host
 
@@ -100,7 +146,7 @@ needs two more things, and neither of them is the control plane's to give.
    so there is no supported way for a person to produce one today.
 2. Approval by a *different* operator, through `POST /api/v1/jobs/{id}/approve`. Until that happens no
    host can claim the job. A control plane with one operator account cannot do this at all — see
-   [`SECURITY.md`](SECURITY.md#destructive--signed-by-a-key-in-the-hosts-trusted-signers-plus-second-person-approval).
+   [`SECURITY.md`](SECURITY.md#destructive--signed-by-a-key-in-the-hosts-trusted-signers).
 
 A **routine** job — `packages.applySecurity` — is refused outright, and the refusal says why: it is the
 one tier that carries no offline signature, so an agent must verify a signature by the control plane's
