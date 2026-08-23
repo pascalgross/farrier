@@ -29,6 +29,7 @@ import (
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/ca"
 	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/server"
 	"github.com/pascalgross/farrier/internal/store"
 )
@@ -181,6 +182,17 @@ func serve(argv []string) int {
 		slog.Info("tenant administration is enabled", "route", "/api/v1/tenants")
 	}
 
+	// The key that signs routine jobs. Beside the CA, generated on first start, and its public half is
+	// handed to every agent at enrolment and on every heartbeat. It authorises one tier and cannot
+	// authorise the destructive one: an agent verifies those against its own trusted-signers, which
+	// this process cannot write. See docs/SECURITY.md §3.
+	online, err := onlinekey.Ensure(*caDir)
+	if err != nil {
+		slog.Error("could not prepare the online signing key", "error", err)
+		return 1
+	}
+	slog.Info("routine jobs will be signed by this control plane", "key", online.KeyID())
+
 	// Client certificates require TLS, so a control plane with no certificate cannot serve the agent
 	// protocol at all. Rather than starting something that refuses every agent with a 401, one is
 	// issued from the same private CA — which means an enrolled agent, holding the CA bundle it was
@@ -206,6 +218,7 @@ func serve(argv []string) int {
 		Authority:        authority,
 		Store:            backing,
 		Auth:             provider,
+		OnlineKey:        online,
 		HeartbeatSeconds: *heartbeat,
 		TokenTTL:         24 * time.Hour,
 	})

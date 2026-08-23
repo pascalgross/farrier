@@ -177,6 +177,19 @@ type EnrollResponse struct {
 	// NextHeartbeatSeconds is the pacing the agent should adopt.
 	NextHeartbeatSeconds int `json:"nextHeartbeatSeconds"`
 
+	// OnlineKey is the control plane's own signing key, in the trusted-signers line format.
+	//
+	// It is what a routine intent is verified against, and it arrives from the control plane rather
+	// than from the operator — which would be unacceptable for the destructive tier and is acceptable
+	// here for a reason docs/SECURITY.md §3 states outright: what bounds a routine intent is the host's
+	// local policy, not this key. The control plane can at most make a host do sooner what it already
+	// permits itself to do unattended, so a control plane that rotated this key at will would gain
+	// nothing it did not already have.
+	//
+	// Empty when the control plane has no online key, in which case the agent refuses routine intents
+	// exactly as it did before there was one.
+	OnlineKey string `json:"onlineKey,omitempty"`
+
 	// Bootstrap is present only if one was requested and approved.
 	Bootstrap *Bootstrap `json:"bootstrap,omitempty"`
 }
@@ -273,6 +286,19 @@ type HeartbeatResponse struct {
 
 	// WantSigners asks for the trusted key identities on the next heartbeat.
 	WantSigners bool `json:"wantSigners"`
+
+	// OnlineKey is the control plane's own signing key, in the trusted-signers line format.
+	//
+	// Sent on every heartbeat rather than digest-first like the documents above, and the asymmetry is
+	// deliberate. Digest-first exists because a facts document is kilobytes and a fleet of five hundred
+	// would send its whole inventory every minute; this is one short line. Sending it unconditionally
+	// means key rotation propagates on its own, with no state machine, no "want" flag, and no host left
+	// on a key that no longer verifies because it missed one exchange.
+	//
+	// Empty when the control plane has no online key. An agent that receives an empty value keeps what
+	// it has: an absent field means "nothing to say", not "forget your key", because the second reading
+	// would let one malformed response disable a fleet's routine tier until somebody noticed.
+	OnlineKey string `json:"onlineKey,omitempty"`
 }
 
 // Job is one unit of work, as delivered to an agent.

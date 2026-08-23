@@ -57,7 +57,7 @@ func (a acceptance) accepted() bool { return a.status == "" }
 // The class is taken from this agent's own compiled-in catalogue and never from the job. A control
 // plane that could label host.reboot as "read" would defeat the signature requirement without touching
 // the signature code.
-func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.SignerSet,
+func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *signing.SignerSet,
 	nonces *NonceStore, clockOffset time.Duration, now time.Time) acceptance {
 
 	// 1. Recognise the intent, and decode and validate its parameters, against the catalogue.
@@ -73,10 +73,10 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		}
 	}
 	if !spec.Implemented {
-		// One member is deliberately here rather than merely unfinished. packages.applySecurity is the
-		// only routine intent, and routine is the one tier this sequence verifies no signature for;
-		// docs/PROTOCOL.md §5.1 requires the control plane's online key instead, and there is no online
-		// key yet. See internal/intent's `unimplemented` map for the reason recorded beside each one.
+		// The catalogue is complete, so nothing should reach here in a released build. It stays because
+		// an agent talking to a newer control plane can be asked for an intent it does not have, and
+		// because internal/intent's `unimplemented` map exists for a member that is deliberately
+		// withheld — reporting unsupported_intent is how both cases stay safe rather than guessed at.
 		return acceptance{
 			status: protocol.StatusUnsupportedIntent,
 			reason: fmt.Sprintf("%s has no executor in this build", spec.Name),
@@ -106,9 +106,21 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		return acceptance{status: protocol.StatusExpired, reason: "the job's validity window has closed"}
 	}
 
-	// 4. Verify the signature the class requires, against this host's own trust anchor.
-	if spec.Class.RequiresOfflineSignature() {
+	// 4. Verify the signature the class requires, against the anchor that class is verified against.
+	//
+	//    Two anchors, never interchangeable. A destructive intent verifies against
+	//    /etc/farrier/trusted-signers, which the control plane cannot write — that is what
+	//    docs/SECURITY.md §1 rests on. A routine intent verifies against the online key the control
+	//    plane sent, which is a weaker authority and bounded by the local policy rather than by the
+	//    key. Asking the catalogue twice, rather than branching on one boolean, is what keeps a
+	//    control plane from ever authorising the destructive tier with its own key.
+	switch {
+	case spec.Class.RequiresOfflineSignature():
 		if err := verifyOfflineSignature(job, hostID, signers); err != nil {
+			return acceptance{status: protocol.StatusRefusedUnsigned, reason: err.Error()}
+		}
+	case spec.Class.RequiresOnlineSignature():
+		if err := verifyOnlineSignature(job, hostID, online); err != nil {
 			return acceptance{status: protocol.StatusRefusedUnsigned, reason: err.Error()}
 		}
 	}
@@ -117,7 +129,11 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 	//    Recording it first would let anyone who can reach the agent burn a nonce with a job carrying a
 	//    garbage signature, and the nonce store is persistent, so the genuine job bearing that nonce
 	//    would be refused as a replay for as long as its signature remained valid.
-	if job.Signature != "" && spec.Class.RequiresOfflineSignature() {
+	//
+	//    Both privileged tiers, not just the destructive one: a routine job is signed, so it can be
+	//    replayed, and a control plane that could re-deliver yesterday's applySecurity indefinitely
+	//    would be re-running an operation whose window the signature was supposed to bound.
+	if job.Signature != "" && spec.Class.Privileged() {
 		seen, err := nonces.Check(job.Nonce, job.NotAfter)
 		if err != nil {
 			return acceptance{status: protocol.StatusFailed, reason: "the replay store is unusable: " + err.Error()}
@@ -170,6 +186,41 @@ func verifyOfflineSignature(job protocol.Job, hostID string, signers *signing.Si
 		// Not fatal by itself — the signature verified against a trusted key, which is what matters —
 		// but a mismatch means the control plane's record of who authorised the job disagrees with the
 		// host's, and the audit trail should not quietly take the server's word for it.
+		return fmt.Errorf("the job names signer %q but verified against %q", job.SignerKeyID, key.KeyID)
+	}
+	return nil
+}
+
+// verifyOnlineSignature checks a routine job against the control plane's own key.
+//
+// It is a separate function from verifyOfflineSignature holding almost the same code, and the
+// duplication is deliberate. The two verify different authorities against different anchors, and the
+// obvious refactor — one function taking whichever key set applies — is exactly the shape in which a
+// caller eventually passes the wrong one. There is no argument here that could make this accept a
+// destructive job, because it never sees the trusted-signers set at all.
+//
+// What it means when this succeeds is narrower than the offline case, and worth remembering when
+// reading it: the control plane authorised this, and the control plane is inside the threat model. The
+// bound on a routine intent is the host's local policy, which the root helper re-reads for itself. See
+// docs/SECURITY.md §3.
+func verifyOnlineSignature(job protocol.Job, hostID string, online *signing.SignerSet) error {
+	if online.Empty() {
+		return fmt.Errorf("%s requires a signature by the control plane's online key, and this host "+
+			"has not been given one", job.Intent)
+	}
+	signature, err := decodeSignature(job.Signature)
+	if err != nil {
+		return err
+	}
+	payload, err := canonical.Marshal(job.SignedPayload(hostID))
+	if err != nil {
+		return fmt.Errorf("could not canonicalise the signed payload: %w", err)
+	}
+	key, err := online.Verify(payload, signature)
+	if err != nil {
+		return fmt.Errorf("the control plane's online key did not produce this signature: %w", err)
+	}
+	if job.SignerKeyID != "" && job.SignerKeyID != key.KeyID {
 		return fmt.Errorf("the job names signer %q but verified against %q", job.SignerKeyID, key.KeyID)
 	}
 	return nil
@@ -252,7 +303,17 @@ type Runner struct {
 	Policy policy.Policy
 
 	// Signers is the host's own trust anchor, read from /etc/farrier/trusted-signers.
+	//
+	// The authority for every destructive intent, and the one the control plane cannot write.
 	Signers *signing.SignerSet
+
+	// Online is the control plane's own key, as this host last cached it.
+	//
+	// A separate field rather than another entry in Signers, and that separation is the mechanism
+	// rather than tidiness: merging them would make a control plane's own key acceptable for the
+	// destructive tier, which is the single thing docs/SECURITY.md §1 promises cannot happen. Empty
+	// when no control plane has sent one, in which case routine intents are refused.
+	Online *signing.SignerSet
 
 	// Nonces refuses a replayed signature across restarts.
 	Nonces *NonceStore
@@ -287,7 +348,7 @@ func (r Runner) Run(ctx context.Context, job protocol.Job) protocol.ResultReques
 	started := time.Now()
 	result := protocol.ResultRequest{JobID: job.ID, StartedAt: started}
 
-	decision := accept(job, r.HostID, r.Policy, r.Signers, r.Nonces, r.ClockOffset, started)
+	decision := accept(job, r.HostID, r.Policy, r.Signers, r.Online, r.Nonces, r.ClockOffset, started)
 	if !decision.accepted() {
 		result.Status = decision.status
 		result.Error = decision.reason

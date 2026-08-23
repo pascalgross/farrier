@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/protocol"
@@ -242,7 +245,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who ope
 		return
 	}
 
-	job, err := s.buildJob(req, spec)
+	job, err := s.buildJob(req, spec, req.HostID)
 	if err != nil {
 		slog.Error("could not build a job", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create the job")
@@ -343,14 +346,21 @@ func (s *Server) validateJobRequest(w http.ResponseWriter, req jobRequest) (inte
 
 	switch spec.Class {
 	case intent.ClassRoutine:
-		// The one class this control plane cannot authorise. docs/PROTOCOL.md §5.1 requires a signature
-		// by the control plane's online key for a routine intent, and no such key exists yet; the agent
-		// refuses one for the same reason. Queueing it would produce a job that fails on every host in
-		// the fleet with a message about a key nobody has heard of.
-		return refuse(http.StatusNotImplemented, "no_online_key",
-			spec.Name.String()+" is a routine intent, which requires a signature by this control "+
-				"plane's online key. There is no online key yet, and an agent refuses a routine intent "+
-				"until it can verify one. See docs/PROTOCOL.md §5.1.")
+		// The one class this control plane signs itself. docs/PROTOCOL.md §5.1 requires a signature by
+		// the control plane's online key, and this side supplies it — so a caller sends none, exactly
+		// as for a read intent, and everything the signature covers is chosen here.
+		if s.cfg.OnlineKey == nil {
+			return refuse(http.StatusNotImplemented, "no_online_key",
+				spec.Name.String()+" is a routine intent, which requires a signature by this control "+
+					"plane's online key. This control plane has none, and an agent refuses a routine "+
+					"intent until it can verify one. See docs/PROTOCOL.md §5.1.")
+		}
+		if req.Signature != "" || req.SignerKeyID != "" || req.Nonce != "" || req.ID != "" {
+			return refuse(http.StatusBadRequest, "malformed",
+				spec.Name.String()+" is signed by this control plane, not by you. It takes no "+
+					"signature, no nonce and no caller-chosen id: an agent verifies it against the "+
+					"online key it was given, and a signature from anywhere else would not verify.")
+		}
 
 	case intent.ClassDestructive:
 		if req.Signature == "" || req.SignerKeyID == "" || req.SignerAlgorithm == "" {
@@ -403,7 +413,7 @@ func (s *Server) validateJobRequest(w http.ResponseWriter, req jobRequest) (inte
 // the host exactly as the signer wrote it, so this function has no opinion about any of it — the moment
 // it adjusted a timestamp or normalised a nonce, every signature would stop verifying and the failure
 // would look like a broken key.
-func (s *Server) buildJob(req jobRequest, spec intent.Spec) (protocol.Job, error) {
+func (s *Server) buildJob(req jobRequest, spec intent.Spec, hostID string) (protocol.Job, error) {
 	job := protocol.Job{
 		ID:              req.ID,
 		Intent:          spec.Name.String(),
@@ -451,6 +461,47 @@ func (s *Server) buildJob(req jobRequest, spec intent.Spec) (protocol.Job, error
 	// bounds it, and a zero notBefore is what the agent's own check reads as "no lower bound".
 	job.NotBefore = time.Time{}
 	job.NotAfter = job.IssuedAt.Add(ReadJobValidity)
+
+	if spec.Class == intent.ClassRoutine {
+		return s.signRoutine(job, hostID)
+	}
+	return job, nil
+}
+
+// RoutineJobValidity is how long a routine job stays executable after the control plane signs it.
+//
+// Shorter than a read job's day, because this one does something. A security update that an operator
+// asked for this morning is worth applying when a host comes back this afternoon; one from last week
+// is a surprise, and the host's own timer will have applied it anyway.
+const RoutineJobValidity = 6 * time.Hour
+
+// signRoutine signs a routine job with the control plane's own key.
+//
+// The window is the interesting part. notBefore is covered by the signature and is therefore what the
+// agent measures a job's age from, so it cannot be left at zero — an age measured from the year 1 is an
+// age past every limit. But it also cannot be exactly now: the agent checks the window against its own
+// clock, so a host a second behind would find a job whose window had not opened and report it expired.
+//
+// So it opens as early as the clock skew the agent would still tolerate for a privileged intent.
+// Beyond that the agent refuses on skew rather than on the window, which is the refusal that names the
+// real problem — and inside it, a host with an ordinary few seconds of drift simply runs the job.
+func (s *Server) signRoutine(job protocol.Job, hostID string) (protocol.Job, error) {
+	now := job.IssuedAt
+	job.NotBefore = now.Add(-protocol.MaxClockSkewSeconds * time.Second)
+	job.NotAfter = now.Add(RoutineJobValidity)
+
+	payload, err := canonical.Marshal(job.SignedPayload(hostID))
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("canonicalising a routine job: %w", err)
+	}
+	signature, err := s.cfg.OnlineKey.Sign(context.Background(), payload)
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("signing a routine job: %w", err)
+	}
+
+	job.Signature = base64.StdEncoding.EncodeToString(signature)
+	job.SignerKeyID = s.cfg.OnlineKey.KeyID()
+	job.SignerAlgorithm = string(s.cfg.OnlineKey.Algorithm())
 	return job, nil
 }
 

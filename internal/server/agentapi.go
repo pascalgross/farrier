@@ -164,6 +164,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, protocol.EnrollResponse{
+		OnlineKey:            s.onlineKeyLine(),
 		HostID:               hostID,
 		Certificate:          string(certPEM),
 		CABundle:             string(s.cfg.Authority.CertificatePEM()),
@@ -232,6 +233,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, who cal
 	}
 
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{
+		OnlineKey:            s.onlineKeyLine(),
 		ServerTime:           now.UTC(),
 		NextHeartbeatSeconds: s.cfg.HeartbeatSeconds,
 		WantFullReport:       wantFacts && wantPolicy,
@@ -482,6 +484,28 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 		slog.Warn("event delivery failed",
 			"tenant", tenantID, "sink", sink.Name(), "kind", ev.Kind, "error", err)
 	}
+}
+
+// onlineKeyLine renders the control plane's own public key for an agent to store.
+//
+// Empty when there is no online key, which an agent reads as "nothing to say" rather than as "forget
+// what you have". The distinction matters on a control plane that has been restarted without its key
+// directory: an agent that cleared its copy on the first such heartbeat would lose the routine tier
+// fleet-wide, in a way that looks like the agents breaking rather than the server being misconfigured.
+//
+// A failure to render is logged and treated as absence for the same reason. It cannot happen with the
+// key type this returns, and if it ever did, refusing to answer a heartbeat over it would take a fleet
+// offline for the sake of a field that governs one intent.
+func (s *Server) onlineKeyLine() string {
+	if s.cfg.OnlineKey == nil {
+		return ""
+	}
+	line, err := s.cfg.OnlineKey.PublicLine()
+	if err != nil {
+		slog.Error("could not render the online key for agents", "error", err)
+		return ""
+	}
+	return line
 }
 
 // jsonOrNull returns raw JSON bytes, or the literal null, for embedding a stored document in a response.

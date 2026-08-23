@@ -33,6 +33,7 @@ import (
 	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/ca"
+	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/store"
 )
@@ -63,6 +64,14 @@ type Config struct {
 
 	// Auth authenticates human operators.
 	Auth auth.Provider
+
+	// OnlineKey signs routine jobs, and is nil when this control plane has none.
+	//
+	// Nil is a supported configuration rather than a broken one: without it the routine tier is
+	// refused, which is exactly where the agent was before an online key existed. It is not a
+	// substitute for the destructive tier's authority and cannot be used as one — the agent verifies
+	// the two against different anchors and will not accept this key for a destructive intent.
+	OnlineKey *onlinekey.Key
 
 	// HeartbeatSeconds is the pacing handed to agents.
 	//

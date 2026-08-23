@@ -266,8 +266,21 @@ func (a *Agent) cycle(ctx context.Context, wantFull bool) (bool, error) {
 		a.heartbeatSeconds = protocol.ClampHeartbeatSeconds(res.NextHeartbeatSeconds)
 	}
 
+	// Cached before the poll, so that a job arriving in the same cycle as a rotated key verifies
+	// against the key the control plane is currently signing with rather than the previous one.
+	if err := StoreOnlineKey(a.state.Dir(), res.OnlineKey); err != nil {
+		slog.Error("could not cache the control plane's online key; routine jobs may be refused",
+			"error", err)
+	}
+	online, err := LoadOnlineKey(a.state.Dir())
+	if err != nil {
+		slog.Error("the control plane's online key could not be read; routine jobs will be refused",
+			"error", err)
+		online = &signing.SignerSet{}
+	}
+
 	a.maybeRenew(ctx)
-	a.pollAndRun(ctx, p, signers)
+	a.pollAndRun(ctx, p, signers, online)
 
 	return res.WantFullReport || res.WantFacts || res.WantPolicy || res.WantSigners, nil
 }
@@ -364,7 +377,7 @@ func signerViews(signers *signing.SignerSet) []protocol.SignerSummary {
 //
 // Each result is spooled to disk before it is sent and removed only after the control plane accepts it,
 // so a lost response causes a redelivery rather than a re-execution.
-func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signing.SignerSet) {
+func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers, online *signing.SignerSet) {
 	pollCtx, cancel := context.WithTimeout(ctx, (protocol.DefaultJobWaitSeconds+15)*time.Second)
 	defer cancel()
 
@@ -383,6 +396,7 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 			HostID:      a.state.HostID,
 			Policy:      p,
 			Signers:     signers,
+			Online:      online,
 			Nonces:      a.nonces,
 			Platform:    a.platform,
 			Elevate:     a.elevate,

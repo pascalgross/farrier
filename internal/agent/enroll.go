@@ -181,6 +181,15 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 			return nil, err
 		}
 	}
+	// Cached now as well as on every heartbeat, so that a host enrolled and immediately handed a
+	// routine job can verify it without waiting for a beat. A failure here is logged rather than
+	// fatal: enrolment has already succeeded on the server, the host has a working credential, and
+	// the next heartbeat will supply the key again. Failing the whole enrolment over the key that
+	// governs one intent would be the wrong trade.
+	if err := StoreOnlineKey(opts.StateDir, res.OnlineKey); err != nil {
+		slog.Warn("could not cache the control plane's online key at enrolment; "+
+			"routine jobs are refused until a heartbeat supplies it", "error", err)
+	}
 
 	state := &State{ServerURL: trimSlash(opts.ServerURL), HostID: res.HostID, EnrolledAt: time.Now()}
 	if err := state.Save(opts.StateDir); err != nil {

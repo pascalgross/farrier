@@ -19,12 +19,13 @@
 //     about what an intent is by construction, rather than by two implementations that match until
 //     they do not.
 //
-// Nine of the ten members have an executor. The tenth, packages.applySecurity, does not, and that is a
-// deliberate gap rather than unfinished work: it is the one *routine* member, and docs/PROTOCOL.md §5.1
-// says an agent MUST NOT execute a routine intent until it verifies a signature by the control plane's
-// online key. No such key exists yet, and shipping the executor before the verification would make
-// applying packages an operation authorised by mTLS alone. Its Implemented flag is what stops that, and
-// the guarantee suite pins it there with the reason attached.
+// All ten members have an executor. The last to arrive was packages.applySecurity, and the order was
+// deliberate: it is the one *routine* member, and docs/PROTOCOL.md §5.1 says an agent MUST NOT execute
+// one until it verifies a signature by the control plane's online key. The helper could always perform
+// it; what was missing was that verification, and shipping the executor first would have made applying
+// packages to a fleet an operation authorised by mTLS alone. The Implemented flag is what held it back,
+// and the guarantee suite still requires a written reason beside any member that is ever held back
+// again.
 package intent
 
 import (
@@ -148,6 +149,14 @@ func (c Class) Privileged() bool { return c == ClassRoutine || c == ClassDestruc
 // control plane's online key is never acceptable where this returns true.
 func (c Class) RequiresOfflineSignature() bool { return c == ClassDestructive }
 
+// RequiresOnlineSignature reports whether a signature by the control plane's own key is required.
+//
+// The counterpart of RequiresOfflineSignature, and deliberately not its negation: a read intent needs
+// neither, and the two privileged tiers need different ones. Keeping both as questions the catalogue
+// answers means the acceptance check asks rather than decides, and means no single boolean can be
+// inverted somewhere and turn a destructive intent into one the control plane may authorise alone.
+func (c Class) RequiresOnlineSignature() bool { return c == ClassRoutine }
+
 // Valid reports whether the class is one of the three defined tiers.
 //
 // It exists because Class is a string type, so a zero value or a value decoded from JSON can be
@@ -240,14 +249,13 @@ var catalogue = map[Name]Spec{
 		Name:    PackagesApplySecurity,
 		Class:   ClassRoutine,
 		Summary: "Apply security updates, subject to local policy",
-		// The one member with no executor, and the only one whose absence is a decision rather than a
-		// gap. helpers/apply-updates can perform it — an administrator can run it by hand today — but
-		// the *agent* must not accept one from a control plane yet. It is the only routine intent, so
-		// Class.RequiresOfflineSignature is false for it and nothing in the acceptance sequence checks
-		// a signature at all; docs/PROTOCOL.md §5.1 requires the control plane's online key to be
-		// verified instead, and no such key exists. Turning this on before that check does would make
-		// applying packages to a fleet an operation authorised by mTLS alone.
-		Implemented: false,
+		// The only routine member, and the only one the control plane signs for itself. What bounds it
+		// is not the signature but the host's own policy: updates.allow decides whether security
+		// updates may be applied at all, and the root helper re-reads that file rather than trusting
+		// the agent. So the worst a control plane can do with this intent is make a host do sooner what
+		// it already permits itself to do unattended — which is what makes an online key acceptable
+		// here and unacceptable for every member below. See docs/SECURITY.md §3.
+		Implemented: true,
 		Decode:      decodeApply(PackagesApplySecurity),
 	},
 
