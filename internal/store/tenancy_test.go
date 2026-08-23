@@ -454,7 +454,32 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 			"the schema", role)
 	}
 
-	for _, table := range []string{"hosts", "jobs", "certificates", "enrollment_tokens"} {
+	// Both tenants need a row in every table under test, including job_results, which the shared
+	// fixture does not populate. Reported here rather than in twoTenants so that adding coverage to
+	// this test cannot change the row counts other tests in this file depend on.
+	for _, tenant := range []struct {
+		scoped Scoped
+		hostID string
+	}{{alpha, alphaHostID}, {beta, betaHostID}} {
+		// alpha's fixture job is queued under second-person approval, so nothing may claim it until a
+		// second operator releases it. Released by a different principal than created it, because that
+		// is the rule the row carries.
+		if tenant.scoped == alpha {
+			if err := tenant.scoped.ApproveJob(ctx, sharedJobID, "test:releaser", time.Now().UTC()); err != nil {
+				t.Fatalf("approving alpha's job: %v", err)
+			}
+		}
+		if _, err := tenant.scoped.ClaimJobs(ctx, tenant.hostID, 10); err != nil {
+			t.Fatalf("claiming for %s: %v", tenant.scoped.Tenant(), err)
+		}
+		if err := tenant.scoped.RecordResult(ctx, tenant.hostID, protocol.ResultRequest{
+			JobID: sharedJobID, Status: protocol.StatusSucceeded,
+		}); err != nil {
+			t.Fatalf("recording a result for %s: %v", tenant.scoped.Tenant(), err)
+		}
+	}
+
+	for _, table := range []string{"hosts", "jobs", "certificates", "enrollment_tokens", "job_results"} {
 		t.Run(table, func(t *testing.T) {
 			// No tenant set at all. Fail closed: current_setting(…, true) is NULL when unset, and
 			// `tenant_id = NULL` is NULL rather than true, so the policy admits nothing.
@@ -469,21 +494,31 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 
 			// One tenant set, and a statement with no predicate of its own. Both tenants have rows
 			// here; only one may come back.
+			//
+			// Asserted by counting the DISTINCT tenant_id values the statement can see, rather than by
+			// comparing two row counts. That distinction is the whole point and it was got wrong here
+			// once: the earlier version compared `count(*)` against `count(*) … WHERE true`, both run
+			// as the same tenant, so the two were equal by construction and the assertion could not
+			// fail. A policy that returned every tenant's rows passed it.
+			//
+			// This shape cannot be satisfied vacuously. A correct policy admits exactly one tenant's
+			// rows, so one distinct value; a policy that leaks admits two, whatever the counts are.
 			for _, tenant := range []Scoped{alpha, beta} {
-				var seen int
-				err := countAsTenant(ctx, pg, tenant.Tenant(), table, &seen)
+				rows, tenants, only, err := visibleAsTenant(ctx, pg, tenant.Tenant(), table)
 				if err != nil {
-					t.Fatalf("counting %s as %s: %v", table, tenant.Tenant(), err)
+					t.Fatalf("reading %s as %s: %v", table, tenant.Tenant(), err)
 				}
-				var total int
-				if err := countAsTenant(ctx, pg, tenant.Tenant(), table+" WHERE true", &total); err != nil {
-					t.Fatalf("counting %s: %v", table, err)
-				}
-				if seen == 0 {
+				if rows == 0 {
 					t.Errorf("%s sees none of its own rows in %s", tenant.Tenant(), table)
 				}
-				if seen != total {
-					t.Errorf("%s sees %d rows in %s unfiltered and %d filtered", tenant.Tenant(), seen, table, total)
+				if tenants != 1 {
+					t.Errorf("an unpredicated statement against %s as %s saw rows belonging to %d "+
+						"tenants; the policy is admitting somebody else's fleet", table,
+						tenant.Tenant(), tenants)
+				}
+				if only != string(tenant.Tenant()) {
+					t.Errorf("an unpredicated statement against %s as %s returned rows owned by %q",
+						table, tenant.Tenant(), only)
 				}
 			}
 		})
@@ -507,22 +542,37 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 	}
 }
 
-// countAsTenant runs a bare count inside a transaction that has set one tenant.
+// visibleAsTenant reports what an unpredicated statement can see inside a transaction that has set one
+// tenant: how many rows, how many distinct owners, and which owner when there is exactly one.
 //
 // The statement it runs deliberately has no tenant predicate. That is what is being tested: a query
 // written by somebody who forgot must return that tenant's rows and no others, because the policy is
 // the rule and the predicate is only the query plan.
-func countAsTenant(ctx context.Context, pg *Postgres, tenant TenantID, from string, into *int) error {
-	tx, err := pg.pool.Begin(ctx)
-	if err != nil {
-		return err
+//
+// It returns the owner count rather than a row count because a row count cannot express the property.
+// The version this replaced compared two counts that were equal by construction, so it passed against a
+// policy showing every tenant every other tenant's rows. Counting distinct owners has no such failure
+// mode: correct is one, leaking is more, and neither depends on how many rows the fixture happened to
+// create.
+func visibleAsTenant(ctx context.Context, pg *Postgres, tenant TenantID, table string) (
+	rows, tenants int, only string, err error) {
+
+	tx, beginErr := pg.pool.Begin(ctx)
+	if beginErr != nil {
+		return 0, 0, "", beginErr
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `SELECT set_config('farrier.tenant', $1, true)`, string(tenant)); err != nil {
-		return err
+		return 0, 0, "", err
 	}
-	return tx.QueryRow(ctx, `SELECT count(*) FROM `+from).Scan(into)
+	// No predicate, deliberately: no production query looks like this, and the answer has to be
+	// scoped anyway. min(tenant_id) names the owner when exactly one is visible, and is reported so
+	// that a policy admitting the *wrong* single tenant fails as loudly as one admitting two.
+	err = tx.QueryRow(ctx,
+		`SELECT count(*), count(DISTINCT tenant_id), coalesce(min(tenant_id), '') FROM `+table,
+	).Scan(&rows, &tenants, &only)
+	return rows, tenants, only, err
 }
 
 // TestGuaranteeDeletingATenantLeavesNothingBehind is the other half of isolation: what a customer
