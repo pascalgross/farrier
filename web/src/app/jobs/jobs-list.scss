@@ -1,0 +1,23 @@
+:host {
+  display: block;
+}
+
+table {
+  background: transparent;
+}
+
+td,
+th {
+  vertical-align: top;
+  padding-block: 0.75rem;
+}
+
+// Job output is the tail of what a root helper printed, so it can be long and is already truncated on
+// the host. Bounding it here as well keeps one noisy job from pushing every other row off the screen.
+pre {
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

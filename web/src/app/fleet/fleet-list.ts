@@ -12,6 +12,7 @@ import { catchError, of, startWith } from 'rxjs';
 
 import { Host } from '../core/api.models';
 import { ApiService } from '../core/api.service';
+import { describeError } from '../core/errors';
 import { formatAge, formatDuration, formatOffset } from '../core/format';
 
 /** What the fleet request can be doing, so the template can render each state distinctly. */
@@ -173,27 +174,4 @@ export class FleetList {
       (host.facts?.reboot?.required ?? false)
     );
   }
-}
-
-/** The one field of Angular's HttpErrorResponse this module needs, without importing the class. */
-interface StatusCarrier {
-  /** The HTTP status, or 0 when the request never reached the server. */
-  status?: number;
-}
-
-/**
- * Turns an HTTP failure into something worth showing an operator.
- *
- * A 401 is by far the most likely one and has a specific cause — a wrong or expired token — so it is
- * named rather than rendered as a status code somebody has to look up.
- */
-function describeError(err: unknown): string {
-  const status = (err as StatusCarrier | null)?.status;
-  if (status === 401) {
-    return 'The control plane rejected this token. Sign out and enter the one it printed at startup.';
-  }
-  if (status === 0 || status === undefined) {
-    return 'The control plane could not be reached.';
-  }
-  return `The control plane returned ${status}.`;
 }

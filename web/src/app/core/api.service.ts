@@ -2,7 +2,14 @@ import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
-import { CatalogueResponse, FleetResponse, Host } from './api.models';
+import {
+  CatalogueResponse,
+  CreateReadJobRequest,
+  FleetResponse,
+  Host,
+  Job,
+  JobsResponse,
+} from './api.models';
 import { TokenStore } from './token-store';
 
 /**
@@ -51,5 +58,35 @@ export class ApiService {
    */
   catalogue(): Observable<CatalogueResponse> {
     return this.http.get<CatalogueResponse>('/api/v1/catalogue', { headers: this.headers() });
+  }
+
+  /** Fetches recent jobs, newest first, optionally narrowed to one host. */
+  jobs(hostId?: string): Observable<JobsResponse> {
+    const query = hostId ? `?host=${encodeURIComponent(hostId)}` : '';
+    return this.http.get<JobsResponse>(`/api/v1/jobs${query}`, { headers: this.headers() });
+  }
+
+  /**
+   * Queues a read-only job.
+   *
+   * There is deliberately no method here for a destructive one. Such a job carries a signature made
+   * offline by a key the control plane does not hold, and a browser is the last place that key should
+   * ever be — so the API accepts one and this client cannot produce one, which is the right way round.
+   */
+  createReadJob(request: CreateReadJobRequest): Observable<Job> {
+    return this.http.post<Job>('/api/v1/jobs', request, { headers: this.headers() });
+  }
+
+  /**
+   * Records this operator's approval of a destructive job.
+   *
+   * It fails when the operator approving is the one who created the job, which is the point: a
+   * destructive job needs a second person. A control plane with one operator account therefore cannot
+   * approve one at all, and the message the server returns says so.
+   */
+  approveJob(id: string): Observable<Job> {
+    return this.http.post<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/approve`, null, {
+      headers: this.headers(),
+    });
   }
 }

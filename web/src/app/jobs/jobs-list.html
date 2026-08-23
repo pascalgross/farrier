@@ -1,0 +1,142 @@
+<header class="mb-6">
+  <h1 class="text-2xl font-medium m-0">Jobs</h1>
+  <p class="m-0 mt-1 text-sm opacity-80 max-w-3xl">
+    What has been asked of the fleet, and what came back. A job is a typed operation from the closed
+    catalogue — never a command — and every privileged one is bounded by a policy file on the host that
+    this control plane cannot modify.
+  </p>
+</header>
+
+@if (error()) {
+  <mat-card class="max-w-xl mb-6">
+    <mat-card-content class="!pt-6 flex items-start gap-3">
+      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <p class="m-0">{{ error() }}</p>
+    </mat-card-content>
+  </mat-card>
+}
+
+<mat-card class="mb-8 max-w-3xl">
+  <mat-card-header>
+    <mat-card-title>Ask a host for a report</mat-card-title>
+  </mat-card-header>
+
+  <mat-card-content class="!pt-4">
+    <p class="text-sm opacity-80 mt-0">
+      Read-only operations only, and that is not a gap in this page. A destructive job — applying every
+      update, starting, stopping or restarting a unit, rebooting — carries a signature made offline by a
+      key listed in that host's own <code>trusted-signers</code>, which this control plane does not hold
+      and a browser is the last place that should ever be. Sign one elsewhere and send it to
+      <code>POST /api/v1/jobs</code>; approving it is what this page can do.
+    </p>
+
+    <div class="flex flex-wrap gap-4 items-baseline">
+      <mat-form-field appearance="outline" class="min-w-64">
+        <mat-label>Host</mat-label>
+        <mat-select [ngModel]="chosenHost()" (ngModelChange)="chosenHost.set($event)">
+          @for (host of hosts(); track host.id) {
+            <mat-option [value]="host.id" [disabled]="host.revoked">
+              {{ host.hostname }}@if (host.revoked) { <span class="opacity-60"> (revoked)</span> }
+            </mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="min-w-72">
+        <mat-label>Operation</mat-label>
+        <mat-select [ngModel]="chosenIntent()" (ngModelChange)="chosenIntent.set($event)">
+          @for (entry of startableIntents(); track entry.name) {
+            <mat-option [value]="entry.name">{{ entry.name }} — {{ entry.summary }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <button mat-flat-button [disabled]="!canCreateJob()" (click)="createJob()">Queue it</button>
+    </div>
+
+    @if (actionError()) {
+      <p class="text-sm text-farrier-bad m-0 mt-2">{{ actionError() }}</p>
+    }
+  </mat-card-content>
+</mat-card>
+
+@if (jobs() === null) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading jobs"></mat-progress-bar>
+} @else if (jobs()!.length === 0) {
+  <p class="text-sm opacity-80">
+    Nothing has been asked of this fleet yet.
+  </p>
+} @else {
+  <table mat-table [dataSource]="jobs()!" class="w-full">
+    <ng-container matColumnDef="intent">
+      <th mat-header-cell *matHeaderCellDef>Operation</th>
+      <td mat-cell *matCellDef="let job">
+        <div class="font-medium farrier-numeric">{{ job.intent }}</div>
+        @if (job.result?.error) {
+          <div class="text-xs opacity-70 max-w-md">{{ job.result.error }}</div>
+        }
+        @if (job.result?.output) {
+          <pre class="text-xs opacity-70 max-w-md mt-1">{{ job.result.output }}</pre>
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="host">
+      <th mat-header-cell *matHeaderCellDef>Host</th>
+      <td mat-cell *matCellDef="let job">
+        <a [routerLink]="['/hosts', job.hostId]">{{ hostname(job) }}</a>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="state">
+      <th mat-header-cell *matHeaderCellDef>State</th>
+      <td mat-cell *matCellDef="let job">
+        @if (failed(job)) {
+          <mat-chip class="!bg-farrier-bad/20">{{ job.state }}</mat-chip>
+        } @else if (refused(job)) {
+          <mat-chip class="!bg-farrier-warn/20"
+                    matTooltip="Refused rather than attempted. A refusal is the host's policy working, not a failure.">
+            {{ job.state }}
+          </mat-chip>
+        } @else if (awaitingApproval(job)) {
+          <mat-chip class="!bg-farrier-warn/20"
+                    matTooltip="A destructive job needs a second operator to agree before any host may claim it.">
+            awaiting approval
+          </mat-chip>
+        } @else {
+          <mat-chip class="!bg-farrier-ok/20">{{ job.state }}</mat-chip>
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="authorisation">
+      <th mat-header-cell *matHeaderCellDef>Authorised by</th>
+      <td mat-cell *matCellDef="let job">
+        <div class="text-sm">{{ authorisation(job) }}</div>
+        @if (job.approvedBy) {
+          <div class="text-xs opacity-70">approved by {{ job.approvedBy }}</div>
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="created">
+      <th mat-header-cell *matHeaderCellDef>Asked</th>
+      <td mat-cell *matCellDef="let job">
+        <div class="text-sm">{{ age(job) }}</div>
+        <div class="text-xs opacity-70">by {{ job.createdBy || 'an unnamed operator' }}</div>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef></th>
+      <td mat-cell *matCellDef="let job">
+        @if (awaitingApproval(job)) {
+          <button mat-stroked-button [disabled]="busy()" (click)="approve(job)">Approve</button>
+        }
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="columns"></tr>
+    <tr mat-row *matRowDef="let row; columns: columns"></tr>
+  </table>
+}
