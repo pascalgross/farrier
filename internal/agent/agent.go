@@ -36,6 +36,7 @@ import (
 	"github.com/pascalgross/farrier/internal/collect/collector"
 	"github.com/pascalgross/farrier/internal/collect/platform"
 	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/privsep"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/signing"
 )
@@ -59,6 +60,13 @@ type Agent struct {
 
 	// nonces refuses replayed signatures across restarts.
 	nonces *NonceStore
+
+	// elevate is the route to the three root helpers, over the sockets in /run/farrier.
+	//
+	// It is the agent's entire relationship with privilege: it names an intent and forwards the
+	// parameter bytes it received, and it is told what happened. There is deliberately nothing here
+	// that could name a program, and nothing this process does with the reply except report it.
+	elevate privsep.Invoker
 
 	// policyPath is the local policy file, re-read on every cycle.
 	policyPath string
@@ -86,6 +94,14 @@ type Options struct {
 	// It exists as an option rather than being inferred, because the jitter it disables is what stops a
 	// fleet restarted by a configuration-management run from arriving in the same second.
 	SkipStartupJitter bool
+
+	// Elevate substitutes the route to the root helpers, for tests. Empty means the real one.
+	//
+	// The agent's job path has to be exercised without a root helper and without systemd, for the same
+	// reason it is exercised without a real platform: a test that needed either would be a test of the
+	// developer's machine. It is not an extension point — internal/privsep holds exactly one real
+	// implementation and is arranged so that there cannot be a second.
+	Elevate privsep.Invoker
 }
 
 // New builds an agent from persisted enrolment state.
@@ -120,11 +136,17 @@ func New(opts Options) (*Agent, error) {
 		return nil, err
 	}
 
+	elevate := opts.Elevate
+	if elevate == nil {
+		elevate = privsep.NewClient()
+	}
+
 	return &Agent{
 		state:            state,
 		client:           client,
 		platform:         plat,
 		nonces:           nonces,
+		elevate:          elevate,
 		policyPath:       opts.PolicyPath,
 		heartbeatSeconds: protocol.DefaultHeartbeatSeconds,
 		backoff:          NewBackoff(),
@@ -357,10 +379,19 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 		if ctx.Err() != nil {
 			return
 		}
-		spool := func(provisional protocol.ResultRequest) error {
-			return SpoolResult(a.state.Dir(), provisional)
+		runner := Runner{
+			HostID:      a.state.HostID,
+			Policy:      p,
+			Signers:     signers,
+			Nonces:      a.nonces,
+			Platform:    a.platform,
+			Elevate:     a.elevate,
+			ClockOffset: a.clockOffset,
+			Spool: func(provisional protocol.ResultRequest) error {
+				return SpoolResult(a.state.Dir(), provisional)
+			},
 		}
-		result := Run(ctx, job, a.state.HostID, p, signers, a.nonces, a.platform, a.clockOffset, spool)
+		result := runner.Run(ctx, job)
 		slog.Info("job finished", "job", job.ID, "intent", job.Intent, "status", result.Status)
 
 		// Written again, unconditionally: for an operation that may not return this replaces the

@@ -19,9 +19,12 @@
 //     about what an intent is by construction, rather than by two implementations that match until
 //     they do not.
 //
-// Phase 0 ships no write capability: the destructive and routine members are present as specifications
-// with Implemented set to false, so that the protocol, the UI and the documentation can be built
-// against the final shape while nothing on a managed host can act on them.
+// Nine of the ten members have an executor. The tenth, packages.applySecurity, does not, and that is a
+// deliberate gap rather than unfinished work: it is the one *routine* member, and docs/PROTOCOL.md §5.1
+// says an agent MUST NOT execute a routine intent until it verifies a signature by the control plane's
+// online key. No such key exists yet, and shipping the executor before the verification would make
+// applying packages an operation authorised by mTLS alone. Its Implemented flag is what stops that, and
+// the guarantee suite pins it there with the reason attached.
 package intent
 
 import (
@@ -170,18 +173,24 @@ type Spec struct {
 
 	// Implemented reports whether an executor exists behind this member on the agent.
 	//
-	// Phase 0 ships the destructive and routine specs with no executor, so that the protocol and the
-	// UI can be built against the final shape while nothing on a host can act on them. The agent
-	// refuses an unimplemented intent the same way it refuses an unknown one.
+	// The agent refuses an unimplemented intent the same way it refuses an unknown one, which makes
+	// this flag the last gate in front of a capability rather than a note about the roadmap. Setting it
+	// is the act that gives a build the ability to do something to a host, and the guarantee suite
+	// treats it that way: the expectation is written out member by member, with a reason for each
+	// member that is false.
 	Implemented bool
 
-	// MayNotReturn reports that the operation can complete by the host disappearing.
+	// MayNotReturn reports that the operation can complete by the host disappearing, whatever its
+	// parameters say.
 	//
 	// It exists as a property of the catalogue rather than a name the agent checks for, because the
 	// consequence of forgetting it is silent: host.reboot completes by the machine going away, so an
 	// agent that wrote its result afterwards would write nothing at all, and the job would sit in the
 	// queue looking like a host that had gone quiet. The agent fsyncs a provisional result before
 	// invoking anything marked this way, and the guarantee suite pins which members are.
+	//
+	// It is the floor and not the whole answer. Ask MayNotReturn, which also accounts for the
+	// parameters, rather than reading this field directly.
 	MayNotReturn bool
 
 	// Decode parses and validates the intent's parameters.
@@ -228,9 +237,16 @@ var catalogue = map[Name]Spec{
 	},
 
 	PackagesApplySecurity: {
-		Name:        PackagesApplySecurity,
-		Class:       ClassRoutine,
-		Summary:     "Apply security updates, subject to local policy",
+		Name:    PackagesApplySecurity,
+		Class:   ClassRoutine,
+		Summary: "Apply security updates, subject to local policy",
+		// The one member with no executor, and the only one whose absence is a decision rather than a
+		// gap. helpers/apply-updates can perform it — an administrator can run it by hand today — but
+		// the *agent* must not accept one from a control plane yet. It is the only routine intent, so
+		// Class.RequiresOfflineSignature is false for it and nothing in the acceptance sequence checks
+		// a signature at all; docs/PROTOCOL.md §5.1 requires the control plane's online key to be
+		// verified instead, and no such key exists. Turning this on before that check does would make
+		// applying packages to a fleet an operation authorised by mTLS alone.
 		Implemented: false,
 		Decode:      decodeApply(PackagesApplySecurity),
 	},
@@ -239,35 +255,35 @@ var catalogue = map[Name]Spec{
 		Name:        PackagesApplyAll,
 		Class:       ClassDestructive,
 		Summary:     "Apply all available updates, subject to local policy",
-		Implemented: false,
+		Implemented: true,
 		Decode:      decodeApply(PackagesApplyAll),
 	},
 	ServiceStart: {
 		Name:        ServiceStart,
 		Class:       ClassDestructive,
 		Summary:     "Start a systemd unit on the policy's restartable list",
-		Implemented: false,
+		Implemented: true,
 		Decode:      decodeUnit(ServiceStart),
 	},
 	ServiceStop: {
 		Name:        ServiceStop,
 		Class:       ClassDestructive,
 		Summary:     "Stop a systemd unit on the policy's restartable list",
-		Implemented: false,
+		Implemented: true,
 		Decode:      decodeUnit(ServiceStop),
 	},
 	ServiceRestart: {
 		Name:        ServiceRestart,
 		Class:       ClassDestructive,
 		Summary:     "Restart a systemd unit on the policy's restartable list",
-		Implemented: false,
+		Implemented: true,
 		Decode:      decodeUnit(ServiceRestart),
 	},
 	HostReboot: {
 		Name:         HostReboot,
 		Class:        ClassDestructive,
 		Summary:      "Reboot the host, subject to the policy's reboot rule",
-		Implemented:  false,
+		Implemented:  true,
 		MayNotReturn: true,
 		Decode:       decodeReboot(HostReboot),
 	},
@@ -318,6 +334,28 @@ func Names() []Name {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// MayNotReturn reports whether this operation, with these parameters, can take the host away.
+//
+// The catalogue's own flag is a property of the intent and cannot see the parameters, and there is one
+// operation where that is not enough: packages.applyAll with rebootIfRequired reboots the host at the
+// end, exactly as host.reboot does, while its Spec quite correctly says that applying updates does not
+// normally take a machine away. An agent that consulted only the Spec would skip the provisional result
+// for that job, the host would reboot, and the job would sit in the queue looking like a host that had
+// gone quiet — the failure the flag exists to prevent, arriving through the one path the flag cannot
+// see.
+//
+// The alternative was to mark both apply intents unconditionally, which would spool a provisional
+// "succeeded" for the great majority of update jobs that never reboot at all. That is a worse trade:
+// the provisional record exists to be replaced, and one written for a job that was never going to need
+// it is a claim of success sitting on disk for the length of a forty-minute upgrade.
+func MayNotReturn(s Spec, p Params) bool {
+	if s.MayNotReturn {
+		return true
+	}
+	apply, ok := p.(ApplyParams)
+	return ok && apply.RebootIfRequired
 }
 
 // Decode resolves a name and parses its parameters in one step.

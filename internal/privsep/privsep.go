@@ -125,6 +125,34 @@ const MaxResponseBytes = 1 << 20
 // not a resource an attacker can accumulate.
 const RequestTimeout = 10 * time.Second
 
+// Exit codes. They are the interface between the agent and the helpers, and they are defined here — at
+// the boundary itself — rather than in either of the two packages that use them, so that neither side
+// owns the vocabulary the other has to speak.
+//
+// The same numbers reach an administrator running a helper by hand, so "exit 3" in a journal and
+// "exitCode: 3" in the control plane's UI are the same statement about the same event.
+const (
+	// ExitOK means the operation completed.
+	ExitOK = 0
+
+	// ExitUsage means the request was malformed. It never means the operation was attempted.
+	ExitUsage = 2
+
+	// ExitRefused means local policy declined the operation.
+	ExitRefused = 3
+
+	// ExitNotImplemented means this build has no executor for the operation.
+	//
+	// It was every privileged path's ending in phase 0, which shipped no write capability at all. It is
+	// kept, and the agent still maps it to unsupported_intent, because a fleet is upgraded host by host:
+	// an agent from a later release talking to a helper from an earlier one gets exactly this, and "your
+	// package is behind" needs to stay distinguishable from "the operation did not work".
+	ExitNotImplemented = 4
+
+	// ExitFailed means the operation was attempted and did not succeed.
+	ExitFailed = 5
+)
+
 // Request is one privileged operation, as the agent asks for it.
 //
 // Note what is absent, because the absence is the design: there is no program, no path, no argument
@@ -158,11 +186,9 @@ type Request struct {
 //
 // The exit code is carried rather than only a status because it is the interface the phase 0 helpers
 // already had, it is what an administrator running a helper by hand sees, and it is what
-// protocol.ResultRequest reports to the control plane. Keeping one set of codes across the socket, the
-// command line and the wire means an operator reading "exit 3" in a journal and "exitCode: 3" in the UI
-// is reading the same thing.
+// protocol.ResultRequest reports to the control plane.
 type Response struct {
-	// ExitCode is one of the helper.Exit constants.
+	// ExitCode is one of the Exit constants above.
 	ExitCode int `json:"exitCode"`
 
 	// Output is the operation's combined output, already truncated by the helper.

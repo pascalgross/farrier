@@ -12,6 +12,7 @@ import (
 	"github.com/pascalgross/farrier/internal/collect/collector"
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/privsep"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/signing"
 )
@@ -27,6 +28,14 @@ type acceptance struct {
 
 	// params are the decoded, validated parameters.
 	params intent.Params
+
+	// raw is the parameter object exactly as it arrived, for a privileged job to forward.
+	//
+	// The helper decodes it again itself, as root, with the same catalogue decoder. Handing it the
+	// bytes rather than a re-encoding of the decoded value is what makes the two decodes the same
+	// decode: a round trip through a Go struct is a place where a field could be dropped, and the
+	// helper's validation would then be of something the agent had already altered.
+	raw []byte
 
 	// status is the protocol status to report when the job is refused.
 	status string
@@ -64,9 +73,13 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		}
 	}
 	if !spec.Implemented {
+		// One member is deliberately here rather than merely unfinished. packages.applySecurity is the
+		// only routine intent, and routine is the one tier this sequence verifies no signature for;
+		// docs/PROTOCOL.md §5.1 requires the control plane's online key instead, and there is no online
+		// key yet. See internal/intent's `unimplemented` map for the reason recorded beside each one.
 		return acceptance{
 			status: protocol.StatusUnsupportedIntent,
-			reason: fmt.Sprintf("%s has no executor in this build: phase 0 ships no write capability", spec.Name),
+			reason: fmt.Sprintf("%s has no executor in this build", spec.Name),
 		}
 	}
 
@@ -128,7 +141,7 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers *signing.S
 		return acceptance{status: status, reason: decision.Reason}
 	}
 
-	return acceptance{spec: spec, params: params}
+	return acceptance{spec: spec, params: params, raw: rawParams}
 }
 
 // verifyOfflineSignature checks a destructive job against the host's own trusted-signers.
@@ -188,12 +201,12 @@ func absDuration(d time.Duration) time.Duration {
 	return d
 }
 
-// Execute runs an accepted job and produces its result.
+// Execute runs an accepted read-only intent in this process and produces its typed result.
 //
-// Only read-only intents reach here in phase 0, because Accept refuses anything without an executor.
-// The privileged branch is deliberately absent rather than stubbed: an empty case that a future change
-// could fill in without touching the acceptance sequence is exactly the shape of the mistake this
-// design is meant to prevent.
+// Only read-only intents reach here, and that is the design rather than an accident of what is
+// implemented: every privileged operation happens in a root helper on the other side of a socket, so
+// there is no branch of this function a future change could fill in to make the agent itself act on a
+// host. Runner.elevate is the whole of the other path, and it names an intent rather than an operation.
 func Execute(ctx context.Context, spec intent.Spec, params intent.Params, plat collect.Platform) (any, error) {
 	switch spec.Name {
 	case intent.FactsCollect:
@@ -224,19 +237,57 @@ func Execute(ctx context.Context, spec intent.Spec, params intent.Params, plat c
 	}
 }
 
+// Runner holds everything one job needs to be accepted, executed and reported.
+//
+// It is a struct rather than a longer parameter list because two of its fields are now interfaces, and
+// a call site that passes eight positional values of which two are seams is one where a test can wire
+// the wrong seam without the compiler noticing. Named fields also make the one rule that cannot be
+// expressed in a signature visible at every call site: Spool is not optional for an operation that may
+// take the host away.
+type Runner struct {
+	// HostID is this host's control-plane identifier, which is part of every signed payload.
+	HostID string
+
+	// Policy is the local policy as the agent last read it.
+	Policy policy.Policy
+
+	// Signers is the host's own trust anchor, read from /etc/farrier/trusted-signers.
+	Signers *signing.SignerSet
+
+	// Nonces refuses a replayed signature across restarts.
+	Nonces *NonceStore
+
+	// Platform is the distribution-family implementation, used only by read-only intents.
+	Platform collect.Platform
+
+	// Elevate is the route to the root helpers. A nil value means this build has none.
+	//
+	// It is an interface so that the job path can be tested without a root helper and without systemd —
+	// the same reason the platform is an interface. It is not an extension point: a second
+	// implementation outside a test would be a second privileged route, and internal/privsep is
+	// arranged so that there is exactly one.
+	Elevate privsep.Invoker
+
+	// ClockOffset is the agent's own measurement of its offset from the control plane.
+	ClockOffset time.Duration
+
+	// Spool writes a result to disk and fsyncs it, before the operation it describes has run.
+	//
+	// It is required for any operation that may not return, and Run refuses rather than proceeding
+	// without it. See the refusal in Run for why that is not merely defensive.
+	Spool func(protocol.ResultRequest) error
+}
+
 // Run executes a job end to end and returns the result to report.
 //
 // It never returns an error: every outcome, including a refusal and a crash in collection, becomes a
 // result the control plane is told about. A job that produced no result at all would sit in the queue
 // looking like a host that had gone quiet, which is the least useful thing a fleet tool can do.
-func Run(ctx context.Context, job protocol.Job, hostID string, p policy.Policy,
-	signers *signing.SignerSet, nonces *NonceStore, plat collect.Platform,
-	clockOffset time.Duration, beforeExecute func(protocol.ResultRequest) error) protocol.ResultRequest {
-
+func (r Runner) Run(ctx context.Context, job protocol.Job) protocol.ResultRequest {
 	started := time.Now()
 	result := protocol.ResultRequest{JobID: job.ID, StartedAt: started}
 
-	decision := accept(job, hostID, p, signers, nonces, clockOffset, started)
+	decision := accept(job, r.HostID, r.Policy, r.Signers, r.Nonces, r.ClockOffset, started)
 	if !decision.accepted() {
 		result.Status = decision.status
 		result.Error = decision.reason
@@ -245,19 +296,30 @@ func Run(ctx context.Context, job protocol.Job, hostID string, p policy.Policy,
 	}
 
 	// An operation that can complete by the host disappearing needs its result on disk *before* it
-	// starts. host.reboot is the case: an agent that wrote the result afterwards would write nothing at
-	// all, and the job would sit in the queue looking like a host that had gone quiet. The provisional
-	// record is replaced by the real one below if this process is still here to write it.
-	if decision.spec.MayNotReturn && beforeExecute != nil {
+	// starts. host.reboot is the obvious case, and an update job carrying rebootIfRequired is the one
+	// that is easy to miss — which is why the question is asked of the parameters and not only of the
+	// catalogue entry. An agent that wrote the result afterwards would write nothing at all, and the
+	// job would sit in the queue looking like a host that had gone quiet. The provisional record is
+	// replaced by the real one below if this process is still here to write it.
+	if intent.MayNotReturn(decision.spec, decision.params) {
+		if r.Spool == nil {
+			// A refusal rather than a shrug. An operation that may take the host away, whose result
+			// cannot be recorded first, is one whose outcome nobody would ever learn — and a Runner
+			// assembled without a Spool is a programming error, not a host condition, so it must be
+			// loud where it happens rather than silent until the one reboot that is never reported.
+			result.Status = protocol.StatusFailed
+			result.Error = "refusing to start an operation that may not return: this agent has no way " +
+				"to record a result before it begins"
+			result.FinishedAt = time.Now()
+			return result
+		}
 		provisional := result
 		provisional.Status = protocol.StatusSucceeded
 		provisional.FinishedAt = started
 		provisional.Output = "This result was written and fsynced before the operation began, because " +
 			decision.spec.Name.String() + " can complete by the host disappearing. If the host came " +
 			"back and the operation had failed, a later result replaced this one."
-		if err := beforeExecute(provisional); err != nil {
-			// Refused rather than attempted. An operation that may take the host away, whose result
-			// cannot be written down first, is one whose outcome nobody would ever learn.
+		if err := r.Spool(provisional); err != nil {
 			result.Status = protocol.StatusFailed
 			result.Error = "refusing to start an operation that may not return, because its result " +
 				"could not be recorded first: " + err.Error()
@@ -266,7 +328,11 @@ func Run(ctx context.Context, job protocol.Job, hostID string, p policy.Policy,
 		}
 	}
 
-	output, err := Execute(ctx, decision.spec, decision.params, plat)
+	if decision.spec.Class.Privileged() {
+		return r.elevate(ctx, job, decision, result)
+	}
+
+	output, err := Execute(ctx, decision.spec, decision.params, r.Platform)
 	result.FinishedAt = time.Now()
 	if err != nil {
 		result.Status = protocol.StatusFailed
@@ -279,4 +345,77 @@ func Run(ctx context.Context, job protocol.Job, hostID string, p policy.Policy,
 	result.Status = protocol.StatusSucceeded
 	result.Result = output
 	return result
+}
+
+// elevate hands a privileged job to the root helper that serves it and maps the reply onto a result.
+//
+// The agent does not perform the operation and does not learn how it was performed. It names an intent,
+// forwards the parameter bytes it received, and reports what came back — which is the whole of its
+// involvement in every privileged thing Farrier does.
+func (r Runner) elevate(ctx context.Context, job protocol.Job, decision acceptance,
+	result protocol.ResultRequest) protocol.ResultRequest {
+
+	if r.Elevate == nil {
+		result.Status = protocol.StatusFailed
+		result.Error = "this agent has no route to the root helpers"
+		result.FinishedAt = time.Now()
+		return result
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, privsep.InvokeFor(decision.spec.Name))
+	defer cancel()
+
+	resp, err := r.Elevate.Invoke(ctx, privsep.Request{
+		JobID:  job.ID,
+		Intent: decision.spec.Name,
+		Params: decision.raw,
+		// The *effective* issue time, which for a signed job is the signed notBefore. The helper runs
+		// the age check again against whatever it is given, so handing it the unsigned issuedAt would
+		// reopen the limits.max_job_age_seconds bypass on the root side of the boundary — where it
+		// matters most, and where nothing else would catch it.
+		IssuedAt: effectiveIssueTime(job),
+	})
+	result.FinishedAt = time.Now()
+	if err != nil {
+		result.Status = protocol.StatusFailed
+		result.Error = err.Error()
+		return result
+	}
+
+	result.ExitCode = resp.ExitCode
+	result.Error = resp.Error
+	result.Status = statusForExit(resp.ExitCode)
+
+	// Truncated again on this side even though the helper already did it. A helper from an older
+	// package might not have, and an over-size result is not merely untidy: the server rejects a body
+	// past its limit, DeliverPending only removes a spool file after a 2xx, and the host would then
+	// retry the same over-size body for ever.
+	output, truncated := protocol.TruncateOutput(resp.Output)
+	result.Output = output
+	result.OutputTruncated = truncated || resp.OutputTruncated
+	return result
+}
+
+// statusForExit maps a helper's exit code onto the protocol status the control plane is told.
+//
+// The mapping is made once, here, rather than at each call site, because the distinction that matters
+// most is easy to lose: a refusal is not a failure. An operator who is told "failed" for every job local
+// policy declined learns to ignore failures, which is precisely the wrong lesson from the mechanism
+// working exactly as designed.
+func statusForExit(code int) string {
+	switch code {
+	case privsep.ExitOK:
+		return protocol.StatusSucceeded
+	case privsep.ExitRefused:
+		return protocol.StatusRefusedByPolicy
+	case privsep.ExitNotImplemented:
+		// The helper is from an older package than this agent. Reporting it as the same
+		// "unsupported_intent" an unknown intent gets is right: in both cases this host cannot do the
+		// thing, and in neither was anything attempted.
+		return protocol.StatusUnsupportedIntent
+	default:
+		// ExitUsage and ExitFailed and anything unrecognised. Usage is an agent bug rather than a host
+		// condition and should read as a failure so that somebody looks at it.
+		return protocol.StatusFailed
+	}
 }

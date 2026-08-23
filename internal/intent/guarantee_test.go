@@ -151,19 +151,87 @@ func TestGuaranteeDestructiveIntentsRequireOfflineSignature(t *testing.T) {
 	}
 }
 
-// TestGuaranteePhaseZeroShipsNoWriteCapability asserts nothing privileged has an executor yet.
+// unimplemented is every catalogue member that has no executor, with the reason it does not.
 //
-// Phase 0 ships the routine and destructive specs so the protocol, the UI and the documentation can be
-// built against the final shape, with no executor behind them. This test is what stops "wire up the
-// executor" from arriving as an incidental part of an unrelated change; deleting it is a deliberate,
-// visible act when phase 1 begins.
-func TestGuaranteePhaseZeroShipsNoWriteCapability(t *testing.T) {
+// It is a map with the reason as the value rather than a list of names, because a member without an
+// executor is a decision somebody made and the next person to read this file needs to know which
+// decision. An empty map would be the ordinary state of a finished catalogue; a member appearing here
+// without a reason is what the test refuses.
+var unimplemented = map[Name]string{
+	PackagesApplySecurity: "it is the only routine intent, so Class.RequiresOfflineSignature is false " +
+		"for it and the agent's acceptance sequence checks no signature at all. docs/PROTOCOL.md §5.1 " +
+		"requires the control plane's online key to be verified instead, and no such key exists yet. " +
+		"Implementing it before that check would make applying packages to a fleet an operation " +
+		"authorised by mTLS alone.",
+}
+
+// TestGuaranteeEveryCatalogueMemberIsImplementedOrHasAWrittenReasonNotToBe replaces the phase 0 pin.
+//
+// Until phase 1 this test asserted the opposite — that *nothing* privileged had an executor — and said
+// that starting phase 1 meant updating it in the same commit. This is that update. What it pins now is
+// the harder and longer-lived property: a build gains the ability to change a host by one field being
+// set, so every member that does not have it set must have a reason written down beside it, and every
+// member that does must be one somebody meant to turn on.
+//
+// The reason this matters more than it looks: packages.applySecurity is not merely unfinished. Turning
+// its flag on is a single-character change that would silently drop a signature requirement, because
+// the routine class checks no signature and the online-key check that is supposed to replace it does
+// not exist. The flag is currently the whole of what prevents that.
+func TestGuaranteeEveryCatalogueMemberIsImplementedOrHasAWrittenReasonNotToBe(t *testing.T) {
 	for _, s := range All() {
-		if s.Class.Privileged() && s.Implemented {
-			t.Errorf("intent %q is privileged and marked Implemented, but phase 0 ships no write "+
-				"capability at all. If you are starting phase 1, update this test in the same commit.",
-				s.Name)
+		reason, expected := unimplemented[s.Name]
+		switch {
+		case s.Implemented && expected:
+			t.Errorf("intent %q is marked Implemented, but this file records why it must not be:\n  %s\n"+
+				"If that reason no longer holds, remove the entry from `unimplemented` in the same "+
+				"commit and expect a careful review.", s.Name, reason)
+		case !s.Implemented && !expected:
+			t.Errorf("intent %q has no executor and no reason recorded for why not.\n"+
+				"An intent the agent refuses is invisible on a dashboard as anything other than a job "+
+				"that did not work, so the reason belongs in `unimplemented` in this file rather than "+
+				"in somebody's memory.", s.Name)
 		}
+	}
+	for name := range unimplemented {
+		if !Has(name) {
+			t.Errorf("%q is recorded as unimplemented but is not in the catalogue at all", name)
+		}
+	}
+}
+
+// TestGuaranteeTheRoutineTierGainsNoExecutorWithoutTheOnlineKeyCheck states the rule generally.
+//
+// It is deliberately about the *class* rather than about packages.applySecurity, because the specific
+// name is not the point. Any future routine member would arrive with the same hole: routine is the one
+// tier for which RequiresOfflineSignature is false, so the acceptance sequence in internal/agent
+// verifies nothing, and docs/PROTOCOL.md §5.1's "an agent MUST NOT execute a routine intent until it
+// does" is the sentence this test makes mechanical.
+func TestGuaranteeTheRoutineTierGainsNoExecutorWithoutTheOnlineKeyCheck(t *testing.T) {
+	for _, s := range All() {
+		if s.Class != ClassRoutine {
+			continue
+		}
+		if s.Class.RequiresOfflineSignature() {
+			// Would make this test vacuous, and would mean the class contract had changed underneath it.
+			t.Fatalf("routine intent %q now requires an offline signature; this test assumes it does "+
+				"not, and the reasoning below needs revisiting", s.Name)
+		}
+		if s.Implemented {
+			t.Errorf("routine intent %q has an executor. Routine is the one tier the agent verifies no "+
+				"signature for, so this makes it an operation authorised by mTLS alone. It may only be "+
+				"turned on together with verification of the control plane's online key — see "+
+				"docs/PROTOCOL.md §5.1 step 5, which says an agent MUST NOT execute a routine intent "+
+				"until it does.", s.Name)
+		}
+	}
+}
+
+// TestGuaranteeEveryReadIntentHasAnExecutor asserts the unprivileged half is whole.
+//
+// A read intent with no executor would be a host that reports nothing and looks like a host that is
+// down, which is the one failure a fleet tool must not have.
+func TestGuaranteeEveryReadIntentHasAnExecutor(t *testing.T) {
+	for _, s := range All() {
 		if s.Class == ClassRead && !s.Implemented {
 			t.Errorf("read-only intent %q has no executor", s.Name)
 		}
@@ -186,6 +254,53 @@ func TestGuaranteeIntentsThatMayNotReturnArePinned(t *testing.T) {
 				"fsyncs a provisional result before starting anything marked this way, and an "+
 				"unmarked one reports nothing at all.", s.Name, s.MayNotReturn, expected[s.Name])
 		}
+	}
+}
+
+// TestGuaranteeAnUpdateThatRebootsIsTreatedAsAnOperationThatMayNotReturn covers the parameters.
+//
+// The Spec flag above cannot see them, and there is exactly one case where that is not enough:
+// packages.applyAll with rebootIfRequired ends by rebooting the host, precisely as host.reboot does,
+// while its Spec quite correctly says that applying updates does not normally take a machine away. An
+// agent that consulted only the flag would skip the provisional result for that job, the host would
+// reboot, and the job would sit in the queue looking like a host that had gone quiet — the failure the
+// flag exists to prevent, arriving through the one path the flag cannot see.
+func TestGuaranteeAnUpdateThatRebootsIsTreatedAsAnOperationThatMayNotReturn(t *testing.T) {
+	for _, name := range []Name{PackagesApplySecurity, PackagesApplyAll} {
+		spec, ok := Lookup(name)
+		if !ok {
+			t.Fatalf("%q is not in the catalogue", name)
+		}
+
+		_, plain, err := Decode(name, []byte(`{"rebootIfRequired":false}`))
+		if err != nil {
+			t.Fatalf("decoding %q: %v", name, err)
+		}
+		if MayNotReturn(spec, plain) {
+			t.Errorf("%q without a follow-up reboot is treated as an operation that may not return; "+
+				"every ordinary update job would then spool a provisional \"succeeded\" it never "+
+				"needed", name)
+		}
+
+		_, rebooting, err := Decode(name, []byte(`{"rebootIfRequired":true}`))
+		if err != nil {
+			t.Fatalf("decoding %q: %v", name, err)
+		}
+		if !MayNotReturn(spec, rebooting) {
+			t.Fatalf("%q with rebootIfRequired is not treated as an operation that may not return. "+
+				"It reboots the host at the end, so its result must be on disk before it starts — "+
+				"otherwise the host comes back patched and the job is never reported at all.", name)
+		}
+	}
+
+	// And the static flag still decides on its own where there are no parameters to consult.
+	spec, _ := Lookup(HostReboot)
+	_, params, err := Decode(HostReboot, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("decoding host.reboot: %v", err)
+	}
+	if !MayNotReturn(spec, params) {
+		t.Error("host.reboot is not treated as an operation that may not return")
 	}
 }
 

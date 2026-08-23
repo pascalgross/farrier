@@ -31,28 +31,27 @@ import (
 	"github.com/pascalgross/farrier/internal/protocol"
 )
 
-// Exit codes. They are part of the interface between the agent and the helpers, so they are named
-// constants rather than literals scattered through three programs.
+// Exit codes, re-exported from the boundary package that defines them.
+//
+// They live in internal/privsep rather than here because they are the vocabulary the agent and the
+// helpers share, and neither side should own it. They are named here as well so that a helper's source
+// reads as a single program rather than as one half of a protocol.
 const (
 	// ExitOK means the operation completed.
-	ExitOK = 0
+	ExitOK = privsep.ExitOK
 
-	// ExitUsage means the command line was malformed. It never means the operation was attempted.
-	ExitUsage = 2
+	// ExitUsage means the command line or the request was malformed. It never means the operation was
+	// attempted.
+	ExitUsage = privsep.ExitUsage
 
 	// ExitRefused means local policy declined the operation.
-	ExitRefused = 3
+	ExitRefused = privsep.ExitRefused
 
 	// ExitNotImplemented means this build has no executor for the operation.
-	//
-	// It was every privileged path's ending in phase 0, which shipped no write capability at all. It is
-	// kept, and the agent still maps it to unsupported_intent, because a fleet is upgraded host by host:
-	// an agent from this release talking to a helper from the last one gets exactly this, and "your
-	// package is behind" needs to stay distinguishable from "the operation did not work".
-	ExitNotImplemented = 4
+	ExitNotImplemented = privsep.ExitNotImplemented
 
 	// ExitFailed means the operation was attempted and did not succeed.
-	ExitFailed = 5
+	ExitFailed = privsep.ExitFailed
 )
 
 // Request is a helper invocation reduced to what an authorisation decision needs.

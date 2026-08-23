@@ -290,56 +290,69 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 	}
 }
 
-// TestClockSkewFailsClosedForPrivilegedIntentsOnly is the fail-closed rule, both halves.
+// TestGuaranteeTheRoutineIntentIsStillRefusedByTheAgent is the one gap phase 1 left on purpose.
 //
-// Beyond five minutes of offset, privileged intents refuse and read-only ones still run. Blinding an
-// operator to the state of a host with a wrong clock would help nobody, and it is the host with the
-// wrong clock they most need to look at.
-func TestClockSkewFailsClosedForPrivilegedIntentsOnly(t *testing.T) {
+// packages.applySecurity is the only routine intent, and routine is the one tier for which
+// Class.RequiresOfflineSignature is false — so the acceptance sequence above verifies no signature for
+// it at all. docs/PROTOCOL.md §5.1 says the control plane's online key must be verified instead, and
+// there is no online key yet. Until there is, accepting one would make applying packages to a fleet an
+// operation authorised by mTLS alone.
+//
+// This is asserted at the agent rather than only in the catalogue because this is the layer an actual
+// job passes through, and because the refusal must hold however well the job is signed: a signature by
+// a key in trusted-signers is not an online-key signature and must not be mistaken for one.
+func TestGuaranteeTheRoutineIntentIsStillRefusedByTheAgent(t *testing.T) {
 	trusted := newSignerFixture(t, "ops-laptop")
 	now := time.Now()
-	skew := 10 * time.Minute
 
-	read := protocol.Job{ID: "01JREAD", Intent: "facts.collect", Params: map[string]any{}, IssuedAt: now}
-	if got := accept(read, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), skew, now); !got.accepted() {
-		t.Errorf("a read-only intent was refused for clock skew: %s", got.reason)
+	job := protocol.Job{
+		ID: "01JROUTINE", Intent: "packages.applySecurity", Params: map[string]any{},
+		Class: "routine", IssuedAt: now, NotBefore: now.Add(-time.Minute),
+		NotAfter: now.Add(30 * time.Minute), Nonce: "nonce-routine",
 	}
-
-	job := destructiveJob("nonce-skew")
-	job.Signature = trusted.sign(t, job)
-	got := accept(job, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), skew, now)
-	if got.accepted() {
-		t.Fatal("a privileged intent ran with ten minutes of clock skew")
-	}
-	if got.status != protocol.StatusRefusedClockSkew && got.status != protocol.StatusUnsupportedIntent {
-		t.Errorf("status %q, want a clock-skew refusal", got.status)
+	for _, signed := range []bool{false, true} {
+		if signed {
+			// Signed by a key the host does trust, which is the case that would slip through if the
+			// refusal were ever loosened to "unless it is signed by something".
+			job.Signature = trusted.sign(t, job)
+		}
+		got := accept(job, testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, now)
+		if got.accepted() {
+			t.Errorf("packages.applySecurity was accepted (signed=%v). Routine intents verify no "+
+				"signature, so this is mTLS-only authorisation for applying packages.", signed)
+		}
+		if got.status != protocol.StatusUnsupportedIntent {
+			t.Errorf("packages.applySecurity was refused as %q; it must read as unsupported_intent, "+
+				"which is what an agent reports for something it will not do", got.status)
+		}
 	}
 }
 
-// TestPhaseZeroRefusesEveryPrivilegedIntent asserts the shipped build has no write path.
+// TestTheDestructiveTierIsAcceptedWhenProperlySigned is the other half, and the point of phase 1.
 //
-// Every privileged intent is refused for want of an executor, whatever the policy says and however well
-// it is signed. It is stated here as well as in the catalogue's own tests because this is the layer an
-// actual job passes through.
-func TestPhaseZeroRefusesEveryPrivilegedIntent(t *testing.T) {
+// Until phase 1 this file asserted that every privileged intent was refused for want of an executor.
+// That has to stop being true for the product to do anything at all, and the replacement assertion is
+// the one that matters: the destructive intents are accepted *when signed by a key this host trusts*,
+// and TestGuaranteeAnUnsignedDestructiveJobIsRefused above still holds for when they are not.
+func TestTheDestructiveTierIsAcceptedWhenProperlySigned(t *testing.T) {
 	trusted := newSignerFixture(t, "ops-laptop")
 	now := time.Now()
 
 	jobs := []protocol.Job{
-		{ID: "01JA", Intent: "packages.applySecurity", Params: map[string]any{}},
 		{ID: "01JB", Intent: "packages.applyAll", Params: map[string]any{}},
 		{ID: "01JC", Intent: "service.restart", Params: map[string]any{"unit": "nginx.service"}},
 		{ID: "01JD", Intent: "host.reboot", Params: map[string]any{}},
 	}
 	for i := range jobs {
 		jobs[i].IssuedAt = now
+		jobs[i].NotBefore = now.Add(-time.Minute)
 		jobs[i].NotAfter = now.Add(time.Hour)
-		jobs[i].Nonce = "nonce-phase0-" + jobs[i].ID
+		jobs[i].Nonce = "nonce-phase1-" + jobs[i].ID
 		jobs[i].Signature = trusted.sign(t, jobs[i])
 
 		got := accept(jobs[i], testHostID, permissivePolicy(t), trusted.set, newNonceStore(t), 0, now)
-		if got.accepted() {
-			t.Errorf("%s was accepted; phase 0 ships no write capability", jobs[i].Intent)
+		if !got.accepted() {
+			t.Errorf("%s was refused with %q: %s", jobs[i].Intent, got.status, got.reason)
 		}
 	}
 }
