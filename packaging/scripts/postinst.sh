@@ -1,5 +1,5 @@
 #!/bin/sh
-# Finish installation: state directories, the machine-id salt, and the systemd unit.
+# Finish installation: state directories, the machine-id salt, the helper sockets and the agent unit.
 #
 # Nothing here touches /etc/farrier/policy.toml or /etc/farrier/trusted-signers. They are dpkg
 # conffiles and an administrator's edits must survive every upgrade; testfleet/ has a test that asserts
@@ -29,6 +29,21 @@ case "$1" in
 
 		if [ -d /run/systemd/system ]; then
 			systemctl daemon-reload >/dev/null 2>&1 || true
+
+			# /run is a tmpfs, so at boot the directory comes from tmpfiles.d before sockets.target.
+			# This is the install-time case, where the sockets are about to start and the directory
+			# they live in does not exist yet.
+			systemd-tmpfiles --create /usr/lib/tmpfiles.d/farrier.conf >/dev/null 2>&1 || true
+
+			# The three helper sockets are the agent's only route to root. They are enabled and started
+			# here rather than left to the agent, because a host whose sockets never came up is one that
+			# reports perfectly and silently cannot be patched — and the symptom would appear weeks
+			# later, as a job that failed.
+			for socket in farrier-apply-updates farrier-restart-unit farrier-reboot-host; do
+				systemctl enable "$socket.socket" >/dev/null 2>&1 || true
+				systemctl restart "$socket.socket" >/dev/null 2>&1 || true
+			done
+
 			systemctl enable farrier-agent.service >/dev/null 2>&1 || true
 			if systemctl is-active --quiet farrier-agent.service; then
 				systemctl try-restart farrier-agent.service >/dev/null 2>&1 || true
@@ -38,5 +53,18 @@ case "$1" in
 		fi
 		;;
 esac
+
+# The sudoers file phase 0 shipped is gone, and dpkg does not remove a conffile just because a package
+# stopped shipping it — it leaves it behind as an obsolete conffile, for ever. On a host upgraded from a
+# build that had one, that would leave /etc/sudoers.d/farrier granting the farrier account passwordless
+# root on all three helpers: a privilege grant nothing uses, that nobody would look for, arriving
+# through the release that was supposed to remove it.
+#
+# The version guard covers every build that predates the socket boundary. No version has been released
+# yet, so nothing on any real host matches; it is here because the cost of being wrong about that is a
+# permanent hole, and the cost of being wrong the other way is three lines that never fire.
+if command -v dpkg-maintscript-helper >/dev/null 2>&1; then
+	dpkg-maintscript-helper rm_conffile /etc/sudoers.d/farrier 0.1.0~ farrier-agent -- "$@"
+fi
 
 exit 0

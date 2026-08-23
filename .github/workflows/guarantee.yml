@@ -27,6 +27,32 @@ jobs:
   guarantee:
     name: guarantee
     runs-on: ubuntu-latest
+    services:
+      # Not optional here, and this workflow ran without one for longer than it should have.
+      #
+      # The store tests are written to skip when there is no database, so that `go test ./...` works on
+      # a laptop — and a skipped test is indistinguishable from a passing one in a summary. Several of
+      # the guarantees below are enforced by PostgreSQL and by nothing else: tenant isolation is a
+      # row-level security policy, the refusal to release your own job is a condition inside an UPDATE
+      # statement, and neither exists in the in-memory store. Without this service the required check
+      # ran the in-memory half of each of those and reported success, which is a green check named
+      # "guarantee" proving nothing about the mechanism that does the guaranteeing.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: farrier_test
+          POSTGRES_PASSWORD: farrier_test
+          POSTGRES_DB: farrier_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U farrier_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      FARRIER_TEST_DATABASE_URL: postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -34,11 +60,53 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Create a database role that row-level security applies to
+        # The postgres image's POSTGRES_USER is the cluster's bootstrap superuser, and a superuser is
+        # exempt from every row-level security policy in the schema — with no symptom. Tenant isolation
+        # *is* those policies, so tests run as that role cannot observe the thing they exist to observe;
+        # TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate fails rather than skipping in that
+        # state, which is how this was found.
+        #
+        # The bootstrap user cannot drop its own SUPERUSER attribute — PostgreSQL refuses, and that is
+        # not a permissions accident but a rule about the bootstrap role. So the tests get an ordinary
+        # role of their own, owning its own database. That is also exactly what docs/INSTALL.md tells an
+        # operator to do, which means CI now runs against the documented production arrangement rather
+        # than a more privileged one.
+        env:
+          PGPASSWORD: farrier_test
+        run: |
+          psql -h 127.0.0.1 -U farrier_test -d farrier_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';
+          CREATE DATABASE farrier_app OWNER farrier_app;
+          SQL
+          PGPASSWORD=farrier_app psql -h 127.0.0.1 -U farrier_app -d farrier_app -tAc \
+            'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
+            | grep -qx f
+
       - name: The catalogue is exactly the expected set, and nothing reaches a shell
         # Verbose on purpose. When this fails, the output is the first thing a reviewer reads, and the
         # test names and failure messages are written to explain the design rather than the assertion.
         # Through the Makefile, so that the required check and `make guarantee` cannot drift apart.
         run: make guarantee-tests
+
+      - name: The PostgreSQL half of the guarantee suite actually ran
+        # The check above passes whether or not the database was reachable, because the store tests
+        # skip rather than fail without one. These two names are the ones whose PostgreSQL half is the
+        # whole point: the first proves a tenant cannot see another tenant's rows even from a statement
+        # with no tenant predicate, which is a row-level security policy and cannot exist in the
+        # in-memory store; the second proves a signed job's payload canonicalises to the same bytes
+        # after a round trip through jsonb, which is what stands between a correct signature and a host
+        # reporting it as a broken key.
+        run: |
+          go test -count=1 -v ./internal/store/ \
+            -run 'TestGuaranteeOneTenantCannotSeeAnother|TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned' \
+            | tee /tmp/guarantee-store.log
+          for name in \
+            '--- PASS: TestGuaranteeOneTenantCannotSeeAnother/postgres' \
+            '--- PASS: TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned/postgres'; do
+            grep -q -- "$name" /tmp/guarantee-store.log \
+              || { echo "the PostgreSQL guarantee tests skipped: $name did not run" >&2; exit 1; }
+          done
 
       - name: Fuzz the parameter decoders and the canonical encoder
         # Sixty seconds each in CI. `make fuzz` runs ten minutes locally, and the corpus a failure

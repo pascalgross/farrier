@@ -43,6 +43,22 @@ type HTTPError struct {
 	RetryAfter time.Duration
 }
 
+// Permanent reports whether retrying this request unchanged can ever succeed.
+//
+// It is the table in docs/PROTOCOL.md §11 as a predicate. The three codes here mean the control plane
+// understood the request and refused it — the body does not parse, the job is not this host's, the
+// state is already taken — and none of those becomes true later. Retrying anyway is not harmless: a
+// spooled result that can never be delivered is retried on every pass for the life of the machine, and
+// the spool it sits in is the mechanism a reboot's result depends on.
+func (e *HTTPError) Permanent() bool {
+	switch e.Status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict:
+		return true
+	default:
+		return false
+	}
+}
+
 // Error renders the failure for logs.
 func (e *HTTPError) Error() string {
 	if e.Message != "" {

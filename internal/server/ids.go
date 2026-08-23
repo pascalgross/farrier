@@ -3,47 +3,19 @@ package server
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base32"
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
+
+	"github.com/pascalgross/farrier/internal/id"
 )
-
-// idAlphabet is Crockford's base32, without I, L, O and U.
-//
-// Host identifiers end up in log lines, in support tickets and read aloud over the phone during an
-// incident. Excluding the characters that are misread as one another is a small kindness that costs
-// nothing and is impossible to retrofit once identifiers are in the wild.
-const idAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-// idEncoding encodes identifiers in Crockford base32 with no padding.
-var idEncoding = base32.NewEncoding(idAlphabet).WithPadding(base32.NoPadding)
 
 // NewID returns a lexically sortable, random identifier.
 //
-// The first six bytes are a millisecond timestamp, so identifiers sort by creation time — which means
-// an index on the primary key is also an index on age, and a page of hosts or jobs comes back in a
-// sensible order without a second column. The remaining ten bytes are random, which is far more than
-// enough that two control planes generating identifiers independently will never collide.
-func NewID() (string, error) {
-	var raw [16]byte
-
-	// Six bytes of millisecond timestamp, written most significant byte first so that byte-wise
-	// ordering is time ordering. Six bytes carries milliseconds until the year 10889, and taking the
-	// low six bytes of a positive int64 needs no conversion that could overflow.
-	ms := time.Now().UnixMilli()
-	for i := range 6 {
-		// Masked explicitly. Taking the low byte is the intent, and writing it out means neither a
-		// reader nor a linter has to decide whether an unmasked conversion was meant to be a
-		// truncation or was an oversight that happens to work.
-		raw[5-i] = byte((ms >> (8 * i)) & 0xff)
-	}
-	if _, err := rand.Read(raw[6:]); err != nil {
-		return "", fmt.Errorf("server: generating an identifier: %w", err)
-	}
-	return idEncoding.EncodeToString(raw[:]), nil
-}
+// A thin re-export of internal/id, kept because every call site in this package says server.NewID and
+// because the shape belongs to the whole product rather than to the control plane: `farrier sign`
+// generates job identifiers on an operator's laptop from the same function.
+func NewID() (string, error) { return id.New() }
 
 // NewEnrollmentToken returns a bootstrap token and the hash to store.
 //
@@ -56,7 +28,7 @@ func NewEnrollmentToken() (token, hash string, err error) {
 	if _, err := rand.Read(raw); err != nil {
 		return "", "", fmt.Errorf("server: generating an enrolment token: %w", err)
 	}
-	token = "frr_" + strings.ToLower(idEncoding.EncodeToString(raw))
+	token = "frr_" + strings.ToLower(id.Encoding.EncodeToString(raw))
 	return token, HashToken(token), nil
 }
 

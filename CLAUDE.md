@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Farrier is fleet management for Ubuntu and Debian servers whose distinguishing property is the
 **absence** of a remote execution channel. Everything below follows from that. Before changing anything
-under `internal/intent`, `internal/run`, `internal/policy`, `helpers/`, `internal/signing` or
-`packaging/sudoers`, read [`docs/SECURITY.md`](docs/SECURITY.md) — it is the specification, not a
-description of one.
+under `internal/intent`, `internal/run`, `internal/policy`, `internal/privsep`, `helpers/`,
+`internal/signing` or the socket units in `packaging/`, read [`docs/SECURITY.md`](docs/SECURITY.md) —
+it is the specification, not a description of one.
 
 The guarantee, stated in `README.md` and `docs/SECURITY.md` §1, is enforced by tests rather than by
 convention:
@@ -38,12 +38,23 @@ One test, one package:
 go test ./internal/agent/ -run TestCredentialPromotesTheNewPairInOneStep -v
 ```
 
-The store tests **skip silently** without a database, which hides real failures. Give them one:
+The store tests **skip silently** without a database, which hides real failures. Give them one — and
+give them an *ordinary* role, not a superuser:
 
 ```bash
-FARRIER_TEST_DATABASE_URL='postgres://farrier_test:farrier_test@127.0.0.1:5432/farrier_test?sslmode=disable' \
+sudo -u postgres psql -c "CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';" \
+                     -c "CREATE DATABASE farrier_app OWNER farrier_app;"
+
+FARRIER_TEST_DATABASE_URL='postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable' \
   go test ./internal/store/ -count=1
 ```
+
+A superuser, or a role with `BYPASSRLS`, is exempt from every row-level security policy in the schema —
+so the tenancy tests would run against a connection that cannot observe the boundary they exist to
+prove. `TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate` fails rather than skipping in that state,
+deliberately: a guarantee test that quietly opted out would be worse than none. Note also that the
+bootstrap superuser of a cluster cannot drop its own `SUPERUSER` attribute, so demoting it is not a way
+out — the tests need a role of their own.
 
 `golangci-lint` is pinned in the Makefile (`GOLANGCI_VERSION`) and CI installs that exact version via
 `make golangci-install`. A different local version reports different findings; if CI disagrees with
@@ -69,7 +80,10 @@ conversation, not a commit.
   `ssh.authorizedKeys.add`, `agent.updateFromURL`.
 - **Local policy is enforced in the root helper, not in the agent.** `effective = min(central request,
   local policy)` — never the max. The helpers take no `--policy` flag; the path is a package constant,
-  because a helper that reads a caller-supplied policy file is a helper that trusts its caller.
+  because a helper that reads a caller-supplied policy file is a helper that trusts its caller. The
+  routing table in `internal/privsep` is the successor to the sudoers entry: it is the complete
+  statement of which intent reaches root through which helper, and the guarantee suite checks it
+  against the catalogue.
 - **The trust anchor is `/etc/farrier/trusted-signers`, not the package**, and it ships empty. A fresh
   agent executes nothing destructive until an administrator puts a key there.
 - **Clock skew is a security boundary.** Signature validity windows are checked against the **local**
@@ -78,8 +92,17 @@ conversation, not a commit.
   `--force-confold` and `DPkg::Lock::Timeout`.
 - **Never add `farrier` to the `docker` group** — Docker socket access is root equivalence.
 - **`store.Store` is not a portability seam.** JSONB + GIN, a partial index for the job claim,
-  `LISTEN`/`NOTIFY`, and `SELECT … FOR UPDATE SKIP LOCKED` are load-bearing. Do not abstract for
-  another database.
+  `LISTEN`/`NOTIFY`, `SELECT … FOR UPDATE SKIP LOCKED` and row-level security are load-bearing. Do not
+  abstract for another database.
+- **Tenant isolation is enforced by PostgreSQL, not by remembering.** Every tenant-owned table has RLS
+  `ENABLE`d *and* `FORCE`d; every scoped statement runs inside a transaction that `SET LOCAL`s
+  `farrier.tenant`. `Store.In(tenant)` is the only way to reach tenant data, and the short list of
+  operations left on `Store` itself is the complete statement of what is not scoped. `farrier-server`
+  refuses to start on a database role that bypasses RLS, because that removes the boundary with no
+  symptom. See [`docs/SECURITY.md`](docs/SECURITY.md) §5.
+- **Approval is a per-tenant setting, and it is stamped on the job row at creation.** `none`, `self` or
+  `second_person`; new tenants get `none`. It is never re-derived at approval time — that would let
+  somebody queue a job under the two-person rule, relax the setting and release it themselves.
 - **Tier 3 — pushing configuration to an already-enrolled host — is never built.**
 
 ## Architecture
@@ -89,12 +112,18 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
 - `internal/agent` — enrolment, heartbeat, job acceptance, result spooling. The credential is one file
   (`agent.pem`, key and certificate together) promoted by one rename, so a renewal interrupted at any
   point leaves a matching pair. Results are fsynced *before* an operation that may not return.
-- `internal/server` — the control plane: five agent endpoints plus an admin API and the embedded UI.
-  Authentication is a certificate-fingerprint lookup on every request, which is also the whole
-  revocation mechanism — no CRL, no OCSP.
+- `internal/server` — the control plane: five agent endpoints, an admin API, a platform-only tenant API
+  and the embedded UI. Agent authentication is a certificate-fingerprint lookup on every request, which
+  is also the whole revocation mechanism — no CRL, no OCSP — and is where an agent request acquires its
+  tenant. Job creation lives in `jobsapi.go`: what a request may carry follows from what a signature
+  covers, so a signed job's id, nonce and validity window all arrive from the signer and none is chosen
+  here.
 - `internal/intent` + `internal/run` — what may happen, and the only place it happens.
-- `internal/policy` + `internal/helper` + `helpers/` — three root helpers behind a pinned sudoers
-  entry. Each re-reads the local policy itself.
+- `internal/policy` + `internal/helper` + `helpers/` + `internal/privsep` — three root helpers, each
+  reached over one systemd-activated unix socket in `/run/farrier` and each re-reading the local policy
+  itself. There is no sudo and nothing setuid: `NoNewPrivileges` makes `execve` drop the setuid bit, and
+  systemd implies that setting from eight directives the agent's unit sets, so `sudo` could not have
+  worked without dismantling the sandbox.
 - `internal/signing` + `internal/canonical` — offline signature verification over canonical JSON
   (sorted keys, no HTML escaping, integers only). Every authorisation decision is downstream of these.
 - `internal/collect` — facts, with a `Platform` seam for the four distribution differences that

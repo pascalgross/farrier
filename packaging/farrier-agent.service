@@ -5,6 +5,13 @@ Documentation=file:///usr/share/doc/farrier-agent/README.md
 After=network-online.target
 Wants=network-online.target
 
+# The helper sockets are enabled independently and come up at boot with sockets.target; these lines are
+# what makes `systemctl start farrier-agent` on a host where somebody stopped them bring them back.
+# Without the ordering, the agent's first privileged job of the boot would fail on a socket that was
+# about to exist.
+Wants=farrier-apply-updates.socket farrier-restart-unit.socket farrier-reboot-host.socket
+After=farrier-apply-updates.socket farrier-restart-unit.socket farrier-reboot-host.socket
+
 [Service]
 Type=exec
 ExecStart=/usr/bin/farrier-agent run
@@ -18,27 +25,13 @@ RestartSec=5s
 User=farrier
 Group=farrier
 
-# ---------------------------------------------------------------------------------------------------
-# NOTE FOR PHASE 1, WHEN THE ROOT HELPERS GAIN EXECUTORS
-#
-# NoNewPrivileges=yes and calling the helpers through sudo(8) are mutually exclusive: with the no-new-
-# privileges bit set, execve silently drops the setuid bit, so sudo cannot become root and fails with
-# "effective uid is not 0". Phase 0 ships no write capability, so nothing here calls a helper and the
-# conflict is not yet live — but it must be resolved before the first executor lands, and the resolution
-# is a design decision rather than a packaging tweak. The two credible options:
-#
-#   (a) Replace sudo with a root-owned helper service the agent reaches over a unix socket in
-#       /run/farrier, with the socket's peer credentials as the authorisation. More code, and it
-#       preserves every hardening line here while removing setuid from the picture entirely.
-#   (b) Drop enough of the sandbox that sudo works. Deleting the NoNewPrivileges line below is NOT
-#       sufficient: systemd implies NoNewPrivileges=yes from ProtectKernelTunables,
-#       ProtectKernelModules, ProtectClock, RestrictNamespaces, RestrictSUIDSGID,
-#       MemoryDenyWriteExecute, LockPersonality and SystemCallFilter, all of which this unit sets.
-#
-# Option (a) is the one to take. (b) is written down so nobody spends an afternoon on the obvious
-# version of it and concludes systemd is broken. Whichever is chosen, docs/SECURITY.md §5 must be
-# updated in the same change.
-# ---------------------------------------------------------------------------------------------------
+# The agent reaches the three root helpers over the unix sockets in /run/farrier, never through sudo.
+# That is not a preference: with the no-new-privileges bit set, execve drops the setuid bit, so sudo
+# cannot become root at all — and systemd *implies* NoNewPrivileges=yes from ProtectKernelTunables,
+# ProtectKernelModules, ProtectClock, RestrictNamespaces, RestrictSUIDSGID, MemoryDenyWriteExecute,
+# LockPersonality and SystemCallFilter, every one of which this unit sets. Every hardening line below
+# therefore stays, and the privilege boundary is a socket the kernel authenticates rather than a setuid
+# binary this sandbox would have to be dismantled to permit. See docs/SECURITY.md section 5.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

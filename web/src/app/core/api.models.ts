@@ -225,3 +225,182 @@ export interface CatalogueResponse {
   /** The control plane's own note about the set being closed. */
   note: string;
 }
+
+/** What a host reported back about a job it ran. */
+export interface JobResult {
+  /** The job this result belongs to. */
+  jobId: string;
+
+  /** One of the protocol's stable status strings, such as `succeeded` or `refused_by_policy`. */
+  status: string;
+
+  /** When the host started the operation, by the host's own clock. */
+  startedAt: string;
+
+  /** When it finished, by the same clock. Never the control plane's; see `docs/SECURITY.md` §4.3. */
+  finishedAt: string;
+
+  /** The root helper's exit status, where one applies. */
+  exitCode: number;
+
+  /** The last 64 KiB of what the operation printed. The tail, because the failure is at the end. */
+  output?: string;
+
+  /** Whether the output was cut, so a reader knows it is partial by design. */
+  outputTruncated?: boolean;
+
+  /** The intent-specific typed result, for the read intents that produce one. */
+  result?: unknown;
+
+  /** A human-readable failure or refusal reason, absent on success. */
+  error?: string;
+}
+
+/** One job as the control plane holds it. */
+export interface Job {
+  /** The job identifier. For a signed job it is covered by the signature. */
+  id: string;
+
+  /** The host it was issued to. */
+  hostId: string;
+
+  /** The catalogue member. */
+  intent: string;
+
+  /** The parameter object, as validated by the catalogue's own decoder. */
+  params: Record<string, unknown>;
+
+  /** The authorisation tier, for display. The agent takes it from its own catalogue, not from here. */
+  class: string;
+
+  /** When the control plane created it. */
+  createdAt: string;
+
+  /** Which operator asked, recorded for the audit trail rather than for any decision. */
+  createdBy: string;
+
+  /** When the job becomes valid, checked on the host against the host's own clock. */
+  notBefore: string;
+
+  /** When it stops being valid, checked against the same clock and never a server-supplied one. */
+  notAfter: string;
+
+  /**
+   * Whether an offline signature is attached.
+   *
+   * The signature itself is never sent to the browser. It authorises nothing here — the host is what
+   * verifies it — and putting one on a dashboard would invite somebody to copy it.
+   */
+  signed: boolean;
+
+  /** The key that signed it, absent for an unsigned job. */
+  signerKeyId?: string;
+
+  /** Whether somebody must release it before any host may claim it. */
+  approvalRequired: boolean;
+
+  /**
+   * Whether the release must come from somebody other than the job's creator.
+   *
+   * Recorded on the job when it was created, from the fleet's approval mode at that moment — so a
+   * fleet that has since changed its mind does not change what this job requires.
+   */
+  approvalDistinctOperator: boolean;
+
+  /** When it was released, null until it is. */
+  approvedAt: string | null;
+
+  /** Which operator agreed, absent until one does. */
+  approvedBy?: string;
+
+  /** When a host took it, null if none has. */
+  claimedAt: string | null;
+
+  /** One word for what is happening: `queued`, `awaiting_approval`, `running`, or a result status. */
+  state: string;
+
+  /**
+   * What the host reported, null until it does.
+   *
+   * Null rather than an empty object: "not reported yet" and "reported nothing" are different states,
+   * and a host part way through a forty-minute upgrade is in the first one.
+   */
+  result: JobResult | null;
+}
+
+/** The response of `GET /api/v1/jobs`. */
+export interface JobsResponse {
+  /** Jobs, newest first. */
+  jobs: Job[];
+
+  /** The bound that was applied to this listing. */
+  limit: number;
+
+  /** The largest bound the control plane will accept. */
+  maxLimit: number;
+
+  /**
+   * Whether the listing filled its bound, so there may be older jobs it did not return.
+   *
+   * It is reported by the server rather than worked out from the row count, because a client that has
+   * to derive it is a client that will eventually forget to.
+   */
+  truncated: boolean;
+}
+
+/** The body of `POST /api/v1/jobs` for an unsigned, read-only job. */
+export interface CreateReadJobRequest {
+  /** The host to issue to. */
+  hostId: string;
+
+  /** The catalogue member, which must be a read intent for a request this shape. */
+  intent: string;
+
+  /** The parameter object. Every read intent takes an empty one. */
+  params: Record<string, unknown>;
+}
+
+/** One tenant: an isolated fleet with its own hosts, operators and settings. */
+export interface Tenant {
+  /** The identifier every scoped row carries. */
+  id: string;
+
+  /** The short stable handle used in URLs, logs and support tickets. */
+  slug: string;
+
+  /** What the fleet is called in the interface. */
+  displayName: string;
+
+  /** When the tenant was created. */
+  createdAt: string;
+
+  /** How this fleet releases a destructive job: "none", "self" or "second_person". */
+  approvalMode: string;
+
+  /** Where this fleet's events are posted, empty for nowhere. */
+  webhookUrl: string;
+}
+
+/**
+ * The body of `GET /api/v1/whoami`.
+ *
+ * The application asks for it on start, for the same reason a shell prompt shows the hostname: an
+ * operator with two fleets open in two tabs needs the page to say which one they are looking at before
+ * they queue a reboot in it.
+ */
+export interface Whoami {
+  /** The identifier the identity provider knows this operator by. */
+  subject: string;
+
+  /** A human-readable name. */
+  display: string;
+
+  /** Which provider authenticated them. */
+  provider: string;
+
+  /** The provider-qualified string recorded as the author of anything they do. */
+  principal: string;
+
+  /** The fleet this credential acts in. */
+  tenant: Tenant;
+}

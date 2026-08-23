@@ -37,11 +37,10 @@ description: |
 
 depends:
   - adduser
+  # Not merely for the agent's own unit: the privilege boundary between the agent and the three root
+  # helpers *is* systemd socket activation. There is no sudo here, and no setuid binary, so there is
+  # nothing to fall back to on a host without it.
   - systemd
-  # The agent reaches the three root helpers through sudo and can do nothing privileged without it. A
-  # minimal image often has no sudo at all, and the failure without it is an agent that reports fine and
-  # silently cannot act.
-  - sudo
 recommends:
   # unattended-upgrades is what actually applies updates, and its origin filtering is
   # correct on both distribution families. Farrier wraps it rather than reimplementing
@@ -76,7 +75,8 @@ contents:
 
   # The three root helpers. There is no fourth, and none of them accepts a command to
   # run. Each re-reads and re-enforces /etc/farrier/policy.toml itself, as root, which
-  # is what bounds a fully compromised agent process.
+  # is what bounds a fully compromised agent process. They are not setuid and never
+  # will be: systemd starts them, as root, on a connection to their socket.
   - src: ../dist/apply-updates
     dst: /usr/libexec/farrier/apply-updates
     file_info:
@@ -95,6 +95,51 @@ contents:
     file_info:
       mode: 0644
 
+  # The privilege boundary. One socket per helper, owned root:farrier and mode 0660, each activating
+  # one instance of one helper per connection. This is what replaced /etc/sudoers.d/farrier: sudo
+  # cannot become root from inside the agent's sandbox, because NoNewPrivileges makes execve drop the
+  # setuid bit, and systemd implies that setting from eight directives the unit sets.
+  - src: ./farrier-apply-updates.socket
+    dst: /usr/lib/systemd/system/farrier-apply-updates.socket
+    file_info:
+      mode: 0644
+  - src: ./farrier-apply-updates@.service
+    dst: /usr/lib/systemd/system/farrier-apply-updates@.service
+    file_info:
+      mode: 0644
+  - src: ./farrier-restart-unit.socket
+    dst: /usr/lib/systemd/system/farrier-restart-unit.socket
+    file_info:
+      mode: 0644
+  - src: ./farrier-restart-unit@.service
+    dst: /usr/lib/systemd/system/farrier-restart-unit@.service
+    file_info:
+      mode: 0644
+  - src: ./farrier-reboot-host.socket
+    dst: /usr/lib/systemd/system/farrier-reboot-host.socket
+    file_info:
+      mode: 0644
+  - src: ./farrier-reboot-host@.service
+    dst: /usr/lib/systemd/system/farrier-reboot-host@.service
+    file_info:
+      mode: 0644
+
+  # /run is a tmpfs, so the directory the sockets live in has to be recreated on every boot, before
+  # sockets.target.
+  - src: ./farrier-tmpfiles.conf
+    dst: /usr/lib/tmpfiles.d/farrier.conf
+    file_info:
+      mode: 0644
+
+  # Named by APT_CONFIG when a helper applies updates, and deliberately NOT installed into
+  # /etc/apt/apt.conf.d: Farrier configures nothing about the host's own apt. It carries
+  # --force-confdef and --force-confold, without which unattended-upgrade silently holds back every
+  # package whose conffile was edited locally — and reports success.
+  - src: ./apt.conf
+    dst: /usr/share/farrier/apt.conf
+    file_info:
+      mode: 0644
+
   # Both of these are conffiles. dpkg must never replace a local edit, and testfleet/
   # asserts it does not — for trusted-signers that is a security test, not a
   # convenience test.
@@ -110,17 +155,6 @@ contents:
     type: config|noreplace
     file_info:
       mode: 0644
-      owner: root
-      group: root
-
-  # sudo refuses to read a sudoers file that is group- or world-writable, and a
-  # syntactically invalid one can break sudo for the whole system. CI validates this
-  # file with visudo before the package is built.
-  - src: ./sudoers
-    dst: /etc/sudoers.d/farrier
-    type: config|noreplace
-    file_info:
-      mode: 0440
       owner: root
       group: root
 

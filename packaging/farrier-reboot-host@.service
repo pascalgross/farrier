@@ -1,0 +1,34 @@
+# One instance of the reboot-host root helper, serving one connection.
+#
+# Started by farrier-reboot-host.socket, never enabled directly. %i is systemd's per-connection instance
+# name, so the journal carries one unit per operation — which is the audit trail an operator reads six
+# months later.
+
+[Unit]
+Description=Farrier reboot-host helper (connection %i)
+Documentation=file:///usr/share/doc/farrier-agent/SECURITY.md
+
+# Per-connection instances are garbage-collected even when they fail. Without this, a helper that
+# exited non-zero — a refused peer, a request that would not decode — stays behind in the "failed"
+# state, and systemd counts it against the socket's MaxConnections for ever. Two of those and the
+# socket stops accepting: a host that reports perfectly and can never be patched again, which is
+# precisely the kind of permanent wedge this project has closed twice elsewhere.
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/libexec/farrier/reboot-host --serve
+
+# The connection arrives as standard input. Standard output goes to the journal rather than back down
+# the socket: the helper writes its reply to the connection itself, and anything that ever printed to
+# stdout — a Go panic, a library's stray Println — would otherwise be spliced into that reply.
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+
+# This helper asks shutdown(8) to schedule a reboot. It is already root and has no
+# use for a setuid binary, so the no-new-privileges bit costs it nothing and closes one route out.
+# apply-updates cannot have this line, because dpkg runs maintainer scripts from whatever packages the
+# host has installed.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes

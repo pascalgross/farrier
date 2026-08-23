@@ -143,9 +143,14 @@ func TestDecideUpdatesAppliesTheMinimumRule(t *testing.T) {
 	for _, tc := range cases {
 		p := openWindowPolicy(t)
 		p.Updates.Allow = tc.local
+		// Per-intent, because only the destructive member has parameters at all now.
+		raw := `{}`
+		if tc.name == intent.PackagesApplyAll {
+			raw = `{"rebootIfRequired":false}`
+		}
 		req := Request{
 			Intent:   tc.name,
-			Params:   mustDecode(t, tc.name, `{"rebootIfRequired":false}`),
+			Params:   mustDecode(t, tc.name, raw),
 			IssuedAt: nowUTC,
 		}
 		d := Decide(p, req, Env{Now: nowUTC})
@@ -300,7 +305,9 @@ max_job_age_seconds = 900
 	}
 
 	paramShapes := map[intent.Name][]string{
-		intent.PackagesApplySecurity: {`{}`, `{"rebootIfRequired":true}`, `{"rebootIfRequired":false}`},
+		// No rebootIfRequired shapes: the routine member refuses the field outright, because a reboot
+		// authorised by the control plane's own online key is what docs/SECURITY.md §3 forbids.
+		intent.PackagesApplySecurity: {`{}`, ``},
 		intent.PackagesApplyAll:      {`{}`, `{"rebootIfRequired":true}`, `{"rebootIfRequired":false}`},
 		intent.ServiceStart:          {`{"unit":"nginx.service"}`, `{"unit":"farrier-agent.service"}`},
 		intent.ServiceStop:           {`{"unit":"sshd.service"}`, `{"unit":"docker.service"}`},

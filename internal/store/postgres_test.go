@@ -47,21 +47,76 @@ func newPostgres(t *testing.T) *Postgres {
 	return pg
 }
 
+// testTenant creates a tenant and returns a handle scoped to it.
+//
+// Almost every test below is about one tenant's behaviour rather than about tenancy, so this exists to
+// keep them saying what they are about. The tests that *are* about tenancy make two of these and check
+// that neither can see the other.
+func testTenant(t *testing.T, s Store, slug string, mode ApprovalMode) Scoped {
+	t.Helper()
+
+	tenant := Tenant{
+		ID:           TenantID("tenant-" + slug),
+		Slug:         slug,
+		DisplayName:  slug,
+		CreatedAt:    time.Now().UTC().Truncate(time.Microsecond),
+		ApprovalMode: mode,
+	}
+	if err := s.CreateTenant(context.Background(), tenant); err != nil {
+		t.Fatalf("creating tenant %s: %v", slug, err)
+	}
+	return s.In(tenant.ID)
+}
+
+// eachScoped runs a test body against both implementations, inside one freshly created tenant.
+//
+// It is the ordinary harness: a test that is not about tenancy should not have to set one up, and one
+// that forgot to would be testing an unreachable configuration, since every operator and every agent
+// reaches the store through a tenant.
+func eachScoped(t *testing.T, body func(t *testing.T, s Store, tenant Scoped)) {
+	t.Helper()
+
+	t.Run("memory", func(t *testing.T) {
+		s := NewMemory()
+		body(t, s, testTenant(t, s, "alpha", ApprovalSecondPerson))
+	})
+	t.Run("postgres", func(t *testing.T) {
+		s := newPostgres(t)
+		body(t, s, testTenant(t, s, "alpha", ApprovalSecondPerson))
+	})
+}
+
 // enrolTestHost creates a host and returns it.
-func enrolTestHost(t *testing.T, s Store, id, hostname string) Host {
+func enrolTestHost(t *testing.T, tenant Scoped, id, hostname string) Host {
+	t.Helper()
+	return enrolTestHostAs(t, tenant, id, hostname, "sha256:"+id)
+}
+
+// enrolTestHostAs enrols a host with a machine-id hash the caller chooses.
+//
+// It exists for the tenancy tests, which need the same physical machine live in two tenants at once —
+// a thing the schema now permits, and the thing a store keyed on the machine-id hash alone would get
+// wrong. Every other test wants a hash it never has to think about, which is what enrolTestHost gives.
+func enrolTestHostAs(t *testing.T, tenant Scoped, id, hostname, machineID string) Host {
 	t.Helper()
 
 	host := Host{
 		ID:            id,
 		Hostname:      hostname,
-		MachineIDHash: "sha256:" + id,
+		MachineIDHash: machineID,
 		Group:         "web-prod",
 		AgentVersion:  "0.0.0-test",
 		EnrolledAt:    time.Now().UTC().Truncate(time.Microsecond),
 	}
-	if err := s.CreateEnrolledHost(context.Background(), host, Certificate{
-		Fingerprint: "fp-" + id, HostID: id, Serial: "01",
-		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
+	// The fingerprint is namespaced by tenant as well as by host, because a fingerprint is globally
+	// unique in the schema — it is the SHA-256 of a real certificate — and two tenants in the same test
+	// enrolling "01JHOSTA" would otherwise collide on a constraint the isolation is not about.
+	if err := tenant.CreateEnrolledHost(context.Background(), host, Certificate{
+		Fingerprint: "fp-" + string(tenant.Tenant()) + "-" + id,
+		HostID:      id,
+		TenantID:    tenant.Tenant(),
+		Serial:      "01",
+		IssuedAt:    time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
 	}); err != nil {
 		t.Fatalf("creating host %s: %v", id, err)
 	}
@@ -89,10 +144,11 @@ func TestMigrateIsIdempotent(t *testing.T) {
 // a sequential test every time.
 func TestEnrollmentTokensAreConsumedAtomically(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
 	now := time.Now()
 
-	if err := pg.CreateEnrollmentToken(ctx, EnrollmentToken{
+	if err := tenant.CreateEnrollmentToken(ctx, EnrollmentToken{
 		Hash: "hash-atomic", Label: "test", Group: "web-prod",
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}); err != nil {
@@ -105,7 +161,7 @@ func TestEnrollmentTokensAreConsumedAtomically(t *testing.T) {
 	for i := range racers {
 		go func(i int) {
 			<-start
-			_, err := pg.ConsumeEnrollmentToken(ctx, "hash-atomic", "host-"+string(rune('a'+i)), time.Now())
+			_, err := tenant.ConsumeEnrollmentToken(ctx, "hash-atomic", "host-"+string(rune('a'+i)), time.Now())
 			results <- err
 		}(i)
 	}
@@ -132,25 +188,26 @@ func TestEnrollmentTokensAreConsumedAtomically(t *testing.T) {
 // whoever is guessing, so the distinction is not carried out of the store at all.
 func TestExpiredAndUnknownTokensAreIndistinguishable(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
 	now := time.Now()
 
-	if err := pg.CreateEnrollmentToken(ctx, EnrollmentToken{
+	if err := tenant.CreateEnrollmentToken(ctx, EnrollmentToken{
 		Hash: "hash-expired", CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour),
 	}); err != nil {
 		t.Fatalf("creating an expired token: %v", err)
 	}
-	if err := pg.CreateEnrollmentToken(ctx, EnrollmentToken{
+	if err := tenant.CreateEnrollmentToken(ctx, EnrollmentToken{
 		Hash: "hash-used", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}); err != nil {
 		t.Fatalf("creating a token: %v", err)
 	}
-	if _, err := pg.ConsumeEnrollmentToken(ctx, "hash-used", "host-1", now); err != nil {
+	if _, err := tenant.ConsumeEnrollmentToken(ctx, "hash-used", "host-1", now); err != nil {
 		t.Fatalf("consuming: %v", err)
 	}
 
 	for _, hash := range []string{"hash-unknown", "hash-expired", "hash-used"} {
-		_, err := pg.ConsumeEnrollmentToken(ctx, hash, "host-2", now)
+		_, err := tenant.ConsumeEnrollmentToken(ctx, hash, "host-2", now)
 		if !errors.Is(err, ErrTokenUnusable) {
 			t.Errorf("%s produced %v, want ErrTokenUnusable", hash, err)
 		}
@@ -160,13 +217,14 @@ func TestExpiredAndUnknownTokensAreIndistinguishable(t *testing.T) {
 // TestDuplicateMachineIDIsAConflict asserts a host cannot enrol twice under a new identity.
 func TestDuplicateMachineIDIsAConflict(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
 
-	first := enrolTestHost(t, pg, "01JHOSTA", "web-01")
+	first := enrolTestHost(t, tenant, "01JHOSTA", "web-01")
 	second := first
 	second.ID = "01JHOSTB"
 
-	if err := pg.CreateEnrolledHost(ctx, second, Certificate{
+	if err := tenant.CreateEnrolledHost(ctx, second, Certificate{
 		Fingerprint: "fp-second", HostID: second.ID, Serial: "01",
 		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
 	}); !errors.Is(err, ErrConflict) {
@@ -179,7 +237,7 @@ func TestDuplicateMachineIDIsAConflict(t *testing.T) {
 		t.Errorf("the refused enrolment recorded a certificate anyway: %v", err)
 	}
 
-	found, err := pg.GetHostByMachineID(ctx, first.MachineIDHash)
+	found, err := tenant.GetHostByMachineID(ctx, first.MachineIDHash)
 	if err != nil {
 		t.Fatalf("looking up by machine id: %v", err)
 	}
@@ -187,7 +245,7 @@ func TestDuplicateMachineIDIsAConflict(t *testing.T) {
 		t.Errorf("machine id lookup returned %s, want %s", found.ID, first.ID)
 	}
 
-	if _, err := pg.GetHostByMachineID(ctx, "sha256:nothing"); !errors.Is(err, ErrNotFound) {
+	if _, err := tenant.GetHostByMachineID(ctx, "sha256:nothing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("an unknown machine id produced %v, want ErrNotFound", err)
 	}
 }
@@ -199,20 +257,21 @@ func TestDuplicateMachineIDIsAConflict(t *testing.T) {
 // as data quietly disappearing.
 func TestHeartbeatDoesNotClobberFieldsItDoesNotCarry(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
-	host := enrolTestHost(t, pg, "01JHOSTC", "web-01")
+	host := enrolTestHost(t, tenant, "01JHOSTC", "web-01")
 
-	if err := pg.StoreFacts(ctx, host.ID, "sha256:facts", []byte(`{"hostname":"web-01"}`)); err != nil {
+	if err := tenant.StoreFacts(ctx, host.ID, "sha256:facts", []byte(`{"hostname":"web-01"}`)); err != nil {
 		t.Fatalf("storing facts: %v", err)
 	}
 
-	if err := pg.RecordHeartbeat(ctx, host.ID, HeartbeatUpdate{
+	if err := tenant.RecordHeartbeat(ctx, host.ID, HeartbeatUpdate{
 		AgentVersion: "0.1.0", BootID: "boot-1", UptimeSeconds: 4242, LastSeen: time.Now(),
 	}); err != nil {
 		t.Fatalf("recording a heartbeat: %v", err)
 	}
 
-	after, err := pg.GetHost(ctx, host.ID)
+	after, err := tenant.GetHost(ctx, host.ID)
 	if err != nil {
 		t.Fatalf("reading the host back: %v", err)
 	}
@@ -234,7 +293,7 @@ func TestHeartbeatDoesNotClobberFieldsItDoesNotCarry(t *testing.T) {
 		t.Errorf("the heartbeat changed the stored facts digest to %q", after.FactsDigest)
 	}
 
-	if err := pg.RecordHeartbeat(ctx, "01JNOSUCHHOST", HeartbeatUpdate{}); !errors.Is(err, ErrNotFound) {
+	if err := tenant.RecordHeartbeat(ctx, "01JNOSUCHHOST", HeartbeatUpdate{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a heartbeat for an unknown host produced %v, want ErrNotFound", err)
 	}
 }
@@ -242,13 +301,14 @@ func TestHeartbeatDoesNotClobberFieldsItDoesNotCarry(t *testing.T) {
 // TestStoreDocumentRejectsInvalidJSON asserts a bad document cannot poison a JSONB column.
 func TestStoreDocumentRejectsInvalidJSON(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
-	host := enrolTestHost(t, pg, "01JHOSTD", "web-01")
+	host := enrolTestHost(t, tenant, "01JHOSTD", "web-01")
 
-	if err := pg.StoreFacts(ctx, host.ID, "sha256:bad", []byte("not json at all")); err == nil {
+	if err := tenant.StoreFacts(ctx, host.ID, "sha256:bad", []byte("not json at all")); err == nil {
 		t.Error("an invalid facts document was accepted")
 	}
-	if err := pg.StorePolicy(ctx, "01JNOSUCHHOST", "sha256:x", []byte(`{}`)); !errors.Is(err, ErrNotFound) {
+	if err := tenant.StorePolicy(ctx, "01JNOSUCHHOST", "sha256:x", []byte(`{}`)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("storing a document for an unknown host produced %v, want ErrNotFound", err)
 	}
 }
@@ -259,11 +319,12 @@ func TestStoreDocumentRejectsInvalidJSON(t *testing.T) {
 // without the host would leave a host that could re-enrol. Both must happen or neither.
 func TestRevokeHostRevokesItsCertificatesInTheSameTransaction(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
-	host := enrolTestHost(t, pg, "01JHOSTE", "web-01")
+	host := enrolTestHost(t, tenant, "01JHOSTE", "web-01")
 
 	for _, fingerprint := range []string{"fp-1", "fp-2"} {
-		if err := pg.AddCertificate(ctx, Certificate{
+		if err := tenant.AddCertificate(ctx, Certificate{
 			Fingerprint: fingerprint, HostID: host.ID, Serial: "01",
 			IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
 		}); err != nil {
@@ -273,14 +334,14 @@ func TestRevokeHostRevokesItsCertificatesInTheSameTransaction(t *testing.T) {
 
 	// Adding the same fingerprint twice must not fail: an agent that retried a renewal whose response
 	// was lost would otherwise be unable to re-key.
-	if err := pg.AddCertificate(ctx, Certificate{
+	if err := tenant.AddCertificate(ctx, Certificate{
 		Fingerprint: "fp-1", HostID: host.ID, Serial: "01",
 		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
 	}); err != nil {
 		t.Fatalf("re-adding a certificate: %v", err)
 	}
 
-	if err := pg.RevokeHost(ctx, host.ID); err != nil {
+	if err := tenant.RevokeHost(ctx, host.ID); err != nil {
 		t.Fatalf("revoking: %v", err)
 	}
 
@@ -297,14 +358,14 @@ func TestRevokeHostRevokesItsCertificatesInTheSameTransaction(t *testing.T) {
 		}
 	}
 
-	after, err := pg.GetHost(ctx, host.ID)
+	after, err := tenant.GetHost(ctx, host.ID)
 	if err != nil {
 		t.Fatalf("reading the host: %v", err)
 	}
 	if !after.Revoked {
 		t.Error("the host was not marked revoked")
 	}
-	if err := pg.RevokeHost(ctx, "01JNOSUCHHOST"); !errors.Is(err, ErrNotFound) {
+	if err := tenant.RevokeHost(ctx, "01JNOSUCHHOST"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("revoking an unknown host produced %v, want ErrNotFound", err)
 	}
 }
@@ -316,12 +377,13 @@ func TestRevokeHostRevokesItsCertificatesInTheSameTransaction(t *testing.T) {
 // reboot twice is the failure this prevents.
 func TestClaimJobsDeliversEachJobExactlyOnce(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
-	host := enrolTestHost(t, pg, "01JHOSTF", "web-01")
+	host := enrolTestHost(t, tenant, "01JHOSTF", "web-01")
 
 	const jobs = 20
 	for i := range jobs {
-		enqueue(t, pg, host.ID, protocol.Job{
+		enqueue(t, pg, tenant.Tenant(), host.ID, protocol.Job{
 			ID: "01JJOB" + string(rune('A'+i)), Intent: "facts.collect", Class: "read",
 			Params: map[string]any{}, IssuedAt: time.Now(),
 			NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), Nonce: "n",
@@ -338,7 +400,7 @@ func TestClaimJobsDeliversEachJobExactlyOnce(t *testing.T) {
 	for range claimers {
 		go func() {
 			<-start
-			claimed, err := pg.ClaimJobs(ctx, host.ID, 5)
+			claimed, err := tenant.ClaimJobs(ctx, host.ID, 5)
 			results <- claim{claimed, err}
 		}()
 	}
@@ -367,7 +429,7 @@ func TestClaimJobsDeliversEachJobExactlyOnce(t *testing.T) {
 	}
 
 	// A second round must find nothing: claimed jobs are excluded by the partial index.
-	remaining, err := pg.ClaimJobs(ctx, host.ID, 100)
+	remaining, err := tenant.ClaimJobs(ctx, host.ID, 100)
 	if err != nil {
 		t.Fatalf("second claim: %v", err)
 	}
@@ -383,14 +445,15 @@ func TestClaimJobsDeliversEachJobExactlyOnce(t *testing.T) {
 // retry's view of it would be the same class of mistake.
 func TestRecordResultIsIdempotent(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
-	host := enrolTestHost(t, pg, "01JHOSTG", "web-01")
+	host := enrolTestHost(t, tenant, "01JHOSTG", "web-01")
 
-	enqueue(t, pg, host.ID, protocol.Job{
+	enqueue(t, pg, tenant.Tenant(), host.ID, protocol.Job{
 		ID: "01JJOBRESULT", Intent: "facts.collect", Class: "read", Params: map[string]any{},
 		IssuedAt: time.Now(), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), Nonce: "n",
 	})
-	if _, err := pg.ClaimJobs(ctx, host.ID, 1); err != nil {
+	if _, err := tenant.ClaimJobs(ctx, host.ID, 1); err != nil {
 		t.Fatalf("claiming: %v", err)
 	}
 
@@ -400,13 +463,13 @@ func TestRecordResultIsIdempotent(t *testing.T) {
 		Result: map[string]any{"hostname": "web-01"},
 	}
 	for i := range 3 {
-		if err := pg.RecordResult(ctx, host.ID, result); err != nil {
+		if err := tenant.RecordResult(ctx, host.ID, result); err != nil {
 			t.Fatalf("delivery %d: %v", i+1, err)
 		}
 	}
 
 	// A completed job must not become claimable again, however many times its result arrives.
-	claimable, err := pg.ClaimJobs(ctx, host.ID, 10)
+	claimable, err := tenant.ClaimJobs(ctx, host.ID, 10)
 	if err != nil {
 		t.Fatalf("claiming after completion: %v", err)
 	}
@@ -422,8 +485,9 @@ func TestRecordResultIsIdempotent(t *testing.T) {
 // afterwards.
 func TestSubscribeWakesOnNotify(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 
-	host := enrolTestHost(t, pg, "01JHOSTH", "web-01")
+	host := enrolTestHost(t, tenant, "01JHOSTH", "web-01")
 
 	notified, unsubscribe := pg.Subscribe(host.ID)
 	defer unsubscribe()
@@ -437,7 +501,7 @@ func TestSubscribeWakesOnNotify(t *testing.T) {
 	}
 
 	started := time.Now()
-	enqueue(t, pg, host.ID, protocol.Job{
+	enqueue(t, pg, tenant.Tenant(), host.ID, protocol.Job{
 		ID: "01JJOBWAKE", Intent: "facts.collect", Class: "read", Params: map[string]any{},
 		IssuedAt: time.Now(), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), Nonce: "n",
 	})
@@ -482,13 +546,14 @@ func TestSubscribeReleasesItsWaiter(t *testing.T) {
 // reader watching a fleet list would see rows move for no reason they could see.
 func TestListHostsIsOrdered(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
 
-	enrolTestHost(t, pg, "01JHOSTZ", "web-02")
-	enrolTestHost(t, pg, "01JHOSTY", "web-01")
-	enrolTestHost(t, pg, "01JHOSTX", "web-01")
+	enrolTestHost(t, tenant, "01JHOSTZ", "web-02")
+	enrolTestHost(t, tenant, "01JHOSTY", "web-01")
+	enrolTestHost(t, tenant, "01JHOSTX", "web-01")
 
-	hosts, err := pg.ListHosts(ctx)
+	hosts, err := tenant.ListHosts(ctx)
 	if err != nil {
 		t.Fatalf("listing: %v", err)
 	}
@@ -510,30 +575,52 @@ func TestListHostsIsOrdered(t *testing.T) {
 func truncate(t *testing.T, pg *Postgres) {
 	t.Helper()
 	_, err := pg.pool.Exec(context.Background(),
-		`TRUNCATE job_results, jobs, certificates, hosts, enrollment_tokens RESTART IDENTITY CASCADE`)
+		`TRUNCATE job_results, jobs, certificates, hosts, enrollment_tokens, tenants
+		 RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("emptying the schema: %v", err)
 	}
 }
 
-// enqueue inserts a job directly, standing in for the scheduler phase 0 does not have.
+// enqueue inserts a job directly, bypassing CreateJob.
 //
-// It goes through SQL rather than a Store method because there is no Store method: the control plane
-// issues no jobs yet. The delivery path is real and needs exercising before there is anything to
-// deliver, which is the same reason the root helpers enforce policy with no executor behind them.
-func enqueue(t *testing.T, pg *Postgres, hostID string, job protocol.Job) {
+// It predates CreateJob and is kept deliberately: the tests below are about the *delivery* path, and
+// writing the row with plain SQL means they still fail if CreateJob is what breaks, rather than both
+// going quiet together. The tests that exercise CreateJob itself are in jobs_test.go and run against
+// both implementations.
+func enqueue(t *testing.T, pg *Postgres, tenant TenantID, hostID string, job protocol.Job) {
 	t.Helper()
 	params, err := json.Marshal(job.Params)
 	if err != nil {
 		t.Fatalf("encoding job parameters: %v", err)
 	}
-	_, err = pg.pool.Exec(context.Background(), `
-		INSERT INTO jobs (id, host_id, intent, params, class, issued_at, not_before, not_after, nonce)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		job.ID, hostID, job.Intent, params, job.Class,
+
+	ctx := context.Background()
+	// In a transaction that names the tenant, because the jobs table is under a row-level security
+	// policy and this statement is outside the code that normally sets it. Writing the tenant into the
+	// INSERT alone is not enough: the policy's WITH CHECK is evaluated against farrier.tenant, so an
+	// insert that merely *claims* a tenant without the session saying so is refused. That refusal is
+	// the boundary working — this helper deliberately bypasses CreateJob, and the database noticed.
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT set_config('farrier.tenant', $1, true)`, string(tenant)); err != nil {
+		t.Fatalf("setting the tenant: %v", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO jobs (id, host_id, tenant_id, intent, params, class, issued_at, not_before,
+		                  not_after, nonce)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		job.ID, hostID, string(tenant), job.Intent, params, job.Class,
 		job.IssuedAt, job.NotBefore, job.NotAfter, job.Nonce)
 	if err != nil {
 		t.Fatalf("enqueueing %s: %v", job.ID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("committing %s: %v", job.ID, err)
 	}
 }
 
@@ -559,28 +646,29 @@ func waiterCount(pg *Postgres) int {
 // was revoked is exactly the question revocation exists to make answerable.
 func TestRevokingAHostReleasesItsMachineForReEnrolment(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
 
-	first := enrolTestHost(t, pg, "01JHOSTM", "web-01")
-	if err := pg.RevokeHost(ctx, first.ID); err != nil {
+	first := enrolTestHost(t, tenant, "01JHOSTM", "web-01")
+	if err := tenant.RevokeHost(ctx, first.ID); err != nil {
 		t.Fatalf("revoking: %v", err)
 	}
 
 	// The machine no longer resolves to a live host, which is what the enrolment handler checks.
-	if _, err := pg.GetHostByMachineID(ctx, first.MachineIDHash); !errors.Is(err, ErrNotFound) {
+	if _, err := tenant.GetHostByMachineID(ctx, first.MachineIDHash); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a revoked host still claims its machine id: %v", err)
 	}
 
 	second := first
 	second.ID = "01JHOSTN"
-	if err := pg.CreateEnrolledHost(ctx, second, Certificate{
+	if err := tenant.CreateEnrolledHost(ctx, second, Certificate{
 		Fingerprint: "fp-rejoin", HostID: second.ID, Serial: "02",
 		IssuedAt: time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
 	}); err != nil {
 		t.Fatalf("re-enrolling a revoked machine: %v", err)
 	}
 
-	found, err := pg.GetHostByMachineID(ctx, first.MachineIDHash)
+	found, err := tenant.GetHostByMachineID(ctx, first.MachineIDHash)
 	if err != nil {
 		t.Fatalf("looking up the re-enrolled host: %v", err)
 	}
@@ -589,7 +677,7 @@ func TestRevokingAHostReleasesItsMachineForReEnrolment(t *testing.T) {
 	}
 
 	// The revoked row is still there, with its history.
-	if _, err := pg.GetHost(ctx, first.ID); err != nil {
+	if _, err := tenant.GetHost(ctx, first.ID); err != nil {
 		t.Errorf("re-enrolment erased the revoked host: %v", err)
 	}
 }
@@ -601,22 +689,23 @@ func TestRevokingAHostReleasesItsMachineForReEnrolment(t *testing.T) {
 // certificate outliving its host would be a fingerprint that authenticates and resolves to nobody.
 func TestDeleteHostTakesItsDependentRowsWithIt(t *testing.T) {
 	pg := newPostgres(t)
+	tenant := testTenant(t, pg, "alpha", ApprovalSecondPerson)
 	ctx := context.Background()
 
-	host := enrolTestHost(t, pg, "01JHOSTP", "web-01")
-	if err := pg.DeleteHost(ctx, host.ID); err != nil {
+	host := enrolTestHost(t, tenant, "01JHOSTP", "web-01")
+	if err := tenant.DeleteHost(ctx, host.ID); err != nil {
 		t.Fatalf("deleting: %v", err)
 	}
-	if _, err := pg.GetHost(ctx, host.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := tenant.GetHost(ctx, host.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the deleted host is still readable: %v", err)
 	}
 	if _, err := pg.LookupCertificate(ctx, "fp-"+host.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a certificate outlived the host it was issued to: %v", err)
 	}
-	if _, err := pg.GetHostByMachineID(ctx, host.MachineIDHash); !errors.Is(err, ErrNotFound) {
+	if _, err := tenant.GetHostByMachineID(ctx, host.MachineIDHash); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the deleted host still claims its machine id: %v", err)
 	}
-	if err := pg.DeleteHost(ctx, "01JNOSUCHHOST"); !errors.Is(err, ErrNotFound) {
+	if err := tenant.DeleteHost(ctx, "01JNOSUCHHOST"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleting an unknown host produced %v, want ErrNotFound", err)
 	}
 }

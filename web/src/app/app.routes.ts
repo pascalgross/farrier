@@ -19,6 +19,11 @@ export const routes: Routes = [
     title: 'Host — Farrier',
   },
   {
+    path: 'jobs',
+    loadComponent: () => import('./jobs/jobs-list').then((m) => m.JobsList),
+    title: 'Jobs — Farrier',
+  },
+  {
     path: 'catalogue',
     loadComponent: () => import('./catalogue/catalogue').then((m) => m.Catalogue),
     title: 'Operations — Farrier',

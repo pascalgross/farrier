@@ -102,7 +102,7 @@ record the host and its first certificate atomically — a host row whose certif
 would hold the claim while being unable to authenticate, wedging that machine permanently.
 
 `requestedBootstrap` is present only when the operator passed `--bootstrap NAME`, and is subject to
-every guardrail in [`SECURITY.md` §6](SECURITY.md#6-provisioning-and-the-enrolment-time-exception).
+every guardrail in [`SECURITY.md` §7](SECURITY.md#7-provisioning-and-the-enrolment-time-exception).
 
 ### Response `200`
 
@@ -347,6 +347,13 @@ A job is a *typed intent with typed parameters*. It is never a command, a script
 a URL to fetch code from. An agent receiving an `intent` it does not recognise MUST report
 `unsupported_intent` and MUST NOT attempt any fallback interpretation.
 
+`id` is letters and digits only, at most 64 of them. For an unsigned job the control plane generates
+it; for a signed one the signer chooses it, and the control plane MUST refuse a request whose `id` is
+any other shape rather than correcting it — the signature covers the id, so a normalised id would not
+verify. The rule exists because the id is a path segment in [§6](#6-post-agentv1jobsidresult) and a
+filename in the agent's result spool: an id containing `/`, `?` or `#` yields work whose result has
+nowhere to go.
+
 ### 5.1 Agent-side acceptance checks
 
 Before executing anything, the agent MUST, in this order, and MUST fail closed on any error:
@@ -361,10 +368,13 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
 4. **Check `notBefore`/`notAfter` against the local clock**, never against server-supplied time.
 5. **Check the class**:
    - `read` — no signature required, mTLS is sufficient;
-   - `routine` — signature by the control plane's online key required. Note that Farrier's agent does
-     not yet verify this: phase 0 has no executor behind the routine intent and no online key to verify
-     against, so the check arrives with the first routine executor. An agent MUST NOT execute a routine
-     intent until it does;
+   - `routine` — signature by the control plane's online key required. An agent MUST NOT execute a
+     routine intent until it verifies that signature: routine is the one class for which no offline
+     signature is required, so an agent that skipped the check would be acting on mTLS alone. The key
+     is delivered to the agent in the enrolment response and refreshed on every heartbeat
+     ([§4](#4-post-agentv1heartbeat)); an agent that has not been given one refuses routine intents
+     with `refused_unsigned`. **A signature by a key in `trusted-signers` is not an online-key
+     signature** and MUST NOT be accepted as one;
    - `destructive` — signature by a key present in this host's `/etc/farrier/trusted-signers`
      required. A signature by the online key is **not** acceptable for this class.
 6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **check the
@@ -383,6 +393,33 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
    error message; the helper's check is the one that is load-bearing, because it runs as root against
    the root-owned file and does not trust its caller.
 
+### 5.2 The control plane's online key
+
+The enrolment response ([§3](#3-post-agentv1enroll)) and every heartbeat response
+([§4](#4-post-agentv1heartbeat)) MAY carry `onlineKey`: the control plane's own public key, in the same
+one-line format as a host's `trusted-signers` file.
+
+```
+ed25519 MCowBQYDK2VwAyEA… farrier-online-4f2a91c3 control-plane
+```
+
+An agent caches it and verifies routine intents against it. Three rules:
+
+- It is sent on every heartbeat rather than digest-first, unlike the facts, policy and signers
+  documents. Those are kilobytes; this is one line, and sending it unconditionally means rotation
+  propagates with no state machine and no host stranded on a key that no longer verifies.
+- An **absent or empty** field means "nothing to say", never "forget your key". An agent MUST keep what
+  it has. The other reading would let one malformed response disable a fleet's routine tier.
+- It is cached as *state*, not as a trust anchor. Farrier's agent keeps it in
+  `/var/lib/farrier/online-key` and never in `/etc/farrier`, because `/etc/farrier/trusted-signers` is
+  what an administrator decided and this is what a control plane said.
+
+That the control plane distributes the key it signs with is acceptable **only** because of what the
+routine tier is bounded by. See [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue): a routine intent
+can at most make a host do sooner what its own local policy already permits it to do unattended, and the
+root helper re-reads that policy itself. The same arrangement for the destructive tier would be a
+backdoor, which is why an agent MUST verify the two against different anchors.
+
 ## 6. `POST /agent/v1/jobs/{id}/result`
 
 ```json
@@ -400,7 +437,11 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
 ```
 
 `status` is one of `succeeded`, `failed`, `refused_by_policy`, `refused_unsigned`, `refused_clock_skew`,
-`unsupported_intent`, `expired`.
+`unsupported_intent`, `expired`. The set is closed and the control plane **MUST** reject any other word
+with `400`, because every client renders `status` as the job's state: a host that could report `queued`
+could make a job it had already run look untouched. An agent that meets a `400` here has produced a
+result this control plane cannot store; it logs and drops it like any other `400`, per
+[§11](#11-errors).
 
 ### 6.1 Idempotency
 

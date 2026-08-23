@@ -64,7 +64,9 @@ guarantee: guarantee-tests guarantee-fuzz ## Run the tests that enforce docs/SEC
 # weakened by an edit here that nobody noticed, or strengthened here and never run in CI.
 .PHONY: guarantee-tests
 guarantee-tests: ## The catalogue is the expected set, and nothing reaches a shell
-	go test -count=1 -run '^(TestGuarantee|TestClassPredicates)' -v ./internal/...
+	# ./... rather than ./internal/...: three guarantee-named tests live under helpers/ and were
+	# silently outside the required check, which nothing about their names said.
+	go test -count=1 -run '^(TestGuarantee|TestClassPredicates)' -v ./...
 
 .PHONY: guarantee-fuzz
 guarantee-fuzz: ## Fuzz the parameter decoders and the canonical encoder, as CI does
@@ -135,6 +137,18 @@ web: ## Build the Angular application into the location farrier-server embeds
 web-lint: ## Lint the web application, including the doc-comment rule on private members
 	cd web && pnpm install --frozen-lockfile && pnpm exec eslint .
 
+# Every systemd unit the package ships. systemd silently ignores a directive it does not understand, so
+# a typo in one of these is a hardening line that is simply absent on every host — which is why the deb
+# target verifies them and CI verifies them again with the binaries in place.
+UNITS := packaging/farrier-agent.service \
+	packaging/farrier-apply-updates.socket packaging/farrier-apply-updates@.service \
+	packaging/farrier-restart-unit.socket packaging/farrier-restart-unit@.service \
+	packaging/farrier-reboot-host.socket packaging/farrier-reboot-host@.service
+
+.PHONY: units
+units: ## Check every packaged systemd unit with systemd-analyze
+	systemd-analyze verify $(UNITS)
+
 ARCH ?= $(shell go env GOARCH)
 # nfpm insists on a semver version, and `git describe` yields v0.1.0-3-gabc1234 between tags.
 DEB_VERSION ?= $(patsubst v%,%,$(VERSION))
@@ -152,7 +166,7 @@ deb-path: ## Print the .deb path `make deb` would produce, for scripts that need
 .PHONY: deb
 deb: build ## Build the farrier-agent .deb
 	@command -v nfpm >/dev/null 2>&1 || { echo "nfpm not installed; see https://nfpm.goreleaser.com/install/"; exit 1; }
-	@command -v visudo >/dev/null 2>&1 && visudo -c -f packaging/sudoers >/dev/null || true
+	@command -v systemd-analyze >/dev/null 2>&1 && systemd-analyze verify $(UNITS) >/dev/null 2>&1 || true
 	mkdir -p $(DIST)/packages
 	cd packaging && \
 	  VERSION="$(DEB_VERSION)" ARCH="$(ARCH)" \

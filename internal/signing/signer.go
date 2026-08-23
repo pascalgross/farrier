@@ -17,9 +17,12 @@ import (
 // a managed host is compile-time closed, and this runs on the operator's own machine.
 //
 // Backends: file is implemented. sshagent, pkcs11, gpgagent and kms are specified in
-// docs/EXTENDING.md and not yet written; phase 0 has no destructive intent with an executor, so there
-// is nothing to sign yet, and shipping backends that cannot be exercised end to end would be shipping
-// untested code into the one path where being wrong is unrecoverable. No token vendor is hard-coded
+// docs/EXTENDING.md and not yet written. The path a signature travels is complete — the control plane
+// accepts one on POST /api/v1/jobs, an agent verifies it against the host's own trusted-signers, and a
+// root helper acts on it — so what these backends lack is not somewhere to go but `farrier sign`, the
+// command that would drive them. They arrive with it, because shipping a backend that cannot be
+// exercised end to end would be shipping untested code into the one path where being wrong is
+// unrecoverable. No token vendor is hard-coded
 // anywhere — pkcs11 will cover YubiKey PIV, Nitrokey and SoftHSM alike, and kms will cover AWS, GCP
 // and Azure.
 type Signer interface {

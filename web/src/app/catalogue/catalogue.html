@@ -24,7 +24,7 @@
         <span class="font-medium farrier-numeric">{{ entry.name }}</span>
         @if (!entry.implemented) {
           <div class="text-xs opacity-70"
-               matTooltip="Specified, with no executor on the agent. This build ships no write capability at all.">
+               matTooltip="Specified, with no executor on the agent in this build. An agent refuses it exactly as it refuses an operation it has never heard of, and nothing on a host can act on it.">
             no executor in this build
           </div>
         }

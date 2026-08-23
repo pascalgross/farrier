@@ -41,12 +41,36 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The token names the tenant, and it is resolved before it is redeemed.
+	//
+	// This is how a machine joins a fleet, and it is the only way: the tenant is not in the URL and not
+	// in the body, so the enrolling machine — which is not authenticated at this moment — has no say in
+	// which customer it becomes part of. Resolving without consuming keeps the ordering below intact.
+	tenantID, err := s.cfg.Store.TenantForEnrollmentToken(r.Context(), HashToken(req.Token))
+	if errors.Is(err, store.ErrTokenUnusable) {
+		// Unknown, expired and already used are one response. Telling an attacker which of the three
+		// applies is free reconnaissance.
+		writeError(w, http.StatusUnauthorized, "token_unusable", "the enrolment token cannot be used")
+		return
+	}
+	if err != nil {
+		slog.Error("could not resolve an enrolment token", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the token")
+		return
+	}
+	tenant := s.cfg.Store.In(tenantID)
+
 	// The machine-id check comes before the token is consumed, so that a host retrying an enrolment it
 	// has already completed does not burn a second token in the process of being told no. Revoked hosts
 	// are not matched, so revoking one is the operator action that lets its machine enrol again — which
 	// the message says, because a bare 409 on a machine somebody is trying to rebuild is a dead end.
+	//
+	// The claim is per tenant, and the answer names the existing host only because the presenter holds
+	// a token for that same tenant. Across tenants this check would be an oracle — enrol a machine and
+	// be told whether somebody else already manages it — which is why the constraint behind it is
+	// (tenant_id, machine_id_hash) rather than the machine id alone.
 	if req.MachineIDHash != "" {
-		existing, err := s.cfg.Store.GetHostByMachineID(r.Context(), req.MachineIDHash)
+		existing, err := tenant.GetHostByMachineID(r.Context(), req.MachineIDHash)
 		switch {
 		case err == nil:
 			writeError(w, http.StatusConflict, "already_enrolled",
@@ -80,10 +104,11 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	token, err := s.cfg.Store.ConsumeEnrollmentToken(r.Context(), HashToken(req.Token), hostID, now)
+	token, err := tenant.ConsumeEnrollmentToken(r.Context(), HashToken(req.Token), hostID, now)
 	if errors.Is(err, store.ErrTokenUnusable) {
-		// Unknown, expired and already used are one response. Telling an attacker which of the three
-		// applies is free reconnaissance.
+		// Still checked here even though the token resolved a moment ago, because this is the atomic
+		// redemption and the one above is only a read: two agents presenting the same token together
+		// both resolve it, and exactly one of them redeems it.
 		writeError(w, http.StatusUnauthorized, "token_unusable", "the enrolment token cannot be used")
 		return
 	}
@@ -104,9 +129,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// The host and its certificate land together or not at all. A host row without a certificate holds
 	// the machine-id hash while being unable to authenticate, so the machine could neither talk nor
 	// enrol again — a permanent wedge caused by a failure that lasted a fraction of a second.
-	if err := s.cfg.Store.CreateEnrolledHost(r.Context(), host, store.Certificate{
+	if err := tenant.CreateEnrolledHost(r.Context(), host, store.Certificate{
 		Fingerprint: Fingerprint(cert),
 		HostID:      hostID,
+		TenantID:    tenantID,
 		Serial:      cert.SerialNumber.Text(16),
 		IssuedAt:    now,
 		NotAfter:    cert.NotAfter,
@@ -121,16 +147,16 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("host enrolled",
-		"host", hostID, "hostname", req.Hostname, "group", token.Group,
+		"host", hostID, "tenant", tenantID, "hostname", req.Hostname, "group", token.Group,
 		"agent_version", req.AgentVersion, "token_label", token.Label)
-	s.emit(r.Context(), notify.Event{
+	s.emit(r.Context(), tenantID, notify.Event{
 		Kind: "host.enrolled", HostID: hostID, Hostname: req.Hostname, At: now,
 		Summary: req.Hostname + " enrolled into group " + token.Group,
 	})
 
-	// Phase 0 issues no bootstrap templates: Tier 1 provisioning renders cloud-init for a human or for
+	// This build issues no bootstrap templates: Tier 1 provisioning renders cloud-init for a human or for
 	// Terraform and never delivers it to a host, and Tier 2 arrives in phase 3 with every guardrail in
-	// docs/SECURITY.md §6. A request for one is refused rather than ignored, because an agent that
+	// docs/SECURITY.md §7. A request for one is refused rather than ignored, because an agent that
 	// asked for a template and silently received none would proceed as though it had been applied.
 	if req.RequestedBootstrap != "" {
 		slog.Warn("a bootstrap template was requested and this build issues none",
@@ -138,6 +164,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, protocol.EnrollResponse{
+		OnlineKey:            s.onlineKeyLine(),
 		HostID:               hostID,
 		Certificate:          string(certPEM),
 		CABundle:             string(s.cfg.Authority.CertificatePEM()),
@@ -152,7 +179,8 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 // inventory every sixty seconds is hundreds of kilobytes per host per minute of write amplification;
 // comparing a digest instead makes the steady state hundreds of bytes and full reports rare and
 // event-driven.
-func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host store.Host) {
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, who caller) {
+	host := who.Host
 	var req protocol.HeartbeatRequest
 	if err := decodeJSON(w, r, protocol.MaxHeartbeatBytes, &req); err != nil {
 		if isTooLarge(err) {
@@ -165,7 +193,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 	}
 
 	now := time.Now()
-	if err := s.cfg.Store.RecordHeartbeat(r.Context(), host.ID, store.HeartbeatUpdate{
+	if err := who.Store.RecordHeartbeat(r.Context(), host.ID, store.HeartbeatUpdate{
 		AgentVersion:       req.AgentVersion,
 		BootID:             req.BootID,
 		UptimeSeconds:      req.UptimeSeconds,
@@ -178,12 +206,12 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 		return
 	}
 
-	s.storeDocumentIfPresent(r.Context(), host.ID, "facts", req.Facts, req.FactsDigest)
-	s.storeDocumentIfPresent(r.Context(), host.ID, "policy", req.Policy, req.PolicyDigest)
+	s.storeDocumentIfPresent(r.Context(), who, "facts", req.Facts, req.FactsDigest)
+	s.storeDocumentIfPresent(r.Context(), who, "policy", req.Policy, req.PolicyDigest)
 	// req.Signers != nil rather than len() > 0: an empty trust anchor is a real answer and the default
 	// one, and treating it as "not reported" would make the server ask for it forever.
 	if req.Signers != nil {
-		s.storeDocumentIfPresent(r.Context(), host.ID, "signers", req.Signers, req.SignersDigest)
+		s.storeDocumentIfPresent(r.Context(), who, "signers", req.Signers, req.SignersDigest)
 	}
 
 	// host carries the digests of the documents the server actually holds, read before this beat was
@@ -205,6 +233,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 	}
 
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{
+		OnlineKey:            s.onlineKeyLine(),
 		ServerTime:           now.UTC(),
 		NextHeartbeatSeconds: s.cfg.HeartbeatSeconds,
 		WantFullReport:       wantFacts && wantPolicy,
@@ -219,10 +248,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, host st
 // The digest is recomputed from the document rather than taken from the request. A host whose reported
 // digest did not match what it sent would otherwise poison the comparison for every future beat: the
 // server would believe it held something it did not, and would stop asking for the real thing.
-func (s *Server) storeDocumentIfPresent(ctx context.Context, hostID, kind string, document any, claimed string) {
+func (s *Server) storeDocumentIfPresent(ctx context.Context, who caller, kind string, document any, claimed string) {
 	if document == nil {
 		return
 	}
+	hostID := who.Host.ID
 	encoded, err := canonical.Marshal(document)
 	if err != nil {
 		slog.Warn("could not canonicalise a reported document", "kind", kind, "host", hostID, "error", err)
@@ -237,11 +267,11 @@ func (s *Server) storeDocumentIfPresent(ctx context.Context, hostID, kind string
 	var storeFn func(context.Context, string, string, []byte) error
 	switch kind {
 	case "facts":
-		storeFn = s.cfg.Store.StoreFacts
+		storeFn = who.Store.StoreFacts
 	case "policy":
-		storeFn = s.cfg.Store.StorePolicy
+		storeFn = who.Store.StorePolicy
 	case "signers":
-		storeFn = s.cfg.Store.StoreSigners
+		storeFn = who.Store.StoreSigners
 	default:
 		return
 	}
@@ -257,7 +287,8 @@ func (s *Server) storeDocumentIfPresent(ctx context.Context, hostID, kind string
 // NAT tables — because a hold longer than that produces intermittent failures that look like network
 // flakiness and get debugged as such for weeks. wait=0 degrades to plain polling, for environments that
 // terminate held connections regardless.
-func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, host store.Host) {
+func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, who caller) {
+	host := who.Host
 	wait := protocol.DefaultJobWaitSeconds
 	if raw := r.URL.Query().Get("wait"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -276,7 +307,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, host store.H
 	notified, unsubscribe := s.cfg.Store.Subscribe(host.ID)
 	defer unsubscribe()
 
-	jobs, err := s.cfg.Store.ClaimJobs(r.Context(), host.ID, 10)
+	jobs, err := who.Store.ClaimJobs(r.Context(), host.ID, 10)
 	if err != nil {
 		slog.Error("could not claim jobs", "error", err, "host", host.ID)
 		writeError(w, http.StatusInternalServerError, "internal", "could not read the job queue")
@@ -294,7 +325,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, host store.H
 	// Returning an empty list after a spurious wake is correct and costs the agent one round trip.
 	select {
 	case <-notified:
-		jobs, err = s.cfg.Store.ClaimJobs(r.Context(), host.ID, 10)
+		jobs, err = who.Store.ClaimJobs(r.Context(), host.ID, 10)
 		if err != nil {
 			slog.Error("could not claim jobs after a wake-up", "error", err, "host", host.ID)
 			writeError(w, http.StatusInternalServerError, "internal", "could not read the job queue")
@@ -321,7 +352,8 @@ func nonNil(jobs []protocol.Job) []protocol.Job {
 // The agent retries until it receives a 2xx, and a repeated result for a job that already has one
 // returns 200 and changes nothing. Work that succeeded but whose result was lost must never re-execute:
 // that is how a retry turns one reboot into a reboot loop.
-func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, host store.Host) {
+func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, who caller) {
+	host := who.Host
 	jobID := r.PathValue("id")
 	if jobID == "" {
 		writeError(w, http.StatusBadRequest, "malformed", "the job id is missing from the path")
@@ -342,10 +374,22 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, host store
 		writeError(w, http.StatusBadRequest, "malformed", "the job id in the body does not match the path")
 		return
 	}
+	// The status is a closed set, and this is the one field of a result the control plane must not pass
+	// through. Every client renders it as the job's state, so an unchecked word lets a host name its own
+	// job "queued" — a job that has been claimed and has reported a result then looks untouched, and an
+	// operator re-issues work that has already run. A future agent reporting a word this build does not
+	// know is refused for the same reason and retries, rather than being displayed as a state.
+	if !protocol.ValidStatus(req.Status) {
+		slog.Warn("a host reported an unknown result status",
+			"host", host.ID, "job", jobID, "status", req.Status)
+		writeError(w, http.StatusBadRequest, "malformed",
+			"the result status is not one this control plane knows; see docs/PROTOCOL.md §6")
+		return
+	}
 	req.JobID = jobID
 	req.Output, req.OutputTruncated = protocol.TruncateOutput(req.Output)
 
-	switch err := s.cfg.Store.RecordResult(r.Context(), host.ID, req); {
+	switch err := who.Store.RecordResult(r.Context(), host.ID, req); {
 	case errors.Is(err, store.ErrNotFound):
 		// Either the job never existed or it belongs to a different host. The two are one response, as
 		// everywhere else: distinguishing them would let an enrolled host enumerate other hosts' jobs.
@@ -369,7 +413,8 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, host store
 // The identity comes from the presenting certificate and never from the CSR. A CSR is an untrusted
 // document: honouring the subject in it would let a host re-key a certificate for a different host
 // entirely, which is a full compromise of the fleet's identity from one enrolled machine.
-func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, host store.Host) {
+func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller) {
+	host := who.Host
 	var req protocol.RenewRequest
 	if err := decodeJSON(w, r, protocol.MaxEnrollBytes, &req); err != nil || req.CSR == "" {
 		writeError(w, http.StatusBadRequest, "malformed", "a csr is required")
@@ -382,9 +427,10 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, host store.
 		writeError(w, http.StatusBadRequest, "bad_csr", "the certificate request could not be signed")
 		return
 	}
-	if err := s.cfg.Store.AddCertificate(r.Context(), store.Certificate{
+	if err := who.Store.AddCertificate(r.Context(), store.Certificate{
 		Fingerprint: Fingerprint(cert),
 		HostID:      host.ID,
+		TenantID:    who.Store.Tenant(),
 		Serial:      cert.SerialNumber.Text(16),
 		IssuedAt:    time.Now(),
 		NotAfter:    cert.NotAfter,
@@ -407,18 +453,59 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, host store.
 // Failures are logged and never propagated: a webhook endpoint being down must not fail an enrolment.
 // Delivery is synchronous with a short deadline rather than fire-and-forget, so that a request cannot
 // outlive the goroutine reporting on it and lose the log line.
-func (s *Server) emit(ctx context.Context, ev notify.Event) {
-	if len(s.cfg.Sinks) == 0 {
-		return
-	}
+//
+// The tenant is a parameter and not a convenience. The server used to hold one list of sinks and
+// deliver every event to all of them, which on a hosted installation means one customer's hostnames,
+// intents and operator names arriving at another customer's chat channel — a leak no test would catch
+// and a customer would. An event now goes to the endpoint its own tenant configured, and to nowhere
+// else, and it carries its tenant so that one which somehow arrived in the wrong place is identifiable
+// as such rather than looking like an ordinary event.
+func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Event) {
+	ev.TenantID = string(tenantID)
+
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
-	for _, sink := range s.cfg.Sinks {
-		if err := sink.Deliver(ctx, ev); err != nil {
-			slog.Warn("event delivery failed", "sink", sink.Name(), "kind", ev.Kind, "error", err)
-		}
+	tenant, err := s.cfg.Store.GetTenant(ctx, tenantID)
+	if err != nil {
+		slog.Warn("could not read a tenant to deliver its events",
+			"tenant", tenantID, "kind", ev.Kind, "error", err)
+		return
 	}
+	if tenant.WebhookURL == "" {
+		return
+	}
+
+	// Constructed per event rather than cached. Events are rare — an enrolment, a job, an approval —
+	// and a cache keyed on a URL an administrator can change is a cache that eventually posts a
+	// customer's events to an endpoint they have already revoked.
+	sink := notify.NewWebhook("tenant-webhook", tenant.WebhookURL)
+	if err := sink.Deliver(ctx, ev); err != nil {
+		slog.Warn("event delivery failed",
+			"tenant", tenantID, "sink", sink.Name(), "kind", ev.Kind, "error", err)
+	}
+}
+
+// onlineKeyLine renders the control plane's own public key for an agent to store.
+//
+// Empty when there is no online key, which an agent reads as "nothing to say" rather than as "forget
+// what you have". The distinction matters on a control plane that has been restarted without its key
+// directory: an agent that cleared its copy on the first such heartbeat would lose the routine tier
+// fleet-wide, in a way that looks like the agents breaking rather than the server being misconfigured.
+//
+// A failure to render is logged and treated as absence for the same reason. It cannot happen with the
+// key type this returns, and if it ever did, refusing to answer a heartbeat over it would take a fleet
+// offline for the sake of a field that governs one intent.
+func (s *Server) onlineKeyLine() string {
+	if s.cfg.OnlineKey == nil {
+		return ""
+	}
+	line, err := s.cfg.OnlineKey.PublicLine()
+	if err != nil {
+		slog.Error("could not render the online key for agents", "error", err)
+		return ""
+	}
+	return line
 }
 
 // jsonOrNull returns raw JSON bytes, or the literal null, for embedding a stored document in a response.

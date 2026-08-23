@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/store"
 )
@@ -107,8 +106,8 @@ func (s *Server) toView(h store.Host, now time.Time) hostView {
 }
 
 // handleListHosts returns the fleet.
-func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request, _ auth.Identity) {
-	hosts, err := s.cfg.Store.ListHosts(r.Context())
+func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request, who operator) {
+	hosts, err := who.Store.ListHosts(r.Context())
 	if err != nil {
 		slog.Error("could not list hosts", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not read the fleet")
@@ -128,8 +127,8 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request, _ auth.
 }
 
 // handleGetHost returns one host in full.
-func (s *Server) handleGetHost(w http.ResponseWriter, r *http.Request, _ auth.Identity) {
-	host, err := s.cfg.Store.GetHost(r.Context(), r.PathValue("id"))
+func (s *Server) handleGetHost(w http.ResponseWriter, r *http.Request, who operator) {
+	host, err := who.Store.GetHost(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "no such host")
 		return
@@ -148,9 +147,9 @@ func (s *Server) handleGetHost(w http.ResponseWriter, r *http.Request, _ auth.Id
 // than a CRL. What it does not do is stop the host: an agent whose certificate is revoked keeps running,
 // keeps applying updates from its local policy, and simply cannot talk to this control plane. That is
 // the intended behaviour — a revoked host should not become an unpatched host.
-func (s *Server) handleRevokeHost(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+func (s *Server) handleRevokeHost(w http.ResponseWriter, r *http.Request, who operator) {
 	hostID := r.PathValue("id")
-	err := s.cfg.Store.RevokeHost(r.Context(), hostID)
+	err := who.Store.RevokeHost(r.Context(), hostID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "no such host")
 		return
@@ -160,7 +159,7 @@ func (s *Server) handleRevokeHost(w http.ResponseWriter, r *http.Request, who au
 		writeError(w, http.StatusInternalServerError, "internal", "could not revoke the host")
 		return
 	}
-	slog.Warn("host revoked", "host", hostID, "operator", who.Subject, "provider", who.Provider)
+	slog.Warn("host revoked", "host", hostID, "tenant", who.Store.Tenant(), "operator", who.Principal())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -173,9 +172,9 @@ func (s *Server) handleRevokeHost(w http.ResponseWriter, r *http.Request, who au
 //
 // It does not reach the host. Nothing in Farrier does: a deleted host keeps running and keeps applying
 // its local policy, and simply has nowhere to report. Uninstalling the agent is a separate, local act.
-func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, who operator) {
 	hostID := r.PathValue("id")
-	err := s.cfg.Store.DeleteHost(r.Context(), hostID)
+	err := who.Store.DeleteHost(r.Context(), hostID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "no such host")
 		return
@@ -185,7 +184,7 @@ func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, who au
 		writeError(w, http.StatusInternalServerError, "internal", "could not delete the host")
 		return
 	}
-	slog.Warn("host deleted", "host", hostID, "operator", who.Subject, "provider", who.Provider)
+	slog.Warn("host deleted", "host", hostID, "tenant", who.Store.Tenant(), "operator", who.Principal())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -218,8 +217,8 @@ type tokenView struct {
 }
 
 // handleListTokens returns enrolment tokens, newest first, without their secrets.
-func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, _ auth.Identity) {
-	tokens, err := s.cfg.Store.ListEnrollmentTokens(r.Context())
+func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, who operator) {
+	tokens, err := who.Store.ListEnrollmentTokens(r.Context())
 	if err != nil {
 		slog.Error("could not list enrolment tokens", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not read the tokens")
@@ -247,7 +246,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, _ auth
 // The token is returned exactly once, here, and is not recoverable afterwards because only its hash is
 // stored. The response says so, so that a client can tell the operator rather than leaving them to find
 // out by looking for it later.
-func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who operator) {
 	var req struct {
 		// Label is a human-readable name for the token.
 		Label string `json:"label"`
@@ -283,14 +282,14 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who a
 		CreatedAt: now,
 		ExpiresAt: now.Add(ttl),
 	}
-	if err := s.cfg.Store.CreateEnrollmentToken(r.Context(), record); err != nil {
+	if err := who.Store.CreateEnrollmentToken(r.Context(), record); err != nil {
 		slog.Error("could not store an enrolment token", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not record the token")
 		return
 	}
 
 	slog.Info("enrolment token created",
-		"label", req.Label, "group", req.Group, "operator", who.Subject,
+		"label", req.Label, "group", req.Group, "tenant", who.Store.Tenant(), "operator", who.Principal(),
 		"expires", record.ExpiresAt.Format(time.RFC3339))
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -309,7 +308,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who a
 // is able to ask for, from the running server, without reading the source or trusting a web page. The
 // claim this project makes is about that set being small and closed, so it should be checkable in one
 // request.
-func (s *Server) handleCatalogue(w http.ResponseWriter, _ *http.Request, _ auth.Identity) {
+func (s *Server) handleCatalogue(w http.ResponseWriter, _ *http.Request, _ operator) {
 	type entry struct {
 		// Name is the wire identifier.
 		Name string `json:"name"`

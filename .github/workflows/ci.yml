@@ -61,7 +61,7 @@ jobs:
           --health-retries 10
 
     env:
-      FARRIER_TEST_DATABASE_URL: postgres://farrier_test:farrier_test@127.0.0.1:5432/farrier_test?sslmode=disable
+      FARRIER_TEST_DATABASE_URL: postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +69,29 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Create a database role that row-level security applies to
+        # The postgres image's POSTGRES_USER is the cluster's bootstrap superuser, and a superuser is
+        # exempt from every row-level security policy in the schema — with no symptom. Tenant isolation
+        # *is* those policies, so tests run as that role cannot observe the thing they exist to observe;
+        # TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate fails rather than skipping in that
+        # state, which is how this was found.
+        #
+        # The bootstrap user cannot drop its own SUPERUSER attribute — PostgreSQL refuses, and that is
+        # not a permissions accident but a rule about the bootstrap role. So the tests get an ordinary
+        # role of their own, owning its own database. That is also exactly what docs/INSTALL.md tells an
+        # operator to do, which means CI now runs against the documented production arrangement rather
+        # than a more privileged one.
+        env:
+          PGPASSWORD: farrier_test
+        run: |
+          psql -h 127.0.0.1 -U farrier_test -d farrier_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';
+          CREATE DATABASE farrier_app OWNER farrier_app;
+          SQL
+          PGPASSWORD=farrier_app psql -h 127.0.0.1 -U farrier_app -d farrier_app -tAc \
+            'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
+            | grep -qx f
 
       - name: gofmt
         run: make fmt-check
@@ -85,11 +108,22 @@ jobs:
       - name: The store tests actually ran rather than skipping
         # A skipped test is indistinguishable from a passing one in a summary, and these are the only
         # coverage the production store has.
+        #
+        # The second name is checked separately because it is the one that must not be wrong: it
+        # asserts that a job's signed payload canonicalises to the same bytes after a round trip
+        # through jsonb as it did when it was signed. Its PostgreSQL half is what makes it worth
+        # having, and a silent skip there would leave a correct signature failing on a host, looking
+        # like a broken key.
         run: |
-          go test -count=1 -v -run 'TestClaimJobsDeliversEachJobExactlyOnce' ./internal/store/ \
+          go test -count=1 -v ./internal/store/ \
+            -run 'TestClaimJobsDeliversEachJobExactlyOnce|TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned' \
             | tee /tmp/store.log
-          grep -q -- '--- PASS: TestClaimJobsDeliversEachJobExactlyOnce' /tmp/store.log \
-            || { echo "the PostgreSQL store tests skipped; the database service is not reachable" >&2; exit 1; }
+          for name in \
+            '--- PASS: TestClaimJobsDeliversEachJobExactlyOnce' \
+            '--- PASS: TestGuaranteeAStoredJobCanonicalisesToWhatWasSigned/postgres'; do
+            grep -q -- "$name" /tmp/store.log \
+              || { echo "the PostgreSQL store tests skipped: $name did not run" >&2; exit 1; }
+          done
 
       - name: go mod tidy leaves no diff
         run: |
@@ -157,15 +191,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: The sudoers file is valid
-        # An invalid sudoers file breaks sudo for the whole system, so it is validated before it can
-        # reach a package rather than after somebody installs one.
-        run: sudo visudo -c -f packaging/sudoers
-
-      - name: The systemd unit is valid
+      - name: Every systemd unit is valid
+        # systemd silently ignores a directive it does not understand and will happily start a unit
+        # whose sandboxing was dropped by a typo. That applies to the three helper sockets as much as to
+        # the agent, and the sockets are now the privilege boundary: a socket unit that does not parse
+        # is a host that cannot be patched.
         run: |
           sudo install -Dm755 /bin/true /usr/bin/farrier-agent
-          systemd-analyze verify packaging/farrier-agent.service
+          for helper in apply-updates restart-unit reboot-host; do
+            sudo install -Dm755 /bin/true "/usr/libexec/farrier/$helper"
+          done
+          make units
 
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
@@ -181,11 +217,18 @@ jobs:
           farrier-agent version
           farrier version
           farrier-agent policy check
-          # The whole product in one command: the agent's own account, going through the only
-          # privileged path that exists, being told no by a file the control plane cannot touch.
+
+          # The privilege boundary, from the agent's own account. This connects to each of the three
+          # helper sockets and is refused by each, which proves the sockets exist, that this account may
+          # reach them, that systemd started the helper as root, and that the helper refuses what it
+          # does not serve. It changes nothing: the intent it sends is in no catalogue.
+          sudo -u farrier farrier-agent doctor
+
+          # And the whole product in one command: an operation the local policy does not permit, going
+          # through the only privileged path that exists, being told no by a file the control plane
+          # cannot touch.
           set +e
-          sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit \
-            --action restart --unit nginx.service
+          sudo /usr/libexec/farrier/restart-unit --action restart --unit nginx.service
           status=$?
           set -e
           if [ "$status" -ne 3 ]; then
@@ -215,8 +258,17 @@ jobs:
       - name: Purge leaves nothing behind
         run: |
           sudo dpkg --purge farrier-agent
-          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier /usr/bin/farrier; do
+          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier /usr/bin/farrier \
+                      /usr/share/farrier /usr/lib/systemd/system/farrier-apply-updates.socket \
+                      /usr/lib/tmpfiles.d/farrier.conf; do
             [ ! -e "$path" ] || { echo "$path survived a purge" >&2; exit 1; }
+          done
+          # An enabled socket unit left behind would activate a binary that no longer exists, turning
+          # every connection into a failed unit start on a machine where Farrier is not installed.
+          for socket in farrier-apply-updates farrier-restart-unit farrier-reboot-host; do
+            if systemctl is-enabled "$socket.socket" >/dev/null 2>&1; then
+              echo "$socket.socket is still enabled after a purge" >&2; exit 1
+            fi
           done
           ! getent passwd farrier
 

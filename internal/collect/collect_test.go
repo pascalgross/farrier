@@ -1,8 +1,10 @@
 package collect
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -274,5 +276,51 @@ func TestParseOSReleaseNeverEvaluatesItsInput(t *testing.T) {
 	}
 	if got := fields["PRETTY_NAME"]; got != "Ubuntu $(reboot) `id`" {
 		t.Errorf("PRETTY_NAME is %q; the value must be taken literally", got)
+	}
+}
+
+// TestCombineRebootSignalsDistinguishesNoFromCannotTell is the trap the Conclusive flag exists for.
+//
+// Both answers arrive as Required=false, and on a Debian host installed with --no-install-recommends
+// the second is the ordinary case: the marker file is an Ubuntu update-notifier convention rather than
+// a standard, and needrestart is a Recommends. A caller that could not tell the two apart would report
+// a host still running a replaced kernel as one that needs nothing — which is the silent wrong answer
+// the whole platform seam exists to prevent, arriving at the very end of it.
+func TestCombineRebootSignalsDistinguishesNoFromCannotTell(t *testing.T) {
+	nothingAnswered := CombineRebootSignals(false, nil, NeedrestartReport{})
+	if nothingAnswered.Required {
+		t.Error("a host with no marker and no needrestart was reported as needing a reboot")
+	}
+	if nothingAnswered.Conclusive {
+		t.Error("a host where no signal was present reported a conclusive answer. Required=false there " +
+			"is an absence of evidence: nothing writes /var/run/reboot-required unless " +
+			"update-notifier-common is installed, so its absence says nothing on its own.")
+	}
+
+	needrestartSaidNo := CombineRebootSignals(false, nil, NeedrestartReport{Available: true})
+	if needrestartSaidNo.Required || !needrestartSaidNo.Conclusive {
+		t.Errorf("needrestart answering 'no' produced required=%v conclusive=%v, want false/true",
+			needrestartSaidNo.Required, needrestartSaidNo.Conclusive)
+	}
+
+	markerSaidYes := CombineRebootSignals(true, []string{"linux-image-generic"}, NeedrestartReport{})
+	if !markerSaidYes.Required || !markerSaidYes.Conclusive {
+		t.Errorf("the marker answering 'yes' produced required=%v conclusive=%v, want true/true",
+			markerSaidYes.Required, markerSaidYes.Conclusive)
+	}
+}
+
+// TestConclusiveSurvivesTheWireEvenWhenFalse asserts the field has no omitempty.
+//
+// An inconclusive answer is the case worth seeing, and with omitempty it would be exactly the one that
+// vanished — a reader of the facts document could not distinguish "this agent said the answer was
+// unreliable" from "this agent is too old to have an opinion".
+func TestConclusiveSurvivesTheWireEvenWhenFalse(t *testing.T) {
+	raw, err := json.Marshal(CombineRebootSignals(false, nil, NeedrestartReport{}))
+	if err != nil {
+		t.Fatalf("encoding a reboot report: %v", err)
+	}
+	if !strings.Contains(string(raw), `"conclusive":false`) {
+		t.Errorf("an inconclusive report encodes as %s, without a conclusive field", raw)
 	}
 }

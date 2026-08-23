@@ -15,7 +15,10 @@
 // duration parser.
 package protocol
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
 
 // Version is the protocol version, which appears in every path.
 //
@@ -121,7 +124,7 @@ type EnrollRequest struct {
 // Bootstrap is a provisioning template returned during enrolment.
 //
 // This is the exception named in the second paragraph of the guarantee, and every guardrail in
-// docs/SECURITY.md §6 applies to it: the agent must verify Signature against a key already present in
+// docs/SECURITY.md §7 applies to it: the agent must verify Signature against a key already present in
 // its own trusted-signers, print Body in full and record it before executing, apply it exactly once
 // under an on-disk interlock, and refuse entirely when trusted-signers is empty. It never falls back
 // to trusting the server.
@@ -173,6 +176,19 @@ type EnrollResponse struct {
 
 	// NextHeartbeatSeconds is the pacing the agent should adopt.
 	NextHeartbeatSeconds int `json:"nextHeartbeatSeconds"`
+
+	// OnlineKey is the control plane's own signing key, in the trusted-signers line format.
+	//
+	// It is what a routine intent is verified against, and it arrives from the control plane rather
+	// than from the operator — which would be unacceptable for the destructive tier and is acceptable
+	// here for a reason docs/SECURITY.md §3 states outright: what bounds a routine intent is the host's
+	// local policy, not this key. The control plane can at most make a host do sooner what it already
+	// permits itself to do unattended, so a control plane that rotated this key at will would gain
+	// nothing it did not already have.
+	//
+	// Empty when the control plane has no online key, in which case the agent refuses routine intents
+	// exactly as it did before there was one.
+	OnlineKey string `json:"onlineKey,omitempty"`
 
 	// Bootstrap is present only if one was requested and approved.
 	Bootstrap *Bootstrap `json:"bootstrap,omitempty"`
@@ -270,6 +286,19 @@ type HeartbeatResponse struct {
 
 	// WantSigners asks for the trusted key identities on the next heartbeat.
 	WantSigners bool `json:"wantSigners"`
+
+	// OnlineKey is the control plane's own signing key, in the trusted-signers line format.
+	//
+	// Sent on every heartbeat rather than digest-first like the documents above, and the asymmetry is
+	// deliberate. Digest-first exists because a facts document is kilobytes and a fleet of five hundred
+	// would send its whole inventory every minute; this is one short line. Sending it unconditionally
+	// means key rotation propagates on its own, with no state machine, no "want" flag, and no host left
+	// on a key that no longer verifies because it missed one exchange.
+	//
+	// Empty when the control plane has no online key. An agent that receives an empty value keeps what
+	// it has: an absent field means "nothing to say", not "forget your key", because the second reading
+	// would let one malformed response disable a fleet's routine tier until somebody noticed.
+	OnlineKey string `json:"onlineKey,omitempty"`
 }
 
 // Job is one unit of work, as delivered to an agent.
@@ -343,6 +372,34 @@ type JobsResponse struct {
 	Jobs []Job `json:"jobs"`
 }
 
+// MaxJobIDBytes bounds a job identifier.
+//
+// A generated one is 26 characters, so this is room for a signer who wants a readable id
+// ("reboot-web01-2026-08-23" is a legitimate thing to want) without the id becoming a place to put a
+// kilobyte. It is a filename on the host and a path segment on the wire, and both have limits well
+// above this.
+const MaxJobIDBytes = 64
+
+// jobIDPattern is the only shape a job identifier may take.
+//
+// Crockford base32 is upper-case alphanumeric without I, L, O and U, so an allowlist is exact rather
+// than a list of characters somebody thought to exclude. Lower case is permitted so that an identifier
+// that has been through a case-normalising layer still round-trips.
+//
+// The rule lives here, in the package both sides share, rather than on either side of the wire. The id
+// is a path segment in POST /agent/v1/jobs/{id}/result and a filename in the agent's result spool, so a
+// control plane that accepted an id the agent refuses would produce work whose result has nowhere to go
+// — and one that accepted a "/" would produce work whose result POST does not route at all.
+var jobIDPattern = regexp.MustCompile(`^[0-9A-Za-z]+$`)
+
+// ValidJobID reports whether an identifier is one both sides will carry.
+func ValidJobID(id string) bool {
+	return id != "" && len(id) <= MaxJobIDBytes && jobIDPattern.MatchString(id)
+}
+
+// JobIDShape describes the accepted shape, for an error message that says what to do instead.
+const JobIDShape = "letters and digits only, at most 64 of them"
+
 // Result statuses. They are stable strings because they end up in the UI, in the audit log and in
 // operators' alerting rules, and renaming one silently breaks somebody's dashboard.
 const (
@@ -367,6 +424,25 @@ const (
 	// StatusExpired means the job's validity window had closed by the local clock.
 	StatusExpired = "expired"
 )
+
+// statuses is the closed set, as a set, for the check below.
+var statuses = map[string]bool{
+	StatusSucceeded:         true,
+	StatusFailed:            true,
+	StatusRefusedByPolicy:   true,
+	StatusRefusedUnsigned:   true,
+	StatusRefusedClockSkew:  true,
+	StatusUnsupportedIntent: true,
+	StatusExpired:           true,
+}
+
+// ValidStatus reports whether a reported status is one of the seven above.
+//
+// The control plane checks this on the way in because the status is what every client renders as the
+// job's state. Passing an unknown word through means a host can choose that word — including one of the
+// control plane's own state words, so that a job which has been claimed and has reported a result
+// renders as though nobody had touched it, and an operator re-issues work that already ran.
+func ValidStatus(s string) bool { return statuses[s] }
 
 // ResultRequest is the body of POST /agent/v1/jobs/{id}/result.
 //

@@ -8,11 +8,26 @@ By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
-> Farrier is in **phase 0**. It ships **no write capability at all**. The intent catalogue is complete —
-> four read-only operations, one routine and five destructive — but only the read-only four have an
-> executor behind them; every privileged one is refused with a distinguishable error. The protocol, the
-> policy enforcement and the packaging are real and tested, so that phase 1 adds executors rather than
-> foundations. Do not expect to patch a fleet with this yet.
+> Farrier is in **phase 1, and phase 1 is complete**. All ten catalogue members have an executor: the
+> four read-only operations, the one routine operation, and all five destructive ones — apply every
+> update, start, stop or restart a unit, and reboot. They enforce the host's own policy as root, over a
+> socket rather than through `sudo`.
+>
+> The control plane issues them and `farrier sign` authorises the destructive ones. That command never
+> contacts the server: it renders what you are about to authorise from the same canonical payload it
+> then signs, so a compromised control plane cannot show one operation and have another signed.
+>
+> It is multi-tenant — one control plane, many isolated fleets, separated by PostgreSQL row-level
+> security — and each fleet decides for itself whether a destructive job waits for somebody to release
+> it, and whether that somebody has to be a second person.
+>
+> The jobs page offers exactly what a browser may legitimately authorise: it queues reports and security
+> updates, and releases destructive work somebody else signed. It will never offer to *create* a
+> destructive job, because that needs a key the control plane does not hold and a browser is the last
+> place it should ever be.
+>
+> What is not built, and is next: pushing a configuration to a host that is already enrolled is
+> **never** built — see the guarantee below. Tier 2 provisioning arrives in phase 3.
 
 ---
 
@@ -148,4 +163,4 @@ Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Two rules catch most fir
   comment about why the function exists.
 
 Security issues go through GitHub's private advisory flow, not the public tracker —
-[`docs/SECURITY.md` §9](docs/SECURITY.md#9-reporting-a-vulnerability).
+[`docs/SECURITY.md` §10](docs/SECURITY.md#10-reporting-a-vulnerability).

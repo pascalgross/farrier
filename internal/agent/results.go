@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/pascalgross/farrier/internal/protocol"
@@ -44,29 +43,20 @@ func SpoolResult(stateDir string, result protocol.ResultRequest) error {
 // SpoolPath returns the file a job's result is spooled to, rejecting an id that is not one.
 //
 // The job id arrives from the control plane and becomes a filename, so it is validated in exactly one
-// place and every path that builds one goes through here. Identifiers are Crockford base32 and contain
+// place and every path that builds one goes through here. The shape itself is protocol.ValidJobID,
+// shared with the control plane that issues the id, so the two cannot disagree about what an id is. Identifiers are Crockford base32 and contain
 // none of these characters, so anything that does is either a bug or a control plane trying to reach
 // outside the spool — and the delete path matters as much as the write path, because the agent can
 // write /var/lib/farrier and an unvalidated id there is a way to remove the host's certificate.
 func SpoolPath(stateDir, jobID string) (string, error) {
-	switch {
-	case jobID == "":
+	if jobID == "" {
 		return "", errors.New("agent: a result needs a job id; results are keyed by it")
-	case len(jobID) > 64:
-		return "", fmt.Errorf("agent: job id is %d bytes; identifiers are 26", len(jobID))
-	case !jobIDPattern.MatchString(jobID):
-		return "", fmt.Errorf("agent: job id %q is not an identifier: it must match %s",
-			jobID, jobIDPattern)
+	}
+	if !protocol.ValidJobID(jobID) {
+		return "", fmt.Errorf("agent: job id %q is not an identifier: %s", jobID, protocol.JobIDShape)
 	}
 	return filepath.Join(stateDir, PendingResultsDir, jobID+".json"), nil
 }
-
-// jobIDPattern is the only shape a job identifier may take.
-//
-// Crockford base32 is upper-case alphanumeric without I, L, O and U, so an allowlist is exact rather
-// than a list of characters somebody thought to exclude. Lower case is permitted so that an identifier
-// that has been through a case-normalising layer still round-trips.
-var jobIDPattern = regexp.MustCompile(`^[0-9A-Za-z]+$`)
 
 // PendingResults reads every spooled result.
 //
@@ -128,9 +118,19 @@ func DeliverPending(ctx context.Context, client *Client, stateDir string) {
 			return
 		}
 		if err := client.ReportResult(ctx, result); err != nil {
-			slog.Warn("a pending job result could not be delivered; it stays on disk",
-				"job", result.JobID, "error", err)
-			continue
+			if !permanentlyRefused(err) {
+				slog.Warn("a pending job result could not be delivered; it stays on disk",
+					"job", result.JobID, "error", err)
+				continue
+			}
+			// The control plane understood it and refused it, and will refuse it identically for
+			// ever — the job is not this host's, or the body is one this build cannot produce.
+			// docs/PROTOCOL.md §11 says drop it, and the alternative is a file retried on every pass
+			// for the life of the machine, in the directory a reboot's result has to be written to.
+			// Logged at error rather than warn because a result that never arrives is exactly the
+			// kind of nothing nobody notices.
+			slog.Error("a pending job result was refused permanently and has been discarded",
+				"job", result.JobID, "status", result.Status, "error", err)
 		}
 		path, pathErr := SpoolPath(stateDir, result.JobID)
 		if pathErr != nil {
@@ -148,4 +148,15 @@ func DeliverPending(ctx context.Context, client *Client, stateDir string) {
 		}
 		slog.Info("delivered a held job result", "job", result.JobID, "status", result.Status)
 	}
+}
+
+// permanentlyRefused reports whether the control plane will refuse this result however often it is
+// resent.
+//
+// Only an HTTPError can say so. A transport failure, a TLS failure or a context deadline is exactly the
+// case the spool exists for, and reading one of those as permanent would throw away the result of work
+// that had actually run.
+func permanentlyRefused(err error) bool {
+	var httpErr *HTTPError
+	return errors.As(err, &httpErr) && httpErr.Permanent()
 }

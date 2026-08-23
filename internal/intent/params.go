@@ -25,13 +25,18 @@ const maxParamsBytes = 8 << 10
 // allowlist.
 var unitPattern = regexp.MustCompile(`^[a-zA-Z0-9@._-]+\.(service|socket|timer)$`)
 
-// messagePattern bounds the wall message a reboot may carry.
+// messagePattern bounds the character set of the wall message a reboot may carry.
 //
-// The character set is far narrower than the message could safely be, and that is on purpose. Every
-// external invocation is execve with a fixed argv slice, so quoting is not the risk; the risk is that
-// a future maintainer moves one of these values somewhere a shell, a log parser or a terminal does
-// interpret it. A parameter that cannot express a metacharacter cannot be the thing that goes wrong
-// on that day.
+// The set is far narrower than the message could safely be, and that is on purpose. Every external
+// invocation is execve with a fixed argv slice, so quoting is not the risk; the risk is that a future
+// maintainer moves one of these values somewhere a shell, a log parser or a terminal does interpret it.
+// A parameter that cannot express a metacharacter cannot be the thing that goes wrong on that day.
+//
+// What it deliberately does not bound is POSITION, and that distinction cost a real defect: a hyphen is
+// legitimate inside a message ("pre-flight check") and dangerous as its first character, because the
+// message reaches shutdown(8) as a positional argument and an argument parser reads a leading hyphen as
+// an option. The character set cannot express that rule, so it is checked separately below rather than
+// asserted here.
 var messagePattern = regexp.MustCompile(`^[A-Za-z0-9 .,:_-]{0,200}$`)
 
 // ErrUnknownField is returned when a parameter object carries a field the intent does not define.
@@ -108,6 +113,14 @@ func (p UnitParams) sealed() {}
 // /etc/farrier/policy.toml and will decline to reboot a host whose policy forbids it or whose
 // maintenance window has closed. It exists so an operator can express "and finish the job" in one
 // authorisation rather than having to sign a second one at an hour nobody wants to be awake for.
+//
+// It is expressible on packages.applyAll and on nothing else. packages.applySecurity is the routine
+// tier — signed by the control plane's own online key, with no human present — and docs/SECURITY.md §3
+// says a signature by that key must not authorise a reboot. Sharing one decoder between the two made
+// that sentence false: the flag reaches the same helper, which acts on it without asking which intent
+// carried it, so the control plane could reboot a host with a key it holds itself. The two decoders
+// are separate now, and the field is simply unknown to the routine member rather than accepted and
+// ignored — an accepted-and-ignored field is one flipped condition away from being honoured again.
 type ApplyParams struct {
 	intent Name
 
@@ -245,17 +258,41 @@ func decodeUnit(n Name) func([]byte) (Params, error) {
 	}
 }
 
-// decodeApply builds a decoder for an update-application intent.
-func decodeApply(n Name) func([]byte) (Params, error) {
-	return func(raw []byte) (Params, error) {
-		var wire struct {
-			RebootIfRequired bool `json:"rebootIfRequired"`
-		}
-		if err := strictUnmarshal(raw, &wire); err != nil {
-			return nil, err
-		}
-		return ApplyParams{intent: n, RebootIfRequired: wire.RebootIfRequired}, nil
+// decodeApplyAll decodes the destructive update intent, the one that may carry a follow-up reboot.
+//
+// Not shared with the routine member, deliberately. See ApplyParams and decodeApplySecurity.
+func decodeApplyAll(raw []byte) (Params, error) {
+	var wire struct {
+		RebootIfRequired bool `json:"rebootIfRequired"`
 	}
+	if err := strictUnmarshal(raw, &wire); err != nil {
+		return nil, err
+	}
+	return ApplyParams{intent: PackagesApplyAll, RebootIfRequired: wire.RebootIfRequired}, nil
+}
+
+// decodeApplySecurity decodes the routine update intent, which takes no parameters at all.
+//
+// The refusal below is the mechanism behind docs/SECURITY.md §3's "a signature by the online key must
+// not authorise a reboot". This intent is signed by the control plane for itself, so any parameter it
+// accepts is a parameter an attacker owning the control plane can set. A reboot is destructive work and
+// needs a key the control plane does not hold; there is no version of it that is safe to reach from
+// here, which is why the field is refused rather than clamped.
+//
+// The error says which intent to use instead. An operator who wanted "patch and reboot" is asking for
+// something reasonable, and the answer is two authorisations rather than none.
+func decodeApplySecurity(raw []byte) (Params, error) {
+	var wire struct{}
+	if err := strictUnmarshal(raw, &wire); err != nil {
+		if errors.Is(err, ErrUnknownField) {
+			return nil, fmt.Errorf("%w. %s takes no parameters: a reboot is destructive work and needs "+
+				"an offline signature from a key in the host's own %s, which is what %s is for. "+
+				"See docs/SECURITY.md §3",
+				err, PackagesApplySecurity, "trusted-signers", HostReboot)
+		}
+		return nil, err
+	}
+	return ApplyParams{intent: PackagesApplySecurity}, nil
 }
 
 // decodeReboot builds a decoder for the host reboot intent.
@@ -270,6 +307,19 @@ func decodeReboot(n Name) func([]byte) (Params, error) {
 		}
 		if wire.DelaySeconds < 0 || wire.DelaySeconds > 3600 {
 			return nil, fmt.Errorf("delaySeconds %d out of range 0..3600", wire.DelaySeconds)
+		}
+		// Position before character set, so that the operator who typed something dangerous is told
+		// which rule they broke and why, rather than being shown a regular expression.
+		//
+		// The three that matter are not hypothetical: shutdown(8) reads "-h" as poweroff and it
+		// OVERRIDES "-r", so the host does not come back; "-k" sends the wall message and reboots
+		// nothing, which is a reboot job that reports success and did not happen; and "-c" cancels a
+		// shutdown already pending. The helper also passes "--" before its positional arguments, and
+		// both defences are kept because this one bounds what any future call site can receive.
+		if strings.HasPrefix(wire.Message, "-") {
+			return nil, fmt.Errorf("message must not begin with a hyphen: it reaches shutdown(8) as a "+
+				"positional argument, where a leading hyphen is read as an option — %q would power the "+
+				"host off instead of rebooting it", wire.Message)
 		}
 		if !messagePattern.MatchString(wire.Message) {
 			return nil, fmt.Errorf("message does not match %s", messagePattern)

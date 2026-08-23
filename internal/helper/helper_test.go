@@ -1,13 +1,18 @@
 package helper
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/privsep"
+	"github.com/pascalgross/farrier/internal/protocol"
 )
 
 // writePolicy writes a policy file into a temporary directory and returns its path.
@@ -177,5 +182,167 @@ func TestAuthoriseEnforcesTheLocalJobAgeLimit(t *testing.T) {
 	}
 	if decision.Code != policy.CodeExpired {
 		t.Errorf("code %q, want %q", decision.Code, policy.CodeExpired)
+	}
+}
+
+// TestGuaranteeAHelperRefusesAnIntentItDoesNotServe is the check that replaces sudoers' fixed argv.
+//
+// systemd routes a connection to exactly one helper, but the request arriving on it still names an
+// intent, and nothing about the socket stops a compromised agent from sending host.reboot to the one
+// that restarts units. Without this check the reboot helper would be one request away from the update
+// socket, which is the whole privilege separation undone by a routing mistake rather than by an
+// exploit.
+func TestGuaranteeAHelperRefusesAnIntentItDoesNotServe(t *testing.T) {
+	restartUnit := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(context.Context, Job) (string, error) {
+			t.Error("the executor ran for an intent this helper does not serve")
+			return "", nil
+		},
+	}
+	path := writePolicy(t, permissive)
+
+	misrouted := []intent.Name{
+		intent.HostReboot,
+		intent.PackagesApplyAll,
+		intent.PackagesApplySecurity,
+		intent.FactsCollect,
+		"shell.exec",
+	}
+	for _, name := range misrouted {
+		resp := restartUnit.performWith(context.Background(), Request{
+			JobID: "01JTEST", Intent: name, Params: []byte(`{}`),
+		}, path)
+		if resp.ExitCode != ExitUsage {
+			t.Errorf("%s reached restart-unit and exited %d, expected %d", name, resp.ExitCode, ExitUsage)
+		}
+	}
+}
+
+// TestPerformRefusesWhatThePolicyRefuses asserts the refusal reaches the reply rather than the log.
+//
+// The exit code is the same one an administrator sees running the helper by hand and the same one the
+// control plane is shown, so an operator reading "exit 3" in a journal and "exitCode: 3" in the UI is
+// reading the same thing.
+func TestPerformRefusesWhatThePolicyRefuses(t *testing.T) {
+	h := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(context.Context, Job) (string, error) {
+			t.Error("the executor ran on a request local policy refused")
+			return "", nil
+		},
+	}
+
+	resp := h.performWith(context.Background(), restartRequest("sshd.service"), writePolicy(t, permissive))
+	if resp.ExitCode != ExitRefused {
+		t.Fatalf("exit %d, expected %d (refused by local policy)", resp.ExitCode, ExitRefused)
+	}
+	if !strings.Contains(resp.Error, policy.CodeUnitNotRestartable) {
+		t.Errorf("the reply does not name the refusal code: %q", resp.Error)
+	}
+}
+
+// TestPerformHandsTheExecutorValidatedParametersAndReportsItsOutput is the permitted path.
+//
+// The executor is handed the decoded intent.Params rather than the request's bytes, because that is
+// what makes "the value reaching systemd is the one the catalogue accepted" true by construction
+// instead of by everyone remembering.
+func TestPerformHandsTheExecutorValidatedParametersAndReportsItsOutput(t *testing.T) {
+	var seen Job
+	h := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(_ context.Context, job Job) (string, error) {
+			seen = job
+			return "restart nginx.service: done", nil
+		},
+	}
+
+	resp := h.performWith(context.Background(), restartRequest("nginx.service"), writePolicy(t, permissive))
+	if resp.ExitCode != ExitOK {
+		t.Fatalf("exit %d (%s), expected 0", resp.ExitCode, resp.Error)
+	}
+	if resp.Output != "restart nginx.service: done" {
+		t.Errorf("output %q", resp.Output)
+	}
+	unit, ok := seen.Params.(intent.UnitParams)
+	if !ok {
+		t.Fatalf("the executor was handed %T, want intent.UnitParams", seen.Params)
+	}
+	if unit.Unit != "nginx.service" {
+		t.Errorf("the executor was handed unit %q", unit.Unit)
+	}
+	if seen.ID != "01JTEST" || seen.Intent != intent.ServiceRestart {
+		t.Errorf("the executor was handed job %+v", seen)
+	}
+}
+
+// TestPerformReportsAFailingExecutorWithItsOutput asserts a failure keeps what the operation printed.
+//
+// An update that got half way and then failed is diagnosed from what apt printed before it stopped, so
+// the output has to survive the error rather than being replaced by it.
+func TestPerformReportsAFailingExecutorWithItsOutput(t *testing.T) {
+	h := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(context.Context, Job) (string, error) {
+			return "systemd reported \"failed\"", errors.New("systemd could not restart nginx.service")
+		},
+	}
+
+	resp := h.performWith(context.Background(), restartRequest("nginx.service"), writePolicy(t, permissive))
+	if resp.ExitCode != ExitFailed {
+		t.Fatalf("exit %d, expected %d (attempted and did not succeed)", resp.ExitCode, ExitFailed)
+	}
+	if !strings.Contains(resp.Output, "failed") {
+		t.Errorf("the operation's output was lost: %q", resp.Output)
+	}
+	if !strings.Contains(resp.Error, "could not restart") {
+		t.Errorf("the error is %q", resp.Error)
+	}
+}
+
+// TestPerformReportsAnAbsentExecutorDistinctly asserts the older-package case stays distinguishable.
+//
+// A fleet is upgraded host by host, so an agent from this release will talk to a helper from the last
+// one. "Your package is behind" and "the operation did not work" are fixed by different people, and
+// folding them together would send an operator to read apt logs on a host that never ran apt.
+func TestPerformReportsAnAbsentExecutorDistinctly(t *testing.T) {
+	h := Helper{Component: "restart-unit", Socket: privsep.RestartUnitSocket}
+
+	resp := h.performWith(context.Background(), restartRequest("nginx.service"), writePolicy(t, permissive))
+	if resp.ExitCode != ExitNotImplemented {
+		t.Fatalf("exit %d, expected %d (no executor in this build)", resp.ExitCode, ExitNotImplemented)
+	}
+	if !strings.Contains(resp.Error, "nothing was changed") {
+		t.Errorf("the reply does not say that nothing happened: %q", resp.Error)
+	}
+}
+
+// TestPerformTruncatesOutputToWhatTheProtocolCarries asserts the bound is applied on this side.
+//
+// A full dist-upgrade prints far more than the protocol carries, and the tail is what matters because
+// the failure is at the end. Truncating here rather than in the agent means the socket never carries a
+// megabyte the control plane would immediately discard.
+func TestPerformTruncatesOutputToWhatTheProtocolCarries(t *testing.T) {
+	h := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(context.Context, Job) (string, error) {
+			return strings.Repeat("x", protocol.MaxJobOutputBytes+4096) + "TAIL", nil
+		},
+	}
+
+	resp := h.performWith(context.Background(), restartRequest("nginx.service"), writePolicy(t, permissive))
+	if !resp.OutputTruncated {
+		t.Error("over-size output was not flagged as truncated")
+	}
+	if len(resp.Output) != protocol.MaxJobOutputBytes {
+		t.Errorf("output is %d bytes, expected %d", len(resp.Output), protocol.MaxJobOutputBytes)
+	}
+	if !strings.HasSuffix(resp.Output, "TAIL") {
+		t.Error("the head was kept rather than the tail; the failure is at the end")
 	}
 }

@@ -38,7 +38,7 @@ type EnrollOptions struct {
 
 	// SignersFile is a local trusted-signers file to install before anything is fetched.
 	//
-	// This is what solves the chicken-and-egg problem in docs/SECURITY.md §6: the trust anchor is
+	// This is what solves the chicken-and-egg problem in docs/SECURITY.md §7: the trust anchor is
 	// established from a local, administrator-chosen file *before* a bootstrap template is requested,
 	// so the template can be verified against a key the server never supplied.
 	SignersFile string
@@ -181,6 +181,15 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 			return nil, err
 		}
 	}
+	// Cached now as well as on every heartbeat, so that a host enrolled and immediately handed a
+	// routine job can verify it without waiting for a beat. A failure here is logged rather than
+	// fatal: enrolment has already succeeded on the server, the host has a working credential, and
+	// the next heartbeat will supply the key again. Failing the whole enrolment over the key that
+	// governs one intent would be the wrong trade.
+	if err := StoreOnlineKey(opts.StateDir, res.OnlineKey); err != nil {
+		slog.Warn("could not cache the control plane's online key at enrolment; "+
+			"routine jobs are refused until a heartbeat supplies it", "error", err)
+	}
 
 	state := &State{ServerURL: trimSlash(opts.ServerURL), HostID: res.HostID, EnrolledAt: time.Now()}
 	if err := state.Save(opts.StateDir); err != nil {
@@ -246,7 +255,7 @@ const BootstrapRecordFile = "bootstrap-applied.json"
 
 // bootstrapRecord is the permanent record of a template that was applied.
 //
-// Phase 0 reads it and never writes it: the interlock has to be honoured by every build, and only a
+// This build reads it and never writes it: the interlock has to be honoured by every build, and only a
 // build that applies something has anything to record. Writing it here would consume the apply-once
 // interlock for an application that did not happen.
 type bootstrapRecord struct {
@@ -266,12 +275,13 @@ type bootstrapRecord struct {
 // verifyBootstrap checks a provisioning template against this host's own trust anchor, and shows it.
 //
 // This is the exception named in the second paragraph of the guarantee, and the guardrails in
-// docs/SECURITY.md §6 that constrain *authorising* a template are enforced here: the apply-once
+// docs/SECURITY.md §7 that constrain *authorising* a template are enforced here: the apply-once
 // interlock is checked first, the signature is verified against a key already in this host's own
 // trusted-signers, and the full text is printed before anything could happen.
 //
 // It stops there, and returns the key that authorised it. Applying — and writing the permanent record
-// that consumes the interlock — belongs to the code that actually applies, which phase 0 does not have.
+// that consumes the interlock — belongs to the code that actually applies, which this build does not
+// have: Tier 2 provisioning is a later phase, and none of phase 1's executors touch a template.
 // Recording an application that did not happen would be both a false audit entry and a spent interlock,
 // leaving a host that could never apply the template it was enrolled for.
 func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.PublicKey, error) {

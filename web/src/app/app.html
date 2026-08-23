@@ -8,10 +8,19 @@
     <nav class="flex items-center gap-1 ml-4">
       <a mat-button routerLink="/" routerLinkActive="!font-semibold"
          [routerLinkActiveOptions]="{ exact: true }">Fleet</a>
+      <a mat-button routerLink="/jobs" routerLinkActive="!font-semibold">Jobs</a>
       <a mat-button routerLink="/catalogue" routerLinkActive="!font-semibold">Operations</a>
     </nav>
 
     <span class="flex-1"></span>
+
+    @if (me(); as identity) {
+      <span class="text-sm opacity-80 farrier-numeric" [matTooltip]="'Signed in as ' + identity.principal">
+        {{ identity.tenant.displayName }}
+      </span>
+    } @else if (identityError()) {
+      <span class="text-sm text-farrier-warn" [matTooltip]="identityError()">identity unknown</span>
+    }
 
     <button mat-button (click)="signOut()">
       <mat-icon>logout</mat-icon>

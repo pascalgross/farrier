@@ -2,6 +2,7 @@ package intent
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
@@ -151,19 +152,121 @@ func TestGuaranteeDestructiveIntentsRequireOfflineSignature(t *testing.T) {
 	}
 }
 
-// TestGuaranteePhaseZeroShipsNoWriteCapability asserts nothing privileged has an executor yet.
+// unimplemented is every catalogue member that has no executor, with the reason it does not.
 //
-// Phase 0 ships the routine and destructive specs so the protocol, the UI and the documentation can be
-// built against the final shape, with no executor behind them. This test is what stops "wire up the
-// executor" from arriving as an incidental part of an unrelated change; deleting it is a deliberate,
-// visible act when phase 1 begins.
-func TestGuaranteePhaseZeroShipsNoWriteCapability(t *testing.T) {
+// It is a map with the reason as the value rather than a list of names, because a member without an
+// executor is a decision somebody made and the next person to read this file needs to know which
+// decision. An empty map would be the ordinary state of a finished catalogue; a member appearing here
+// without a reason is what the test refuses.
+var unimplemented = map[Name]string{}
+
+// TestGuaranteeEveryCatalogueMemberIsImplementedOrHasAWrittenReasonNotToBe replaces the phase 0 pin.
+//
+// Until phase 1 this test asserted the opposite — that *nothing* privileged had an executor — and said
+// that starting phase 1 meant updating it in the same commit. This is that update. What it pins now is
+// the harder and longer-lived property: a build gains the ability to change a host by one field being
+// set, so every member that does not have it set must have a reason written down beside it, and every
+// member that does must be one somebody meant to turn on.
+//
+// The reason this matters more than it looks: packages.applySecurity is not merely unfinished. Turning
+// its flag on is a single-character change that would silently drop a signature requirement, because
+// the routine class checks no signature and the online-key check that is supposed to replace it does
+// not exist. The flag is currently the whole of what prevents that.
+func TestGuaranteeEveryCatalogueMemberIsImplementedOrHasAWrittenReasonNotToBe(t *testing.T) {
 	for _, s := range All() {
-		if s.Class.Privileged() && s.Implemented {
-			t.Errorf("intent %q is privileged and marked Implemented, but phase 0 ships no write "+
-				"capability at all. If you are starting phase 1, update this test in the same commit.",
+		reason, expected := unimplemented[s.Name]
+		switch {
+		case s.Implemented && expected:
+			t.Errorf("intent %q is marked Implemented, but this file records why it must not be:\n  %s\n"+
+				"If that reason no longer holds, remove the entry from `unimplemented` in the same "+
+				"commit and expect a careful review.", s.Name, reason)
+		case !s.Implemented && !expected:
+			t.Errorf("intent %q has no executor and no reason recorded for why not.\n"+
+				"An intent the agent refuses is invisible on a dashboard as anything other than a job "+
+				"that did not work, so the reason belongs in `unimplemented` in this file rather than "+
+				"in somebody's memory.", s.Name)
+		}
+	}
+	for name := range unimplemented {
+		if !Has(name) {
+			t.Errorf("%q is recorded as unimplemented but is not in the catalogue at all", name)
+		}
+	}
+}
+
+// TestGuaranteeTheRoutineTierIsNeverAuthorisedByMTLSAlone states the rule generally.
+//
+// It is deliberately about the *class* rather than about packages.applySecurity, because the specific
+// name is not the point. Any future routine member arrives with the same question, and the answer this
+// pins is that routine is signed — by the control plane's own key — and is never the tier for which no
+// signature is checked at all.
+//
+// This test previously held the line the other way round: while there was no online key, it required
+// that no routine intent have an executor. That was the same rule at an earlier moment. What must not
+// happen is for a routine intent to be executable while nothing verifies a signature for it, and the
+// two halves of that are asserted in two places — here, that the catalogue demands an online signature,
+// and in internal/agent, that the acceptance sequence actually checks one.
+func TestGuaranteeTheRoutineTierIsNeverAuthorisedByMTLSAlone(t *testing.T) {
+	var routine int
+	for _, s := range All() {
+		if s.Class != ClassRoutine {
+			continue
+		}
+		routine++
+
+		if !s.Class.RequiresOnlineSignature() {
+			t.Errorf("routine intent %q requires no signature of any kind. Routine is privileged, so "+
+				"this would make it an operation authorised by mTLS alone — see docs/PROTOCOL.md §5.1 "+
+				"step 5.", s.Name)
+		}
+		if s.Class.RequiresOfflineSignature() {
+			// Not a weakening but a confusion, and worth catching: an offline signature is the
+			// destructive tier's authority, and a routine intent that demanded one would either be
+			// unsatisfiable — the control plane cannot produce one — or would mean the tiers had been
+			// merged.
+			t.Errorf("routine intent %q requires an offline signature. The two tiers verify against "+
+				"different anchors and neither substitutes for the other; see docs/SECURITY.md §3.",
 				s.Name)
 		}
+	}
+	if routine == 0 {
+		t.Fatal("no routine intent in the catalogue, so this test asserts nothing. If the tier has " +
+			"been removed, remove this test and the reasoning in docs/SECURITY.md §3 with it.")
+	}
+}
+
+// TestGuaranteeTheTwoSignatureTiersNeverOverlap is the separation the whole design rests on.
+//
+// A destructive intent is authorised by a key in the host's own trusted-signers, which the control
+// plane does not hold. A routine intent is authorised by the control plane's own key. If one class ever
+// demanded both, or a class demanded neither while being privileged, the acceptance sequence would have
+// a branch nobody wrote — and the plausible way that happens is somebody replacing two predicates with
+// one boolean and inverting it.
+func TestGuaranteeTheTwoSignatureTiersNeverOverlap(t *testing.T) {
+	for _, s := range All() {
+		offline := s.Class.RequiresOfflineSignature()
+		online := s.Class.RequiresOnlineSignature()
+
+		switch {
+		case offline && online:
+			t.Errorf("%q requires both an offline and an online signature; the acceptance sequence "+
+				"checks one branch, so one of the two would go unverified", s.Name)
+		case s.Class.Privileged() && !offline && !online:
+			t.Errorf("%q is privileged and requires no signature; that is an operation authorised by "+
+				"mTLS alone", s.Name)
+		case !s.Class.Privileged() && (offline || online):
+			t.Errorf("%q is a read intent that demands a signature. Nothing produces one for a read "+
+				"intent, so every one of them would be refused on every host", s.Name)
+		}
+	}
+}
+
+// TestGuaranteeEveryReadIntentHasAnExecutor asserts the unprivileged half is whole.
+//
+// A read intent with no executor would be a host that reports nothing and looks like a host that is
+// down, which is the one failure a fleet tool must not have.
+func TestGuaranteeEveryReadIntentHasAnExecutor(t *testing.T) {
+	for _, s := range All() {
 		if s.Class == ClassRead && !s.Implemented {
 			t.Errorf("read-only intent %q has no executor", s.Name)
 		}
@@ -186,6 +289,53 @@ func TestGuaranteeIntentsThatMayNotReturnArePinned(t *testing.T) {
 				"fsyncs a provisional result before starting anything marked this way, and an "+
 				"unmarked one reports nothing at all.", s.Name, s.MayNotReturn, expected[s.Name])
 		}
+	}
+}
+
+// TestGuaranteeAnUpdateThatRebootsIsTreatedAsAnOperationThatMayNotReturn covers the parameters.
+//
+// The Spec flag above cannot see them, and there is exactly one case where that is not enough:
+// packages.applyAll with rebootIfRequired ends by rebooting the host, precisely as host.reboot does,
+// while its Spec quite correctly says that applying updates does not normally take a machine away. An
+// agent that consulted only the flag would skip the provisional result for that job, the host would
+// reboot, and the job would sit in the queue looking like a host that had gone quiet — the failure the
+// flag exists to prevent, arriving through the one path the flag cannot see.
+func TestGuaranteeAnUpdateThatRebootsIsTreatedAsAnOperationThatMayNotReturn(t *testing.T) {
+	for _, name := range []Name{PackagesApplyAll} {
+		spec, ok := Lookup(name)
+		if !ok {
+			t.Fatalf("%q is not in the catalogue", name)
+		}
+
+		_, plain, err := Decode(name, []byte(`{"rebootIfRequired":false}`))
+		if err != nil {
+			t.Fatalf("decoding %q: %v", name, err)
+		}
+		if MayNotReturn(spec, plain) {
+			t.Errorf("%q without a follow-up reboot is treated as an operation that may not return; "+
+				"every ordinary update job would then spool a provisional \"succeeded\" it never "+
+				"needed", name)
+		}
+
+		_, rebooting, err := Decode(name, []byte(`{"rebootIfRequired":true}`))
+		if err != nil {
+			t.Fatalf("decoding %q: %v", name, err)
+		}
+		if !MayNotReturn(spec, rebooting) {
+			t.Fatalf("%q with rebootIfRequired is not treated as an operation that may not return. "+
+				"It reboots the host at the end, so its result must be on disk before it starts — "+
+				"otherwise the host comes back patched and the job is never reported at all.", name)
+		}
+	}
+
+	// And the static flag still decides on its own where there are no parameters to consult.
+	spec, _ := Lookup(HostReboot)
+	_, params, err := Decode(HostReboot, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("decoding host.reboot: %v", err)
+	}
+	if !MayNotReturn(spec, params) {
+		t.Error("host.reboot is not treated as an operation that may not return")
 	}
 }
 
@@ -378,4 +528,75 @@ func stringFieldsOf(p Params) []string {
 		}
 	}
 	return out
+}
+
+// TestGuaranteeTheRoutineTierCannotExpressAReboot is the mechanism behind docs/SECURITY.md §3's
+// sentence "a signature by the online key must not authorise a reboot".
+//
+// The routine tier is the one the control plane signs for itself, with no human present, so every
+// parameter a routine intent accepts is a parameter an attacker owning the control plane can set. It
+// follows that no routine intent may accept one that reaches destructive work — and that has to be
+// asserted over the catalogue rather than over one intent, because the way it went wrong was a decoder
+// shared between a routine member and a destructive one, which no test naming a single intent would
+// have caught.
+//
+// Asserted by EFFECT rather than by class. TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob
+// already covers class — it proves the online key cannot sign something the catalogue calls
+// destructive. It passed throughout the period when packages.applySecurity could reboot a host,
+// because a reboot reached through a routine intent's parameters is never classified as anything.
+func TestGuaranteeTheRoutineTierCannotExpressAReboot(t *testing.T) {
+	routine := 0
+	for name, spec := range catalogue {
+		if spec.Class != ClassRoutine {
+			continue
+		}
+		routine++
+
+		// The static flag first: a routine intent must not be one the catalogue itself says may take
+		// the host away.
+		if spec.MayNotReturn {
+			t.Errorf("%q is routine and its Spec says it may not return; an operation that takes a "+
+				"host away cannot be authorised by a key the control plane holds", name)
+		}
+
+		// And the flag must not be reachable through parameters either. rebootIfRequired is the one
+		// that got in; a future one would be caught by the same shape, because what is asserted is
+		// that no accepted parameter object makes MayNotReturn true.
+		if _, params, err := Decode(name, []byte(`{"rebootIfRequired":true}`)); err == nil {
+			if MayNotReturn(spec, params) {
+				t.Errorf("%q is routine and accepts rebootIfRequired, so the control plane's own key "+
+					"authorises a reboot. docs/SECURITY.md §3 says it must not: a reboot needs a key "+
+					"from the host's own trusted-signers, which the control plane does not hold", name)
+			} else {
+				t.Errorf("%q is routine and accepts rebootIfRequired without acting on it. An "+
+					"accepted-and-ignored parameter is one flipped condition away from being "+
+					"honoured; refuse it in the decoder instead", name)
+			}
+		}
+	}
+
+	// A catalogue with no routine member would pass every assertion above without exercising one.
+	if routine == 0 {
+		t.Fatal("no routine intent in the catalogue; this test asserted nothing")
+	}
+}
+
+// TestGuaranteeApplySecurityNamesTheIntentToUseInstead is about the refusal being usable.
+//
+// "Patch and reboot" is a reasonable thing to want, and the answer is two authorisations rather than
+// none. A refusal that only said "unknown field" would leave an operator guessing at which of ten
+// catalogue members does the other half.
+func TestGuaranteeApplySecurityNamesTheIntentToUseInstead(t *testing.T) {
+	_, _, err := Decode(PackagesApplySecurity, []byte(`{"rebootIfRequired":true}`))
+	if err == nil {
+		t.Fatal("packages.applySecurity accepted rebootIfRequired")
+	}
+	if !errors.Is(err, ErrUnknownField) {
+		t.Errorf("the refusal is %v; it should be an unknown-field error so callers can classify it", err)
+	}
+	for _, want := range []string{string(HostReboot), "trusted-signers"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
 }

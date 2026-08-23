@@ -9,7 +9,10 @@
 // under the hardened unit in packaging/farrier-agent.service; the three helpers in /usr/libexec/farrier
 // are the only privileged operations that exist, and each re-enforces the root-owned policy itself.
 //
-// Phase 0 ships no write capability. This binary reports what it can see and does not change anything.
+// This binary changes nothing by itself. Every privileged operation happens in one of the three root
+// helpers, reached over the unix sockets in /run/farrier and never through sudo — with the agent's
+// sandbox in force, execve drops the setuid bit, so sudo cannot become root at all. `farrier-agent
+// doctor` checks that boundary from this process's own account.
 package main
 
 import (
@@ -31,6 +34,8 @@ import (
 	"github.com/pascalgross/farrier/internal/collect/platform"
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/privsep"
+	"github.com/pascalgross/farrier/internal/run"
 )
 
 // StateDir is where the agent keeps everything it writes.
@@ -50,6 +55,7 @@ usage:
   farrier-agent run             run the agent in the foreground, as systemd does
   farrier-agent facts           collect and print exactly what this host would report
   farrier-agent policy check    validate /etc/farrier/policy.toml and print the effective policy
+  farrier-agent doctor          check this host's privileged path from the agent's own account
   farrier-agent version         print the version
 
 The agent connects outbound only. It has no listening port and no server-to-agent channel.
@@ -69,11 +75,13 @@ func main() {
 
 	switch args[0] {
 	case "run":
-		os.Exit(run(args[1:]))
+		os.Exit(runCommand(args[1:]))
 	case "facts":
 		os.Exit(factsCommand(args[1:]))
 	case "policy":
 		os.Exit(policyCommand(args[1:]))
+	case "doctor":
+		os.Exit(doctorCommand(args[1:]))
 	case "version":
 		fmt.Println("farrier-agent " + buildinfo.String())
 	default:
@@ -98,13 +106,13 @@ func setupLogging() {
 	))
 }
 
-// run starts the agent and blocks until it is asked to stop.
+// runCommand starts the agent and blocks until it is asked to stop.
 //
 // A host that has not been enrolled does not exit. It reports its local configuration on a timer and
 // waits, because the alternative — a service that fails to start until somebody runs farrier enroll —
 // leaves systemd restarting it every five seconds and fills the journal with noise on exactly the hosts
 // an operator has not got to yet.
-func run(argv []string) int {
+func runCommand(argv []string) int {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	policyPath := fs.String("policy", policy.Path, "policy file to read")
 	stateDir := fs.String("state-dir", StateDir, "directory holding enrolment state")
@@ -125,7 +133,7 @@ func run(argv []string) int {
 		"commit", buildinfo.Revision(),
 		"state_dir", *stateDir,
 		"intents", len(intent.Names()),
-		"write_capability", false,
+		"helper_sockets", privsep.Endpoints(),
 	)
 	reportState(*policyPath)
 
@@ -305,5 +313,71 @@ func policyCommand(argv []string) int {
 	if !p.Window().Always() {
 		fmt.Printf("window next opens   %s\n", p.Window().NextOpen(time.Now()).Format(time.RFC3339))
 	}
+	return 0
+}
+
+// doctorCommand implements `farrier-agent doctor`.
+//
+// It answers one question an operator otherwise cannot answer without waiting for a job to fail: can
+// this process, as the account it actually runs as, reach the three root helpers? Every layer of that
+// path is somebody else's to break — a socket unit that did not get enabled, a group that was renamed,
+// a tmpfiles fragment that did not run after a reboot — and every one of them fails the same way from
+// the control plane's side, as a privileged job that did not work weeks later.
+//
+// It changes nothing. The probe names an intent that is in no catalogue and on no route, so the helper
+// refuses it before decoding a parameter or reading a policy; a refusal is what success looks like
+// here. There is no harmless privileged intent to send instead, because every one of them changes the
+// machine, which is the point of them being privileged.
+func doctorCommand(argv []string) int {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Printf("running as        uid %d\n", os.Getuid())
+	fmt.Println("programs this build may start, and no others:")
+	for _, program := range run.Allowlist() {
+		fmt.Printf("  %s\n", program)
+	}
+
+	fmt.Println("privileged path:")
+	client := privsep.NewClient()
+	healthy := true
+	for _, socket := range privsep.Endpoints() {
+		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		resp, err := client.Probe(probeCtx, socket)
+		cancel()
+		switch {
+		case err != nil:
+			healthy = false
+			fmt.Printf("  %-32s unreachable: %v\n", socket, err)
+		case resp.ExitCode == 0:
+			// A helper that answered "fine" to a name nothing serves is acting on requests it does not
+			// recognise, which is a worse finding than an unreachable socket rather than a better one.
+			healthy = false
+			fmt.Printf("  %-32s ANSWERED an intent nothing serves; this build is wrong\n", socket)
+		default:
+			fmt.Printf("  %-32s reachable, and refuses what it does not serve\n", socket)
+		}
+	}
+
+	fmt.Println("intents that have a privileged route:")
+	for _, name := range intent.Names() {
+		if socket, routed := privsep.Endpoint(name); routed {
+			fmt.Printf("  %-26s %s\n", name, socket)
+		}
+	}
+
+	if !healthy {
+		fmt.Fprintln(os.Stderr,
+			"\nThis host reports fine and cannot be patched, restarted or rebooted by the control\n"+
+				"plane. Check that the three farrier-*.socket units are enabled and running, and that\n"+
+				"this account is in the farrier group.")
+		return 1
+	}
+	fmt.Println("\nthe privileged path is intact")
 	return 0
 }

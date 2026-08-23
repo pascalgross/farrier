@@ -12,8 +12,9 @@ import (
 //
 // Any path that does not name a real file falls through to index.html, because the application routes
 // client-side and a browser loading /hosts/01J9ABC directly must get the application rather than a 404.
-// Paths under /api and /agent never reach here — they are matched by more specific patterns — so the
-// fallback cannot swallow a mistyped API call and return HTML where a client expected JSON.
+// Paths under /api and /agent never reach here: routes() registers a subtree pattern for each of those
+// prefixes, which Go's ServeMux prefers over this one, so the fallback cannot swallow a mistyped API
+// call and return HTML — and 200 HTML — where a client expected a JSON problem document.
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	if !s.hasUI {
 		s.writeUIPlaceholder(w)

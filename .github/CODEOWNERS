@@ -12,14 +12,18 @@
 /internal/intent/               @pascalgross
 /internal/run/                  @pascalgross
 
-# Local policy sovereignty. The helpers run as root and must not trust their caller; the sudoers file is
-# what bounds them. A widened sudoers entry is indistinguishable from a remote shell.
+# Local policy sovereignty. The helpers run as root and must not trust their caller. What bounds them is
+# the root-owned policy file and the socket the agent reaches them on; a widened socket, an extra route
+# in internal/privsep, or a fourth helper is indistinguishable from a remote shell.
 /internal/policy/               @pascalgross
 /internal/helper/               @pascalgross
+/internal/privsep/              @pascalgross
 /helpers/                       @pascalgross
-/packaging/sudoers              @pascalgross
 /packaging/policy.toml          @pascalgross
 /packaging/farrier-agent.service @pascalgross
+/packaging/farrier-apply-updates.socket @pascalgross
+/packaging/farrier-restart-unit.socket @pascalgross
+/packaging/farrier-reboot-host.socket @pascalgross
 
 # Signature verification and canonical encoding. Every authorisation decision on a host is downstream of
 # these two, and a subtle change here is not visible in the behaviour of anything else.

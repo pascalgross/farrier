@@ -36,6 +36,7 @@ import (
 	"github.com/pascalgross/farrier/internal/collect/collector"
 	"github.com/pascalgross/farrier/internal/collect/platform"
 	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/farrier/internal/privsep"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/signing"
 )
@@ -59,6 +60,13 @@ type Agent struct {
 
 	// nonces refuses replayed signatures across restarts.
 	nonces *NonceStore
+
+	// elevate is the route to the three root helpers, over the sockets in /run/farrier.
+	//
+	// It is the agent's entire relationship with privilege: it names an intent and forwards the
+	// parameter bytes it received, and it is told what happened. There is deliberately nothing here
+	// that could name a program, and nothing this process does with the reply except report it.
+	elevate privsep.Invoker
 
 	// policyPath is the local policy file, re-read on every cycle.
 	policyPath string
@@ -86,6 +94,14 @@ type Options struct {
 	// It exists as an option rather than being inferred, because the jitter it disables is what stops a
 	// fleet restarted by a configuration-management run from arriving in the same second.
 	SkipStartupJitter bool
+
+	// Elevate substitutes the route to the root helpers, for tests. Empty means the real one.
+	//
+	// The agent's job path has to be exercised without a root helper and without systemd, for the same
+	// reason it is exercised without a real platform: a test that needed either would be a test of the
+	// developer's machine. It is not an extension point — internal/privsep holds exactly one real
+	// implementation and is arranged so that there cannot be a second.
+	Elevate privsep.Invoker
 }
 
 // New builds an agent from persisted enrolment state.
@@ -120,11 +136,17 @@ func New(opts Options) (*Agent, error) {
 		return nil, err
 	}
 
+	elevate := opts.Elevate
+	if elevate == nil {
+		elevate = privsep.NewClient()
+	}
+
 	return &Agent{
 		state:            state,
 		client:           client,
 		platform:         plat,
 		nonces:           nonces,
+		elevate:          elevate,
 		policyPath:       opts.PolicyPath,
 		heartbeatSeconds: protocol.DefaultHeartbeatSeconds,
 		backoff:          NewBackoff(),
@@ -244,8 +266,21 @@ func (a *Agent) cycle(ctx context.Context, wantFull bool) (bool, error) {
 		a.heartbeatSeconds = protocol.ClampHeartbeatSeconds(res.NextHeartbeatSeconds)
 	}
 
+	// Cached before the poll, so that a job arriving in the same cycle as a rotated key verifies
+	// against the key the control plane is currently signing with rather than the previous one.
+	if err := StoreOnlineKey(a.state.Dir(), res.OnlineKey); err != nil {
+		slog.Error("could not cache the control plane's online key; routine jobs may be refused",
+			"error", err)
+	}
+	online, err := LoadOnlineKey(a.state.Dir())
+	if err != nil {
+		slog.Error("the control plane's online key could not be read; routine jobs will be refused",
+			"error", err)
+		online = &signing.SignerSet{}
+	}
+
 	a.maybeRenew(ctx)
-	a.pollAndRun(ctx, p, signers)
+	a.pollAndRun(ctx, p, signers, online)
 
 	return res.WantFullReport || res.WantFacts || res.WantPolicy || res.WantSigners, nil
 }
@@ -342,7 +377,7 @@ func signerViews(signers *signing.SignerSet) []protocol.SignerSummary {
 //
 // Each result is spooled to disk before it is sent and removed only after the control plane accepts it,
 // so a lost response causes a redelivery rather than a re-execution.
-func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signing.SignerSet) {
+func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers, online *signing.SignerSet) {
 	pollCtx, cancel := context.WithTimeout(ctx, (protocol.DefaultJobWaitSeconds+15)*time.Second)
 	defer cancel()
 
@@ -357,10 +392,20 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 		if ctx.Err() != nil {
 			return
 		}
-		spool := func(provisional protocol.ResultRequest) error {
-			return SpoolResult(a.state.Dir(), provisional)
+		runner := Runner{
+			HostID:      a.state.HostID,
+			Policy:      p,
+			Signers:     signers,
+			Online:      online,
+			Nonces:      a.nonces,
+			Platform:    a.platform,
+			Elevate:     a.elevate,
+			ClockOffset: a.clockOffset,
+			Spool: func(provisional protocol.ResultRequest) error {
+				return SpoolResult(a.state.Dir(), provisional)
+			},
 		}
-		result := Run(ctx, job, a.state.HostID, p, signers, a.nonces, a.platform, a.clockOffset, spool)
+		result := runner.Run(ctx, job)
 		slog.Info("job finished", "job", job.ID, "intent", job.Intent, "status", result.Status)
 
 		// Written again, unconditionally: for an operation that may not return this replaces the
@@ -370,9 +415,15 @@ func (a *Agent) pollAndRun(ctx context.Context, p policy.Policy, signers *signin
 				"job", job.ID, "error", err)
 		}
 		if err := a.client.ReportResult(ctx, result); err != nil {
-			slog.Warn("could not report a job result; it stays spooled for the next pass",
-				"job", job.ID, "error", err)
-			continue
+			if !permanentlyRefused(err) {
+				slog.Warn("could not report a job result; it stays spooled for the next pass",
+					"job", job.ID, "error", err)
+				continue
+			}
+			// Refused rather than undelivered: see DeliverPending for why that is the one case where
+			// the spool file goes rather than staying.
+			slog.Error("a job result was refused permanently and has been discarded",
+				"job", job.ID, "status", result.Status, "error", err)
 		}
 		spoolFile, pathErr := SpoolPath(a.state.Dir(), result.JobID)
 		if pathErr != nil {

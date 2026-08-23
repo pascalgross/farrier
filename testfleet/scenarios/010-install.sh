@@ -30,9 +30,25 @@ run_sh "$INSTANCE" '[ "$(stat -c %U:%G:%a /etc/farrier/policy.toml)" = "root:roo
 	|| fail "policy.toml is not root:root 0644"
 run_sh "$INSTANCE" '[ "$(stat -c %U:%G:%a /etc/farrier/trusted-signers)" = "root:root:644" ]' \
 	|| fail "trusted-signers is not root:root 0644"
-run_sh "$INSTANCE" '[ "$(stat -c %U:%G:%a /etc/sudoers.d/farrier)" = "root:root:440" ]' \
-	|| fail "the sudoers file is not root:root 0440"
 pass "the configuration files are root-owned and the agent cannot write them"
+
+# There is no sudoers file any more, and its absence is asserted rather than assumed. A leftover
+# NOPASSWD entry for the farrier account on an upgraded host would be a privilege grant nothing uses
+# and nobody would notice.
+run_sh "$INSTANCE" '[ ! -e /etc/sudoers.d/farrier ]' \
+	|| fail "an /etc/sudoers.d/farrier survives; the agent reaches the helpers over a socket now"
+pass "there is no sudoers entry"
+
+# The privilege boundary. root:farrier 0660 is what makes the socket reachable by the agent's account
+# and by nothing else; the helper reads SO_PEERCRED as well, but the mode is the first line and the one
+# a package upgrade could silently change.
+for helper in apply-updates restart-unit reboot-host; do
+	run "$INSTANCE" systemctl is-active --quiet "farrier-$helper.socket" \
+		|| fail "farrier-$helper.socket is not listening"
+	run_sh "$INSTANCE" "[ \"\$(stat -c %U:%G:%a /run/farrier/$helper.sock)\" = \"root:farrier:660\" ]" \
+		|| fail "/run/farrier/$helper.sock is not root:farrier 0660"
+done
+pass "the three helper sockets are listening, root-owned and reachable only by the agent's group"
 
 # trusted-signers ships empty. A fresh agent executes nothing destructive until an administrator puts a
 # key in it, and this is what "empty by default" means on a real machine.
@@ -43,10 +59,19 @@ pass "trusted-signers ships with no keys"
 run "$INSTANCE" farrier-agent policy check >/dev/null || fail "the shipped policy does not parse"
 pass "the shipped policy parses"
 
-# The whole product in one command: the agent's own account, going through the only privileged path
-# that exists, being told no by a file the control plane cannot touch.
+# The privilege boundary, exercised from the agent's own account and changing nothing. The intent it
+# sends is in no catalogue and on no route, so each helper refuses it at its very first check — which
+# proves the socket exists, that this account may reach it, that systemd started the helper as root,
+# and that the helper refuses what it does not serve.
+run_sh "$INSTANCE" 'sudo -u farrier farrier-agent doctor' >/dev/null \
+	|| fail "the agent's own account cannot reach the root helpers"
+pass "the agent's account reaches all three helpers, and each refuses what it does not serve"
+
+# The whole product in one command: an operation going through the only privileged path that exists and
+# being told no by a file the control plane cannot touch. Run as root deliberately — if even root going
+# through the helper is refused, the agent certainly is.
 status=0
-run_sh "$INSTANCE" 'sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit \
-	--action restart --unit nginx.service' >/dev/null 2>&1 || status=$?
+run_sh "$INSTANCE" '/usr/libexec/farrier/restart-unit --action restart --unit nginx.service' \
+	>/dev/null 2>&1 || status=$?
 [ "$status" -eq 3 ] || fail "the helper exited $status, expected 3 (refused by local policy)"
 pass "the helper refuses a restart the local policy does not permit"

@@ -21,8 +21,8 @@ pass "the agent reports itself paused"
 # permit. Pausing a host means pausing it, not pausing the interesting half.
 run_sh "$INSTANCE" "sed -i 's/^restartable = \[\]/restartable = [\"nginx.service\"]/' /etc/farrier/policy.toml"
 status=0
-run_sh "$INSTANCE" 'sudo -u farrier sudo -n /usr/libexec/farrier/restart-unit \
-	--action restart --unit nginx.service' >/dev/null 2>&1 || status=$?
+run_sh "$INSTANCE" '/usr/libexec/farrier/restart-unit --action restart --unit nginx.service' \
+	>/dev/null 2>&1 || status=$?
 [ "$status" -eq 3 ] || fail "the helper exited $status on a paused host, expected 3"
 pass "a paused host refuses an operation its policy would otherwise permit"
 

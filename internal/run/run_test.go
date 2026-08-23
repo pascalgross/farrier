@@ -175,3 +175,56 @@ func TestLimitedWriterBoundsOutput(t *testing.T) {
 		t.Errorf("buffer grew past the limit to %d bytes", buf.Len())
 	}
 }
+
+// TestGuaranteeNoInvocationCanOutliveItsDeadline pins the bound that makes a timeout mean something.
+//
+// exec.CommandContext signals the direct child when a deadline fires, and nothing else. apt-get spawns
+// dpkg, and dpkg inherits the pipes this package reads output from — so without a wait delay, Wait
+// blocks on that pipe for as long as the surviving dpkg holds it, which on a large upgrade is many
+// minutes past the timeout that was supposed to bound it. The helper hangs, and the agent sees a helper
+// that has simply stopped answering.
+//
+// The property is asserted about the constants rather than by killing a real dpkg, because the failure
+// mode needs a package transaction in flight and the regression it guards against is somebody removing
+// one line.
+func TestGuaranteeNoInvocationCanOutliveItsDeadline(t *testing.T) {
+	if WaitDelay <= 0 {
+		t.Fatal("WaitDelay is zero, so a program whose child holds the output pipes can block Wait " +
+			"indefinitely and the invocation's timeout stops bounding anything")
+	}
+	if WaitDelay >= DefaultTimeout {
+		t.Errorf("WaitDelay is %s and the default timeout is %s; the delay is meant to be the short "+
+			"grace period after the deadline, not a second deadline", WaitDelay, DefaultTimeout)
+	}
+}
+
+// TestATimedOutInvocationReturnsPromptly is the same property observed rather than asserted.
+//
+// It needs an allowlisted program that exists on this machine, and skips where none does. That is
+// honest rather than convenient: the assertion below is about this package's behaviour with a real
+// process, and there is nothing to observe without one.
+func TestATimedOutInvocationReturnsPromptly(t *testing.T) {
+	var program Program
+	for _, candidate := range Allowlist() {
+		if _, err := os.Stat(string(candidate)); err == nil {
+			program = candidate
+			break
+		}
+	}
+	if program == "" {
+		t.Skip("no allowlisted program is installed here")
+	}
+
+	started := time.Now()
+	// A nanosecond, so the context is already done by the time exec looks at it. What is being measured
+	// is how long CommandWith takes to give up, not how long the program takes.
+	_, err := CommandWith(context.Background(), Options{Timeout: time.Nanosecond}, program, "--version")
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatalf("%s completed within a nanosecond, which cannot be right", program)
+	}
+	if elapsed > WaitDelay+30*time.Second {
+		t.Errorf("a timed-out invocation took %s to return; it must not linger past its wait delay", elapsed)
+	}
+}

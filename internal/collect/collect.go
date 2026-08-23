@@ -156,6 +156,19 @@ type RebootReport struct {
 	// do" must not look the same in the UI.
 	ServiceScanComplete bool `json:"serviceScanComplete"`
 
+	// Conclusive reports whether anything on this host was able to answer the question at all.
+	//
+	// It exists for the same reason ServiceScanComplete does, one level up: "no reboot is needed" and
+	// "nothing here can tell me whether one is needed" are different answers that produce the same
+	// Required=false, and on a Debian host without needrestart the second is the common one — the
+	// marker file is an Ubuntu update-notifier convention rather than a standard, and needrestart is a
+	// Recommends. Without this field the distinction survives only in Source, as prose, which no caller
+	// can act on.
+	//
+	// It has no omitempty deliberately. An inconclusive answer is exactly the case worth seeing, and
+	// with omitempty it would be the one that vanished from the wire.
+	Conclusive bool `json:"conclusive"`
+
 	// Source describes where the answer came from, for the UI and for debugging a wrong answer.
 	Source string `json:"source,omitempty"`
 }
