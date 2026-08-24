@@ -26,8 +26,26 @@ Documentation: [farrier.tools](https://farrier.tools).
 > destructive job, because that needs a key the control plane does not hold and a browser is the last
 > place it should ever be.
 >
-> What is not built, and is next: pushing a configuration to a host that is already enrolled is
-> **never** built — see the guarantee below. Tier 2 provisioning arrives in phase 3.
+> What is not built is numbered, so that "phase 3" means the same thing everywhere it appears —
+> including in the refusal an operator reads when `--bootstrap` declines to apply a template:
+>
+> - **Phase 2 — Tier 1 provisioning** ([#9](https://github.com/pascalgross/farrier/issues/9)):
+>   cloud-init templates stored, versioned and rendered by Farrier, and handed to *you* — Terraform,
+>   Proxmox, MAAS, a cloud provider's user-data field. Farrier is never in the delivery path. It comes
+>   before Tier 2 by dependency: phase 3 applies a *named* template, so storage must exist before
+>   anything can name one.
+> - **Phase 3 — Tier 2 provisioning** ([#10](https://github.com/pascalgross/farrier/issues/10)):
+>   `farrier enroll --bootstrap NAME` applies one named template, exactly once, at enrolment, behind
+>   every guardrail [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception)
+>   lists — and cloud-init does the applying.
+> - **Never** — Tier 3, pushing configuration to a host that is already enrolled: that is the line
+>   between fleet management without a remote shell and a remote shell with extra steps. See the
+>   guarantee below.
+>
+> Observability ([#14](https://github.com/pascalgross/farrier/issues/14)) and the hardware-backed
+> signing backends ([#11](https://github.com/pascalgross/farrier/issues/11)) are deliberately not
+> phases: they attach to no tier boundary, so they land when they are ready rather than holding a
+> place in this sequence.
 
 ---
 
@@ -73,8 +91,11 @@ workflow that no maintainer can override:
   and Debian, plus `needrestart`'s answer to "which running services still hold the old library".
 - **Policy-gated update application** — the host decides what it will accept; the control plane can
   only ask for something within that.
-- **Provisioning templates** — cloud-init templates stored, versioned and rendered by Farrier, and
-  handed to *you*. Farrier is not in the delivery path.
+- **Provisioning templates** *(planned — phase 2,
+  [#9](https://github.com/pascalgross/farrier/issues/9))* — cloud-init templates stored, versioned
+  and rendered by Farrier, and handed to *you*. Farrier is not in the delivery path. The design is
+  argued out in [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception);
+  none of it is built yet.
 
 ## What it will never do
 

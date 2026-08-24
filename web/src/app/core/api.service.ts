@@ -79,15 +79,23 @@ export class ApiService {
   }
 
   /**
-   * Fetches every job that is waiting for a second operator.
+   * Fetches the jobs waiting for a second operator, at the largest bound the control plane accepts.
    *
    * It is a separate request rather than a filter over the list above, and that is the point: the list
    * is bounded, so on a busy fleet a destructive job leaves the newest page within a working day. The
    * second operator the approval model depends on would then have no way to find the one thing they
    * exist to look at.
+   *
+   * The explicit limit is `store.MaxJobLimit`, asked for rather than defaulted because the default is a
+   * fifth of it and the ordering is newest first — so a defaulted request past a hundred waiting jobs
+   * would drop the oldest, which for an approval queue are exactly the wrong rows to lose. Callers must
+   * still read `truncated`: past five hundred the queue no longer fits any request, and that is a fact
+   * the operator has to be shown rather than one this client can absorb.
    */
   jobsAwaitingApproval(): Observable<JobsResponse> {
-    return this.http.get<JobsResponse>('/api/v1/jobs?awaiting=true', { headers: this.headers() });
+    return this.http.get<JobsResponse>('/api/v1/jobs?awaiting=true&limit=500', {
+      headers: this.headers(),
+    });
   }
 
   /**

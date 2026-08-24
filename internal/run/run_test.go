@@ -9,6 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	//nolint:depguard // The WaitDelay test below reproduces the apt-get→dpkg shape: a grandchild that
+	// inherits the direct child's output pipes and outlives it. run's own API rightly cannot express
+	// pipe inheritance, so the fixture process — this test binary re-executing itself — starts its
+	// child directly. This is test code inside the one package allowed to start processes at all.
+	"os/exec"
 )
 
 // interpreterBasenames are program names that turn their arguments into code.
@@ -198,33 +204,96 @@ func TestGuaranteeNoInvocationCanOutliveItsDeadline(t *testing.T) {
 	}
 }
 
+// runTestModeVar selects what this binary does when re-executed as a fixture process.
+const runTestModeVar = "FARRIER_RUN_TEST_MODE"
+
+// fixtureLifetime is how long a fixture process lives when nothing kills it first.
+//
+// It only has to be far past every bound the WaitDelay test asserts: if the wiring under test is
+// deleted, this is how long Wait blocks on the held pipe, and the test must have failed its upper
+// bound long before then.
+const fixtureLifetime = 5 * time.Minute
+
+// TestMain lets this binary stand in for the processes the WaitDelay test needs.
+//
+// The apt-get→dpkg shape — a direct child killed at the deadline while a grandchild it spawned keeps
+// holding the output pipes — cannot be arranged with the allowlisted programs, which mostly do not
+// exist on a build machine and none of which lingers on command. Re-executing the test binary in a
+// named mode is the standard way to be one's own fixture process, and it keeps the arrangement inside
+// the one package allowed to start processes at all.
+func TestMain(m *testing.M) {
+	switch os.Getenv(runTestModeVar) {
+	case "spawn-a-pipe-holder":
+		spawnAPipeHolder()
+	case "hold-the-pipe":
+		time.Sleep(fixtureLifetime)
+	default:
+		os.Exit(m.Run())
+	}
+}
+
+// spawnAPipeHolder starts a grandchild inheriting this process's stdout and stderr, then waits to die.
+//
+// This process is the direct child CommandWith started, so its stdout and stderr are the pipes the
+// caller reads. Handing them to a process that outlives this one is exactly what apt-get does with
+// dpkg. The sleep only keeps this process alive until the caller's deadline kills it; the grandchild
+// is what remains, holding the pipe.
+func spawnAPipeHolder() {
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = []string{runTestModeVar + "=hold-the-pipe"}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		os.Exit(1)
+	}
+	time.Sleep(fixtureLifetime)
+}
+
 // TestATimedOutInvocationReturnsPromptly is the same property observed rather than asserted.
 //
-// It needs an allowlisted program that exists on this machine, and skips where none does. That is
-// honest rather than convenient: the assertion below is about this package's behaviour with a real
-// process, and there is nothing to observe without one.
+// The shape is apt-get's, reproduced with real processes: the direct child is killed at the deadline
+// and a grandchild it spawned keeps holding the output pipes. Both bounds below matter. The upper one
+// is the property — Wait gives the pipes up once WaitDelay expires instead of blocking for as long as
+// the grandchild lives. The lower one proves the shape was actually reproduced: a run with no
+// pipe-holding grandchild returns well inside WaitDelay, and a test that could not tell the
+// difference would keep passing with the WaitDelay wiring deleted — the previous version of this test
+// did exactly that, timing a process that was already dead.
 func TestATimedOutInvocationReturnsPromptly(t *testing.T) {
-	var program Program
-	for _, candidate := range Allowlist() {
-		if _, err := os.Stat(string(candidate)); err == nil {
-			program = candidate
-			break
-		}
-	}
-	if program == "" {
-		t.Skip("no allowlisted program is installed here")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolving the test binary: %v", err)
 	}
 
+	// The test binary joins the allowlist for the duration of this test, which only an in-package
+	// test can arrange. What is under test is what happens after exec, not who may be execed —
+	// TestGuaranteeOnlyAllowlistedProgramsCanRun holds that line, and the entry is removed before it
+	// could see it.
+	program := Program(exe)
+	if allowed[program] {
+		t.Fatalf("%s is already allowlisted, which cannot be right", exe)
+	}
+	allowed[program] = true
+	t.Cleanup(func() { delete(allowed, program) })
+
+	// Generous room for the child to start the pipe holder before the deadline kills it; the lower
+	// bound below catches the day it is not enough.
+	const timeout = 2 * time.Second
+
 	started := time.Now()
-	// A nanosecond, so the context is already done by the time exec looks at it. What is being measured
-	// is how long CommandWith takes to give up, not how long the program takes.
-	_, err := CommandWith(context.Background(), Options{Timeout: time.Nanosecond}, program, "--version")
+	_, err = CommandWith(context.Background(), Options{
+		Timeout: timeout,
+		Env:     []string{runTestModeVar + "=spawn-a-pipe-holder"},
+	}, program)
 	elapsed := time.Since(started)
 
 	if err == nil {
-		t.Fatalf("%s completed within a nanosecond, which cannot be right", program)
+		t.Fatal("an invocation built to outlive its deadline reported success")
 	}
-	if elapsed > WaitDelay+30*time.Second {
+	if elapsed < WaitDelay {
+		t.Errorf("the invocation returned after %s, inside WaitDelay (%s), so no grandchild was "+
+			"holding the pipes and the wait was never exercised", elapsed, WaitDelay)
+	}
+	if elapsed > timeout+WaitDelay+30*time.Second {
 		t.Errorf("a timed-out invocation took %s to return; it must not linger past its wait delay", elapsed)
 	}
 }

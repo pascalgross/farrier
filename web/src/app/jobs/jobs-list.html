@@ -62,36 +62,60 @@
   </mat-card-content>
 </mat-card>
 
-@if (awaiting().length > 0) {
+@if (awaiting().length > 0 || awaitingError()) {
   <mat-card class="mb-8 max-w-3xl !border-l-4 !border-l-farrier-warn">
     <mat-card-header>
       <mat-card-title>Waiting to be released</mat-card-title>
     </mat-card-header>
 
     <mat-card-content class="!pt-4">
-      <p class="text-sm opacity-80 mt-0">
-        Listed here as well as below, because the list below is bounded and a job that has been waiting
-        a while drops off the end of it. Releasing is a decision, not a formality: you are agreeing that
-        this operation should happen on this host now.
-      </p>
-
-      <ul class="list-none p-0 m-0 flex flex-col gap-3">
-        @for (job of awaiting(); track job.id) {
-          <li class="flex flex-wrap items-baseline gap-3">
-            <span class="font-medium farrier-numeric">{{ job.intent }}</span>
-            <span class="text-sm">on <a [routerLink]="['/hosts', job.hostId]">{{ hostname(job) }}</a></span>
-            <span class="text-xs opacity-70">
-              {{ authorisation(job) }}, asked {{ age(job) }} by {{ job.createdBy || 'an unnamed operator' }}
+      @if (awaitingError()) {
+        <!-- The failure renders where the queue would have been, never in the page-level error slot: a
+             successful job-list fetch used to wipe it there, and an operator shown a full page with no
+             card concludes there is nothing to release. -->
+        <p class="m-0 flex items-start gap-2 text-sm">
+          <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+          <span>
+            The approval queue could not be loaded, so jobs may be waiting that this page cannot show:
+            {{ awaitingError() }}
+          </span>
+        </p>
+      } @else {
+        @if (awaitingTruncated()) {
+          <p class="m-0 mb-3 flex items-start gap-2 text-sm">
+            <mat-icon class="text-farrier-warn">warning_amber</mat-icon>
+            <span>
+              This card holds as many waiting jobs as one request can carry, so there may be more —
+              and anything missing is the <em>oldest</em>, the jobs that have waited longest. A queue
+              this size is itself the finding: release or delete from the API until it fits
+              comfortably on a page.
             </span>
-            <button mat-stroked-button class="ml-auto" [disabled]="busy()" (click)="approve(job)"
-                    [matTooltip]="job.approvalDistinctOperator
-                      ? 'This fleet requires somebody other than the job\'s creator to release it.'
-                      : 'This fleet requires a deliberate release before any host may claim the job.'">
-              Release
-            </button>
-          </li>
+          </p>
         }
-      </ul>
+        <p class="text-sm opacity-80 mt-0">
+          Listed here as well as below, because the list below is bounded and a job that has been waiting
+          a while drops off the end of it. Releasing is a decision, not a formality: you are agreeing that
+          this operation should happen on this host now.
+        </p>
+
+        <ul class="list-none p-0 m-0 flex flex-col gap-3">
+          @for (job of awaiting(); track job.id) {
+            <li class="flex flex-wrap items-baseline gap-3">
+              <span class="font-medium farrier-numeric">{{ job.intent }}</span>
+              <span class="text-sm">on <a [routerLink]="['/hosts', job.hostId]">{{ hostname(job) }}</a></span>
+              <span class="text-xs opacity-70">
+                {{ authorisation(job) }}, asked {{ age(job) }} by {{ job.createdBy || 'an unnamed operator' }}
+              </span>
+              <button mat-stroked-button class="ml-auto" [disabled]="busy()" (click)="approve(job)"
+                      [matTooltip]="job.approvalDistinctOperator
+                        ? 'This fleet requires somebody other than the job\'s creator to release it.'
+                        : 'This fleet requires a deliberate release before any host may claim the job.'">
+                Release
+              </button>
+            </li>
+          }
+        </ul>
+      }
     </mat-card-content>
   </mat-card>
 }
@@ -181,7 +205,8 @@
   @if (truncated()) {
     <p class="text-sm opacity-70 mt-4">
       Showing the most recent jobs only; there are older ones this page did not fetch. Anything still
-      waiting for an approval is listed above regardless of its age.
+      waiting for a release is listed in the card above, which fetches at the largest bound the control
+      plane accepts and warns there when even that was not enough.
     </p>
   }
 }

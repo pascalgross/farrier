@@ -2,6 +2,7 @@ package collect
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,6 +308,68 @@ func TestCombineRebootSignalsDistinguishesNoFromCannotTell(t *testing.T) {
 	if !markerSaidYes.Required || !markerSaidYes.Conclusive {
 		t.Errorf("the marker answering 'yes' produced required=%v conclusive=%v, want true/true",
 			markerSaidYes.Required, markerSaidYes.Conclusive)
+	}
+}
+
+// TestAFailedNeedrestartIsNotAConclusiveNo is the third silent-wrong-answer trap.
+//
+// The scenario is a Debian host — no marker file, since that is an Ubuntu update-notifier
+// convention — right after a dist-upgrade replaced the kernel: needrestart exits non-zero with
+// nothing parsable, which a half-configured perl or a timeout on a busy host will do. The one case
+// where the mechanism genuinely could not tell must not read as "needrestart reports no reboot
+// needed" — that is exactly the green job beside a replaced kernel that Conclusive exists to prevent.
+func TestAFailedNeedrestartIsNotAConclusiveNo(t *testing.T) {
+	failed := NeedrestartReport{Available: true, Failed: true}
+
+	report := CombineRebootSignals(false, nil, failed)
+	if report.Required {
+		t.Error("a failed needrestart run was reported as requiring a reboot")
+	}
+	if report.Conclusive {
+		t.Error("a failed needrestart run was reported as a conclusive answer. Available means the " +
+			"binary is installed, not that it answered; the run that errored is the one case where " +
+			"the mechanism could not tell.")
+	}
+	if report.Source != "needrestart failed" {
+		t.Errorf("the source reads %q; an operator must be able to see that needrestart failed "+
+			"rather than answered", report.Source)
+	}
+
+	// The marker can still answer for a failed needrestart: on Ubuntu it is authoritative, and a
+	// failed service scan degrades that answer rather than invalidating it.
+	withMarker := CombineRebootSignals(true, []string{"linux-image-generic"}, failed)
+	if !withMarker.Required || !withMarker.Conclusive {
+		t.Errorf("the marker answering 'yes' alongside a failed needrestart produced required=%v "+
+			"conclusive=%v, want true/true", withMarker.Required, withMarker.Conclusive)
+	}
+}
+
+// TestFinishNeedrestartMarksAnUnparsableFailureAndKeepsAPartialAnswer covers the judgement call.
+//
+// A non-zero exit with a kernel status or a service list on stdout still answered the question — apt
+// hooks fail for reasons that have nothing to do with the scan — but a non-zero exit with nothing
+// parsable did not, and pretending otherwise is how a failed run turned into "no reboot needed".
+func TestFinishNeedrestartMarksAnUnparsableFailureAndKeepsAPartialAnswer(t *testing.T) {
+	report, err := finishNeedrestart(nil, errors.New("exit status 1"))
+	if err == nil {
+		t.Fatal("an unparsable failure did not surface its error")
+	}
+	if !report.Available || !report.Failed {
+		t.Errorf("an unparsable failure produced available=%v failed=%v, want true/true",
+			report.Available, report.Failed)
+	}
+
+	partial, err := finishNeedrestart([]byte("NEEDRESTART-KSTA: 3\n"), errors.New("exit status 1"))
+	if err != nil {
+		t.Fatalf("a run that still printed a kernel status was treated as a failure: %v", err)
+	}
+	if partial.Failed || partial.KernelStatus != KernelStatusUpgradePending {
+		t.Errorf("a partial answer parsed as %+v; the printed kernel status is the answer", partial)
+	}
+
+	clean, err := finishNeedrestart([]byte("NEEDRESTART-KSTA: 1\n"), nil)
+	if err != nil || clean.Failed {
+		t.Errorf("a clean run parsed as %+v with err %v", clean, err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/store"
@@ -225,6 +226,25 @@ func TestAnUnusableListingLimitIsRefusedRatherThanReplaced(t *testing.T) {
 	}
 }
 
+// TestAJobListingCarriesTheServersClock pins the field the UI renders job ages from.
+//
+// Ages on the jobs page are decision inputs — the approval card shows "asked 4h ago" to the second
+// operator deciding whether to release — and everything in this product measures them against the
+// server's clock, as /api/v1/hosts already does. This field going missing would not break anything
+// visibly; it would quietly put the browser's clock back in charge of an input to an authorisation
+// decision, which in a project that treats clock skew as a security boundary is not a cosmetic drift.
+func TestAJobListingCarriesTheServersClock(t *testing.T) {
+	h := newHarness(t)
+
+	listing := h.listJobs(t, "")
+	if listing.ServerTime == "" {
+		t.Fatal("the job listing carries no serverTime; the UI would fall back to the browser's clock")
+	}
+	if _, err := time.Parse(time.RFC3339, listing.ServerTime); err != nil {
+		t.Errorf("serverTime %q is not RFC 3339: %v", listing.ServerTime, err)
+	}
+}
+
 // jobListing is the shape of a job listing response, for the assertions above.
 type jobListing struct {
 	// Jobs is the page of rows.
@@ -233,6 +253,9 @@ type jobListing struct {
 	// Limit is the bound that was applied, and Truncated reports that it bit.
 	Limit     int  `json:"limit"`
 	Truncated bool `json:"truncated"`
+
+	// ServerTime is the control plane's clock, which the UI renders ages against.
+	ServerTime string `json:"serverTime"`
 }
 
 // listJobs reads a job listing with an arbitrary query string.

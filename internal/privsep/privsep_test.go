@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -76,24 +77,34 @@ func TestGuaranteeEndpointsAreThreeSocketsUnderTheRuntimeDirectory(t *testing.T)
 // quietly reintroduce the thing the whole design exists to not have, and it would look innocuous in a
 // diff — so the field set is asserted rather than reviewed for.
 func TestGuaranteeARequestCannotNameAProgram(t *testing.T) {
-	raw, err := json.Marshal(Request{Intent: intent.ServiceRestart})
-	if err != nil {
-		t.Fatalf("encoding a request: %v", err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("decoding a request: %v", err)
+	// Asserted over the type by reflection, never over one instance's JSON: a marshalled zero value
+	// hides every field tagged omitempty, which is exactly the tag a quietly added field would carry.
+	// An earlier version of this test inspected the encoding and would have been blind to it.
+	allowed := map[string]string{
+		"JobID":    "jobId",
+		"Intent":   "intent",
+		"Params":   "params",
+		"IssuedAt": "issuedAt",
 	}
 
-	allowed := map[string]bool{"jobId": true, "intent": true, "params": true, "issuedAt": true}
-	for name := range fields {
-		if !allowed[name] {
+	typ := reflect.TypeOf(Request{})
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		wireName, ok := allowed[field.Name]
+		if !ok {
 			t.Errorf("privsep.Request carries the field %q. The request names an operation, never a "+
-				"program: add a field here and the helper is taking instructions from its caller.", name)
+				"program: add a field here and the helper is taking instructions from its caller.",
+				field.Name)
+			continue
+		}
+		// The wire name is pinned too, so a renamed tag cannot smuggle a second meaning under a
+		// reviewed field, and so the helper's decoder and this assertion agree about the same wire.
+		if got, _, _ := strings.Cut(field.Tag.Get("json"), ","); got != wireName {
+			t.Errorf("privsep.Request.%s encodes as %q, expected %q", field.Name, got, wireName)
 		}
 	}
 	for name := range allowed {
-		if _, ok := fields[name]; !ok {
+		if _, ok := typ.FieldByName(name); !ok {
 			t.Errorf("privsep.Request no longer carries %q", name)
 		}
 	}

@@ -484,14 +484,18 @@ report container state, that must be done through a read-only path, not group me
 This is the exception named in the second paragraph of the guarantee. It is stated plainly here because
 it is the only way a Farrier component ever applies operator-authored configuration to a host.
 
-**Tier 1 — implemented first.** Farrier stores, versions and renders cloud-init templates, and **never
-delivers them to a host**. The rendered `user-data` goes to a human, or to Terraform / Proxmox / MAAS /
-a cloud provider's user-data field; the machine consumes it at first boot from the hypervisor that
-created it. Farrier is not in the delivery path at all. This also covers bare metal, since Ubuntu
-`autoinstall` for PXE and ISO is delivered as cloud-init user-data.
+**Tier 1 — first in the build order, and not yet built** (phase 2 of the roadmap,
+[#9](https://github.com/pascalgross/farrier/issues/9); what follows is its specification). Farrier
+stores, versions and renders cloud-init templates, and **never delivers them to a host**. The rendered
+`user-data` goes to a human, or to Terraform / Proxmox / MAAS / a cloud provider's user-data field; the
+machine consumes it at first boot from the hypervisor that created it. Farrier is not in the delivery
+path at all. This also covers bare metal, since Ubuntu `autoinstall` for PXE and ISO is delivered as
+cloud-init user-data.
 
-**Tier 2 — the exception.** `farrier enroll --bootstrap NAME` applies a named template once, on a host
-that is being enrolled by hand. Every one of these guardrails is required:
+**Tier 2 — the exception** (phase 3, [#10](https://github.com/pascalgross/farrier/issues/10); the
+phase-1 agent verifies a bootstrap template and then refuses to continue, executing nothing and
+recording nothing, and says so to the operator). `farrier enroll --bootstrap NAME` applies a named
+template once, on a host that is being enrolled by hand. Every one of these guardrails is required:
 
 1. Explicit `--bootstrap NAME` on that specific invocation. Never implicit, never a server default,
    never a group setting.
