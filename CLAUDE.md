@@ -153,6 +153,14 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   host that has not written `[containers] report = true` sends no such section at all.
 - `internal/store` — PostgreSQL, plus an in-memory implementation for tests only.
 - `web/` — Angular 20 standalone, built into where `farrier-server` embeds it.
+- `deploy/` — the control plane in containers: the `Dockerfile` at the repository root builds
+  `farrier-server` alone (never the agent, never `farrier` — a signing backend on the control plane's
+  own host is a key the control plane holds), and the Compose stack is the same two services the
+  architecture claims. Traefik is an optional overlay and does **TLS passthrough**, because terminating
+  it would end the connection that carries an agent's client certificate and leave the fingerprint
+  lookup — the whole revocation mechanism — with nothing to look up but a header. A browser-trusted
+  certificate is a second overlay and a second hostname, where Traefik does terminate: agents never use
+  that name, need no public certificate, and the agent API is refused on it.
 - `tools/doccheck`, `tools/docsite` — the doc-comment checker and the documentation site generator.
 - `testfleet/` — LXD scenarios; `docs/MAINTAINING.md` covers repository settings and releases.
 

@@ -1,0 +1,32 @@
+# What never belongs in the build context.
+#
+# The first two lines are the ones that matter. .git is most of the repository's bytes and none of its
+# build inputs, and node_modules is platform-specific — a context that carried one built on a laptop
+# would produce an image whose front end was linked against the wrong architecture's esbuild.
+.git
+.github
+**/node_modules
+
+# Build output. Every one of these is produced inside the image by the stage that needs it, and a stale
+# local copy in the context is a way to ship yesterday's UI.
+/dist
+/public
+/web/dist
+/web/.angular
+/internal/server/assets/*
+!/internal/server/assets/.gitignore
+!/internal/server/assets/PLACEHOLDER.md
+
+# Nothing here is a build input, and the last two are the reason this file has a `*.key` line at all: a
+# context is copied into the daemon whole, and a signing key that reached a build layer would be in
+# every image published from it.
+/testfleet
+/docs
+coverage.txt
+*.test
+*.pem
+*.key
+/deploy/.env
+.DS_Store
+.idea
+.vscode

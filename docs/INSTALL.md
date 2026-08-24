@@ -56,6 +56,38 @@ dump is not a set of provisioning scripts — and a restore without it leaves ev
 permanently unopenable. The control plane says exactly that when it happens, which is the difference
 between an operator fixing their restore and filing a bug about templates being corrupt.
 
+### In containers, if that is how you run things
+
+The same two pieces — one binary and PostgreSQL — as a Compose stack, in
+[`deploy/`](../deploy/README.md):
+
+```bash
+cd deploy
+cp .env.example .env      # four passwords; `openssl rand -hex 32` for each
+docker compose up -d
+```
+
+The first start builds the image from the checkout, creates the certificate authority, creates an
+ordinary database role and the database it owns, and serves on `https://localhost:8443`. The role is
+the part worth reading about before you deviate from it: the PostgreSQL image's own superuser is exempt
+from every row-level security policy in the schema, which is the paragraph above with the failure mode
+that has no symptom.
+
+Traefik is optional, in an overlay of its own, and routes rather than terminates — a **TCP** router with
+`tls.passthrough=true`. A proxy that terminated TLS would end the connection carrying an agent's client
+certificate and open one that does not, and the only way for the server to keep identifying hosts across
+that would be to believe a header that anything reaching the proxy's back end can set. What follows from
+passthrough — which certificate a browser sees, and why enrolling a rack at once through a proxy meets
+the rate limiter — is in [`deploy/README.md`](../deploy/README.md).
+
+A certificate a browser trusts comes from giving the interface a **second** hostname, where Traefik does
+terminate and Let's Encrypt applies normally. Agents keep the passthrough name and need no public
+certificate at all, because they verify against the CA bundle they were handed at enrolment. That is a
+second overlay, and the agent endpoints are refused on the interface name.
+
+A streaming replica is a second overlay. The database is configured for one from its first start, so
+adding it later needs no restart of a primary that is by then serving a fleet.
+
 ### Mail, for alerts that reach somebody who is not looking
 
 Optional, and off until you configure it. Alerting rules are per fleet and editable in the interface;
