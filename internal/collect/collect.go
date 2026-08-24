@@ -39,6 +39,13 @@ const (
 
 	// MaxRebootReasons caps the packages named as requiring a reboot.
 	MaxRebootReasons = 100
+
+	// MaxContainers caps the containers listed in one report.
+	//
+	// Lower than the others because a container row is much wider than a package name and because a
+	// host running more than two hundred containers is one whose fleet-level answer is "look at the
+	// orchestrator", not "read two thousand rows in a heartbeat".
+	MaxContainers = 200
 )
 
 // Family is the distribution family a platform implementation handles.

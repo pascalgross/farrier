@@ -258,10 +258,18 @@ func absDuration(d time.Duration) time.Duration {
 // implemented: every privileged operation happens in a root helper on the other side of a socket, so
 // there is no branch of this function a future change could fill in to make the agent itself act on a
 // host. Runner.elevate is the whole of the other path, and it names an intent rather than an operation.
-func Execute(ctx context.Context, spec intent.Spec, params intent.Params, plat collect.Platform) (any, error) {
+//
+// The local policy arrives as a parameter for the same reason the platform does, and it is the one the
+// job was accepted under. A read intent needs no permission, but some sections of a fact report are a
+// disclosure the host may refuse, and facts.collect must give the same answer as the heartbeat does —
+// a control plane that could get a section by asking for it that the host had switched off in its
+// heartbeat would make the switch decorative.
+func Execute(ctx context.Context, spec intent.Spec, params intent.Params, plat collect.Platform,
+	local policy.Policy) (any, error) {
+
 	switch spec.Name {
 	case intent.FactsCollect:
-		return collect.Gather(ctx, plat, collector.All()...)
+		return collect.Gather(ctx, plat, local, collector.All()...)
 
 	case intent.PackagesListUpgradable:
 		packages, err := plat.UpgradablePackages(ctx)
@@ -393,7 +401,7 @@ func (r Runner) Run(ctx context.Context, job protocol.Job) protocol.ResultReques
 		return r.elevate(ctx, job, decision, result)
 	}
 
-	output, err := Execute(ctx, decision.spec, decision.params, r.Platform)
+	output, err := Execute(ctx, decision.spec, decision.params, r.Platform, r.Policy)
 	result.FinishedAt = time.Now()
 	if err != nil {
 		result.Status = protocol.StatusFailed

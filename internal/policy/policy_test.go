@@ -110,6 +110,42 @@ func TestParseAcceptsTheShippedDefaultFile(t *testing.T) {
 		t.Errorf("the shipped default lists restartable units %v; a fresh install should list none",
 			p.Services.Restartable)
 	}
+	if p.Containers.Report {
+		t.Error("the shipped default reports container state; it must ship off, for the reason " +
+			"trusted-signers ships empty — the host has not been asked yet")
+	}
+}
+
+// TestContainerReportingIsOffUntilTheHostSaysOtherwise covers the [containers] section.
+//
+// The default is the setting: container names describe what a business runs, and a host that agreed to
+// report its package state has not thereby agreed to report that. It is asserted on all three ways a
+// policy can come into existence, because a default that held in Default() and not in Parse() would be
+// a default that stopped applying the moment somebody wrote a policy file for an unrelated reason.
+func TestContainerReportingIsOffUntilTheHostSaysOtherwise(t *testing.T) {
+	if Default().Containers.Report {
+		t.Error("the built-in default reports container state")
+	}
+	if Closed().Containers.Report {
+		t.Error("the closed policy reports container state; a host that cannot read its policy must " +
+			"disclose less, not more")
+	}
+
+	p, err := Parse([]byte("[updates]\nallow = \"security\"\n"))
+	if err != nil {
+		t.Fatalf("parsing a policy with no [containers] section: %v", err)
+	}
+	if p.Containers.Report {
+		t.Error("a policy file that says nothing about containers reports them anyway")
+	}
+
+	p, err = Parse([]byte("[containers]\nreport = true\n"))
+	if err != nil {
+		t.Fatalf("parsing a policy that opts in: %v", err)
+	}
+	if !p.Containers.Report {
+		t.Error("a host that wrote report = true is not reporting container state")
+	}
 }
 
 // TestLoadFromMissingFileReturnsTheBuiltInDefault covers the unconfigured host.

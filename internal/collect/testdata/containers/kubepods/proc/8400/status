@@ -1,0 +1,24 @@
+Name:	caddy
+Umask:	0022
+State:	S (sleeping)
+Tgid:	8400
+Pid:	8400
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	64
+Groups:	
+NStgid:	8400	1
+NSpid:	8400	1
+NSpgid:	8400	1
+Threads:	1
+CapInh:	0000000000000000
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+voluntary_ctxt_switches:	12

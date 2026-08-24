@@ -7,6 +7,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/pascalgross/farrier/internal/policy"
 )
 
 // KernelReleasePath is where the running kernel version can be read without executing anything.
@@ -21,12 +23,17 @@ const KernelReleasePath = "/proc/sys/kernel/osrelease"
 // The collectors are passed in rather than read from a registry here, because the registry package must
 // import this one for its types and the cycle would be real. The agent supplies collector.All().
 //
+// The local policy is passed in for the same reason it is passed to everything else that acts on this
+// host: there is one policy in force at a time, read once, and a caller that loaded its own would be
+// enforcing a different one. It bounds what is *reported* rather than what may be done — see
+// PolicyGated — and a section the policy refuses is absent rather than empty.
+//
 // Partial failure is normal and is handled rather than propagated. A host where needrestart is missing,
 // or where apt is momentarily locked by the distribution's own timer, still has a hostname, a kernel
 // and a unit list worth reporting — and an agent that returned an error instead would remove exactly
 // the host an operator most wants to look at from the fleet list. Every failure is logged with enough
 // detail to act on and recorded in the affected section.
-func Gather(ctx context.Context, p Platform, extra ...Collector) (Facts, error) {
+func Gather(ctx context.Context, p Platform, local policy.Policy, extra ...Collector) (Facts, error) {
 	dist, err := p.Identify()
 	if err != nil {
 		// Identity is the one fact with no useful degraded form: without it the server cannot decide
@@ -75,6 +82,14 @@ func Gather(ctx context.Context, p Platform, extra ...Collector) (Facts, error) 
 	}
 
 	for _, c := range extra {
+		if gated, ok := c.(PolicyGated); ok && !gated.PermittedBy(local) {
+			// Withheld, not failed. The host's own policy travels in the same heartbeat, so the
+			// control plane can tell "this host does not report that" from "that collector broke"
+			// without a log line on every cycle saying so.
+			slog.Debug("a collector's section is withheld by local policy",
+				"collector", c.Name(), "policy", local.Source())
+			continue
+		}
 		section, err := c.Collect(ctx)
 		if err != nil {
 			// Absent rather than present-and-empty. A missing section is visibly missing; an empty one

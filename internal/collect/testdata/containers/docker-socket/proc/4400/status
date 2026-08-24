@@ -1,0 +1,24 @@
+Name:	portainer
+Umask:	0022
+State:	S (sleeping)
+Tgid:	4400
+Pid:	4400
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	64
+Groups:	
+NStgid:	4400	1
+NSpid:	4400	1
+NSpgid:	4400	1
+Threads:	1
+CapInh:	0000000000000000
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	1
+voluntary_ctxt_switches:	12

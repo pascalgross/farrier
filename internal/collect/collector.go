@@ -1,6 +1,10 @@
 package collect
 
-import "context"
+import (
+	"context"
+
+	"github.com/pascalgross/farrier/internal/policy"
+)
 
 // Collector produces one named section of a host's fact report.
 //
@@ -24,6 +28,28 @@ type Collector interface {
 	// reason in the journal, because a host missing one fact is far more useful than a host missing
 	// from the fleet list.
 	Collect(ctx context.Context) (any, error)
+}
+
+// PolicyGated is the optional half of the Collector seam, for a section a host may refuse to send.
+//
+// Most facts are not worth refusing: a unit list and a package count say nothing about a host that its
+// hostname does not. Some are — container names and command lines are considerably more revealing than
+// a unit list — and a host willing to report its package state has not thereby agreed to report those.
+// A collector that says so implements this, and Gather asks before collecting.
+//
+// It is an optional interface rather than a parameter on Collect so that adding an ordinary collector
+// stays a name and a function. It is asked of the policy rather than answered by the collector reading
+// the policy file itself, because a collector that called policy.Load would be reading the file a
+// second time, on its own schedule, with no guarantee of agreeing with the policy the rest of the
+// agent is enforcing at that moment — and a fact reported under a permission that was withdrawn two
+// minutes ago is a permission that was not withdrawn.
+//
+// A refused section is absent from the facts document, not empty. The host's policy travels in the
+// same heartbeat, so a client can say "this host does not report containers" rather than "this host
+// has none".
+type PolicyGated interface {
+	// PermittedBy reports whether the host's local policy allows this section to be reported.
+	PermittedBy(p policy.Policy) bool
 }
 
 // CollectorFunc adapts a function to the Collector interface.
