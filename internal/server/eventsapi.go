@@ -102,17 +102,26 @@ func (b *eventStream) broadcast(tenant store.TenantID, view eventView) {
 // eight seconds of backoff between them, rounded up. A budget shorter than the retries it is meant to
 // allow would turn "the relay was restarting" into a cancellation that looks like a relay fault.
 //
-// It is per sink and not per pass, which is the correction to an earlier version of this: one pass
-// covers the tenant webhook and every routed rule's mail, so a single aggregate budget meant a dead
-// webhook silently ate the alert mail behind it.
+// It is per sink and not per pass, so that a dead webhook cannot silently eat the alert mail behind
+// it — the two have nothing to do with each other and fail independently.
 const deliveryBudget = 60 * time.Second
 
-// maxOutboundInFlight caps the detached deliveries running at once.
+// outboundPassBudget bounds one detached pass end to end.
 //
-// Without it, a fleet flapping against a sink that is down converts every event into a goroutine that
-// lives for a minute, and the pile-up outlasts the incident that caused it. Past the cap a delivery is
-// dropped with a log line — which is the correct loss, because the event is already in the inbox and
-// the inbox is the delivery that was promised.
+// Every sink has its own budget, so this is not what stops a slow relay; it is what stops a pass that
+// is *not* talking to a sink at all. A pass reads the tenant row, the rules and their states, and an
+// unreachable database has no deadline of its own here — without this ceiling those reads would park
+// a goroutine until the process stopped. Three minutes is comfortably more than a webhook and a
+// handful of rules' mail need, and finite, which is the property that matters.
+const outboundPassBudget = 3 * time.Minute
+
+// maxOutboundInFlight caps the detached passes running at once.
+//
+// The cap and outboundPassBudget together are the whole bound: at worst this many goroutines for that
+// long. Without them, a fleet flapping against a sink that is down converts every event into a
+// goroutine, and the pile-up outlasts the incident that caused it. Past the cap a pass is refused with
+// a log line — which is the correct loss, because the event is already in the inbox and the inbox is
+// the delivery that was promised.
 const maxOutboundInFlight = 64
 
 // emit records an event durably, shows it to open tabs, and delivers it outside best-effort.
@@ -127,8 +136,8 @@ const maxOutboundInFlight = 64
 // emit is called from request handlers an agent is waiting on, and a sink that has gone away costs
 // its full timeout — three retries against a dead relay would otherwise add a minute to a heartbeat,
 // which is a control plane made slow by somebody else's mail server. The detachment is bounded and
-// drained: each pass carries outboundBudget and ListenAndServe waits for the outstanding ones, so a
-// shutdown does not abandon an alert mid-SMTP.
+// drained: each pass carries outboundPassBudget, no more than maxOutboundInFlight run at once, and
+// ListenAndServe waits for the outstanding ones so a shutdown does not abandon an alert mid-SMTP.
 //
 // The tenant is a parameter and not a convenience. An event goes to the endpoint and the tabs of its
 // own tenant, and to nowhere else, and it carries its tenant so that one which somehow arrived in the
@@ -177,7 +186,13 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 
 	s.events.broadcast(tenantID, view)
 
-	s.detach("event delivery", func(outCtx context.Context) { s.deliverOutside(outCtx, scoped, ev) })
+	// The refusal is logged by detach and otherwise ignored here, unlike in notifyAlert. A refused
+	// pass means the webhook and any event-routed mail did not go out, which leaves an event in the
+	// inbox with no delivery beside it — whereas a refused *alert* pass has a rule whose cooldown the
+	// evaluator has already stamped, so there is both somewhere to record it and an obligation to.
+	_, _ = s.detach("event delivery", func(outCtx context.Context) {
+		s.deliverOutside(outCtx, scoped, ev)
+	})
 }
 
 // detach runs work outside the caller's request, tracked so a shutdown can drain it.
@@ -191,19 +206,20 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 // safe — a counter going from zero back up while somebody is waiting on it is a documented misuse —
 // and it is also the honest behaviour: a delivery begun during shutdown would be cancelled seconds
 // later, and the event is in the inbox either way.
-func (s *Server) detach(what string, work func(context.Context)) {
+func (s *Server) detach(what string, work func(context.Context)) (started bool, reason string) {
 	s.outboundMu.Lock()
 	switch {
 	case s.draining:
 		s.outboundMu.Unlock()
-		slog.Warn("an outbound delivery was dropped because the control plane is stopping",
-			"delivery", what)
-		return
+		reason = "the control plane was stopping and did not start this delivery"
+		slog.Warn("an outbound delivery was dropped: "+reason, "delivery", what)
+		return false, reason
 	case s.inFlight >= maxOutboundInFlight:
 		s.outboundMu.Unlock()
-		slog.Warn("an outbound delivery was dropped: too many are already in flight",
+		reason = "too many deliveries were already in flight; this one was not started"
+		slog.Warn("an outbound delivery was dropped: "+reason,
 			"delivery", what, "limit", maxOutboundInFlight)
-		return
+		return false, reason
 	}
 	s.inFlight++
 	s.outbound.Add(1)
@@ -216,8 +232,11 @@ func (s *Server) detach(what string, work func(context.Context)) {
 			s.outboundMu.Unlock()
 			s.outbound.Done()
 		}()
-		work(s.outboundCtx)
+		passCtx, done := context.WithTimeout(s.outboundCtx, outboundPassBudget)
+		defer done()
+		work(passCtx)
 	}()
+	return true, ""
 }
 
 // deliverOutside posts the event to the tenant's webhook and mails the rules that route it.
