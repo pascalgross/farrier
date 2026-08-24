@@ -12,6 +12,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { ApiService } from './core/api.service';
 import { EventStream } from './core/event-stream';
+import { ToastStack } from './toasts/toast-stack';
 import { Whoami } from './core/api.models';
 import { describeError } from './core/errors';
 import { TokenStore } from './core/token-store';
@@ -27,6 +28,10 @@ import { TokenStore } from './core/token-store';
  * The toolbar names the fleet this credential reaches. It is not a switcher and there is nothing to
  * switch to: one credential reaches one fleet, so the name is there for the operator with two tabs
  * open, not to be clicked.
+ *
+ * The live feed is connected here and the toast stack is rendered here for the same reason: this is
+ * the only component that is always mounted, so it is the only place a notification can reach an
+ * operator who is on the fleet list rather than on the events page.
  */
 @Component({
   selector: 'farrier-root',
@@ -43,6 +48,7 @@ import { TokenStore } from './core/token-store';
     RouterLink,
     RouterLinkActive,
     RouterOutlet,
+    ToastStack,
   ],
   templateUrl: './app.html',
   styleUrl: './app.scss',

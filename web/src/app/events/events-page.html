@@ -52,15 +52,29 @@
   </mat-card-content>
 </mat-card>
 
-<mat-form-field appearance="outline" class="w-72">
-  <mat-label>Kind</mat-label>
-  <mat-select [ngModel]="kind()" (ngModelChange)="kind.set($event)">
-    <mat-option value="">Everything</mat-option>
-    @for (entry of kinds; track entry.value) {
-      <mat-option [value]="entry.value">{{ entry.label }}</mat-option>
-    }
-  </mat-select>
-</mat-form-field>
+<!--
+  Choosing a kind asks the control plane rather than sieving the feed in this tab. The feed holds the
+  newest two hundred events and the inbox holds a thousand, so a client-side filter answered "nothing
+  of this kind" about kinds that had simply been pushed off the end.
+-->
+<div class="flex flex-wrap items-center gap-4">
+  <mat-form-field appearance="outline" class="w-72">
+    <mat-label>Kind</mat-label>
+    <mat-select [ngModel]="kind()" (ngModelChange)="chooseKind($event)">
+      <mat-option value="">Everything</mat-option>
+      @for (entry of kinds; track entry.value) {
+        <mat-option [value]="entry.value">{{ entry.label }}</mat-option>
+      }
+    </mat-select>
+  </mat-form-field>
+
+  @if (filterError()) {
+    <p class="m-0 text-sm text-farrier-warn flex items-start gap-2">
+      <mat-icon class="!w-4 !h-4 !text-base" aria-hidden="true">error_outline</mat-icon>
+      <span>{{ filterError() }} What is below is only what this tab has seen.</span>
+    </p>
+  }
+</div>
 
 @if (shown().length === 0) {
   <mat-card class="max-w-2xl">

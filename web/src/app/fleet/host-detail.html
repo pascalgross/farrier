@@ -150,6 +150,26 @@
           <p class="m-0 mb-3 text-sm opacity-80">Nothing this host reported is in the failed state.</p>
         }
 
+        <!--
+          Its own line, in its own colour. A masked unit and a crashed unit are different problems,
+          and a page that painted both red — or, as this one did, showed only the second — teaches an
+          operator either to ignore the colour or to hunt for a fault in a service somebody switched
+          off on purpose.
+        -->
+        @if (unloadableUnits().length) {
+          <p class="m-0 mb-3 text-sm text-farrier-warn">
+            Not loaded:
+            @for (unit of unloadableUnits(); track unit.name) {
+              <span class="farrier-numeric">{{ unit.name }} ({{ unitLabel(unit) }})</span>
+              @if (!$last) { <span>, </span> }
+            }
+          </p>
+          <p class="m-0 mb-3 text-xs opacity-70">
+            These are not crashes. A masked unit is pinned off and a missing one has no unit file at
+            all, so neither will start and neither is a fault to chase in the service itself.
+          </p>
+        }
+
         @if (host.facts?.servicesTruncated) {
           <p class="m-0 mb-3 text-sm text-farrier-warn">
             This host's unit list was cut at the protocol's cap, in sorted order, so a failed unit

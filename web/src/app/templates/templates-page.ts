@@ -139,26 +139,42 @@ export class TemplatesPage {
   /**
    * Opens one version, defaulting to the latest.
    *
-   * The previous render is dropped as the page moves: a credential belonging to one template must not
-   * still be on screen while another is open, where somebody would eventually copy the wrong one.
+   * The whole render form is dropped as the page moves, the previous render included: a credential
+   * belonging to one template must not still be on screen while another is open, where somebody
+   * would eventually copy the wrong one.
    */
   protected open(name: string, version?: number): void {
-    this.rendered.set(null);
+    this.clearRenderForm();
     this.actionError.set('');
     this.api.template(name, version).subscribe({
-      next: (record) => {
-        this.opened.set(record);
-        this.renderParams.set({});
-      },
+      next: (record) => this.opened.set(record),
       error: (err: unknown) => this.actionError.set(describeError(err)),
     });
   }
 
-  /** Closes the open version, dropping any render with it. */
+  /** Closes the open version, dropping the render form and any render with it. */
   protected close(): void {
     this.opened.set(null);
-    this.rendered.set(null);
+    this.clearRenderForm();
     this.actionError.set('');
+  }
+
+  /**
+   * Drops everything the render form holds: placeholder values, fleet group, bootstrap template and
+   * the last render.
+   *
+   * One method because those four have to move together, and the bootstrap field is why. A render
+   * mints a live enrolment token, and `bootstrap` decides which template that token may request when
+   * a host enrols with it — so a name typed while template A was open and left in place would arm
+   * template B's freshly minted token with A's bootstrap, with nothing on screen having asked. The
+   * group has the same shape of consequence one step down: it decides which fleet group the host
+   * joins. Carrying either across a template switch is a setting the operator did not make.
+   */
+  private clearRenderForm(): void {
+    this.renderParams.set({});
+    this.renderGroup.set('');
+    this.renderBootstrap.set('');
+    this.rendered.set(null);
   }
 
   /** Loads the open template's body into the editor, as the starting point for its next version. */

@@ -14,6 +14,24 @@ const NOTIFY_KEY = 'farrier.desktopNotifications';
 const SEEN_KEY = 'farrier.lastSeenEvent';
 
 /**
+ * How many toasts are on screen at once before the oldest is dropped.
+ *
+ * Small on purpose. A host that reboots badly can move a dozen units in one heartbeat, and a stack
+ * that grew with the incident would cover the page an operator is trying to read during exactly that
+ * incident. Nothing is lost by dropping one: the inbox is the durable copy and the bell still counts.
+ */
+const TOAST_LIMIT = 3;
+
+/**
+ * How long one toast stays before it expires by itself, in milliseconds.
+ *
+ * Long enough to read a summary and reach for the link, short enough that a notification nobody
+ * acted on clears itself. A toast that waited for a dismissal would turn into a second, worse inbox
+ * — one whose contents nobody can search and everybody eventually clicks away unread.
+ */
+const TOAST_MILLISECONDS = 10_000;
+
+/**
  * The reconnect delays, in milliseconds, one per consecutive failure.
  *
  * Bounded and short at the start, because the commonest reason a stream drops is a control plane
@@ -40,9 +58,15 @@ const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 15_000, 30_000];
  * rather than being lost.
  *
  * **A notification is never actionable.** There is no approve-from-toast and no retry-from-toast here
- * or anywhere downstream of it. Clicking one focuses the tab; everything that changes state goes
- * through the admin API with its normal authentication, and a destructive job still needs its offline
- * signature and its second-person release. The notification's whole job is to make somebody look.
+ * or anywhere downstream of it. Clicking a desktop notification focuses the tab and an in-app toast
+ * carries at most a link to a page; everything that changes state goes through the admin API with its
+ * normal authentication, and a destructive job still needs its offline signature and its second-person
+ * release. The notification's whole job is to make somebody look.
+ *
+ * Delivery to an open tab is the toast below, not the desktop notification. The desktop one is
+ * optional, off by default and needs a permission the browser will only be asked for once — so an
+ * operator who declined it, or never found the switch, would otherwise get a silently incrementing
+ * badge and nothing else, which is precisely the operator issue #4 is about.
  */
 @Injectable({ providedIn: 'root' })
 export class EventStream {
@@ -63,6 +87,17 @@ export class EventStream {
 
   /** Whether the operator asked for desktop notifications, independent of whether the browser agrees. */
   private readonly wanted = signal(readStored(NOTIFY_KEY) === 'yes');
+
+  /** The events currently on screen as toasts, newest first. */
+  private readonly toasted = signal<FleetEvent[]>([]);
+
+  /**
+   * The expiry timers, by event id.
+   *
+   * Held rather than fired and forgotten, so that a dismissal, the stack's cap or a sign-out can
+   * cancel one. A timer that outlived its toast would remove whatever had taken its place.
+   */
+  private readonly toastTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** Aborts the in-flight stream when the token changes or the operator signs out. */
   private controller: AbortController | null = null;
@@ -91,6 +126,16 @@ export class EventStream {
 
   /** Whether the operator has asked for desktop notifications. */
   readonly desktopWanted = this.wanted.asReadonly();
+
+  /**
+   * The events to show as toasts, newest first.
+   *
+   * `FleetEvent[]` rather than a toast type of its own, and the absence is the design: a wrapper with
+   * an `action` field, or a callback, is the first half of the approve-from-toast button issue #4
+   * rules out. There is nothing here to hang one on, so adding one would have to be a deliberate
+   * change to this type rather than a component quietly passing a handler in.
+   */
+  readonly toasts = this.toasted.asReadonly();
 
   /**
    * How many events have arrived since the operator last opened the inbox.
@@ -132,6 +177,25 @@ export class EventStream {
     this.controller = null;
     this.live.set(false);
     this.feed.set([]);
+    // The toasts go with the feed. They are this fleet's incidents rendered over whatever is on
+    // screen, and leaving one up after a sign-out would put them in front of whoever signs in next.
+    for (const handle of this.toastTimers.values()) {
+      clearTimeout(handle);
+    }
+    this.toastTimers.clear();
+    this.toasted.set([]);
+  }
+
+  /**
+   * Takes one toast off the stack.
+   *
+   * Public because the dismiss control is on a component and the expiry timer is here, and both do
+   * exactly this. It is also the only thing a toast can ask of this service, which is the whole of
+   * what "a notification is never actionable" means in code.
+   */
+  dismissToast(id: string): void {
+    this.clearToastTimer(id);
+    this.toasted.update((held) => held.filter((event) => event.id !== id));
   }
 
   /** Marks everything currently in the feed as read. */
@@ -333,15 +397,53 @@ export class EventStream {
     if (incoming.length === 0) {
       return;
     }
-    this.feed.update((held) => {
-      const byId = new Map(held.map((event) => [event.id, event]));
-      for (const event of incoming) {
-        byId.set(event.id, event);
-      }
-      return [...byId.values()]
-        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
-        .slice(0, FEED_LIMIT);
-    });
+    this.feed.update((held) => mergeEvents(held, incoming).slice(0, FEED_LIMIT));
+  }
+
+  /**
+   * Announces one event that arrived live: a toast, and a desktop notification where one is wanted.
+   *
+   * Called only from the stream's frame handler and never from `merge`, and the difference matters.
+   * Merging happens on every reconnect, when the durable inbox is re-read in full; toasting from
+   * there would fill the screen with overnight's events every time a control plane restarted, which
+   * is how an operator learns to ignore the corner of the page these appear in.
+   */
+  private announce(event: FleetEvent): void {
+    this.raise(event);
+    this.notifyDesktop(event);
+  }
+
+  /**
+   * Puts one event on the toast stack, capped and self-expiring.
+   *
+   * Every kind, without an editorial filter. The vocabulary is closed and small, and a component
+   * that decided which kinds were worth interrupting somebody for would be a second alerting policy
+   * beside the one on the alerts page — undocumented, unconfigurable, and disagreeing with it.
+   */
+  private raise(event: FleetEvent): void {
+    if (this.toastTimers.has(event.id)) {
+      // Already on screen. The same event reaches this from a re-delivering stream and from a
+      // reconnect overlapping a live frame, and one incident must not stack twice.
+      return;
+    }
+    this.toastTimers.set(
+      event.id,
+      setTimeout(() => this.dismissToast(event.id), TOAST_MILLISECONDS),
+    );
+    const stacked = [event, ...this.toasted()];
+    for (const dropped of stacked.slice(TOAST_LIMIT)) {
+      this.clearToastTimer(dropped.id);
+    }
+    this.toasted.set(stacked.slice(0, TOAST_LIMIT));
+  }
+
+  /** Cancels one toast's expiry timer, so nothing fires against an id that is no longer on screen. */
+  private clearToastTimer(id: string): void {
+    const handle = this.toastTimers.get(id);
+    if (handle !== undefined) {
+      clearTimeout(handle);
+      this.toastTimers.delete(id);
+    }
   }
 
   /**
@@ -350,7 +452,7 @@ export class EventStream {
    * Tagged with the event id so that a browser which re-delivers, or a second tab of the same
    * console, replaces the notification rather than stacking a second copy of it.
    */
-  private announce(event: FleetEvent): void {
+  private notifyDesktop(event: FleetEvent): void {
     if (!this.wanted() || !supportsDesktopNotifications() || Notification.permission !== 'granted') {
       return;
     }
@@ -368,6 +470,24 @@ export class EventStream {
       // The event is in the feed either way, which is the delivery that was promised.
     }
   }
+}
+
+/**
+ * Merges event lists into one, newest first and de-duplicated on the event id.
+ *
+ * Exported because the feed is not the only place two sources of the same events meet: the events
+ * page merges a server-filtered inbox with the live stream's matching events, and an operator
+ * counting incidents must not count one twice because it arrived from both. Later sources win on a
+ * duplicate, which is what lets a fresh fetch correct a field a streamed copy carried.
+ */
+export function mergeEvents(...sources: FleetEvent[][]): FleetEvent[] {
+  const byId = new Map<string, FleetEvent>();
+  for (const source of sources) {
+    for (const event of source) {
+      byId.set(event.id, event);
+    }
+  }
+  return [...byId.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
 /** Reports whether this browser exposes the Notification API at all. */

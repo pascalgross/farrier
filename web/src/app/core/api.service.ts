@@ -141,10 +141,28 @@ export class ApiService {
    * This is the durable half of the notification design. The live stream tells a tab that happens to
    * be open; this tells the operator asking what they missed overnight, which is the question the
    * whole feature exists for.
+   *
+   * The kind is filtered here rather than in the browser, and the difference is not efficiency: the
+   * in-memory feed holds the newest two hundred events, so sieving it for a kind could only ever
+   * answer about the newest two hundred — and reported "nothing of this kind has happened" about
+   * kinds that had simply been pushed off the end.
+   *
+   * The limit is the caller's for the same reason `jobsAwaitingApproval` names one: the server's
+   * default is a tenth of the inbox and is right for "what is new", while a narrowed read is the
+   * request that wants depth. `store.MaxEventLimit` is the ceiling the control plane enforces.
    */
-  events(kind?: string): Observable<EventsResponse> {
-    const query = kind ? `?kind=${encodeURIComponent(kind)}` : '';
-    return this.http.get<EventsResponse>(`/api/v1/events${query}`, { headers: this.headers() });
+  events(kind?: string, limit?: number): Observable<EventsResponse> {
+    const query = new URLSearchParams();
+    if (kind) {
+      query.set('kind', kind);
+    }
+    if (limit) {
+      query.set('limit', String(limit));
+    }
+    const suffix = query.toString();
+    return this.http.get<EventsResponse>(`/api/v1/events${suffix ? `?${suffix}` : ''}`, {
+      headers: this.headers(),
+    });
   }
 
   /** Fetches every host with a failed unit, without opening hosts one at a time. */

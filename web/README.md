@@ -59,7 +59,16 @@ local-minus-server, so a host running ahead was described as running behind. The
 number was right, and only the word was wrong — which is exactly the kind of thing a spec catches and a
 review does not.
 
-There are no component tests. At this stage they would be testing rendering rather than behaviour, and
-the behaviour that matters is on the Go side and covered there. CI runs the specs, the linter and the
-production build, which between them catch the failures that actually happen: a template type error, an
-input that is never bound, a missing doc comment, a bundle that has doubled in size.
+Component specs exist only where the thing worth pinning lives in a template rather than behind it,
+which is a narrow set and deliberately stays narrow. Two qualify today. `services-page.spec.ts` pins
+what each number in the header counts: the list holds hosts that are failing, hosts whose unit list was
+truncated and hosts nothing is known about, and reading its length as the failing count made one
+failure on a fleet of three hundred read as trouble on six machines. `toast-stack.spec.ts` pins that a
+notification is never actionable — it walks every interactive element the toast renders and fails on
+anything that is not the dismissal or a link to a page, because the failure it guards against is
+somebody adding a control, not somebody changing one.
+
+Everything else the specs cover is a pure function: the formatters, the unit-condition table in
+`core/unit-state.ts`, and the event merge. CI runs the specs, the linter and the production build,
+which between them catch the failures that actually happen: a template type error, an input that is
+never bound, a missing doc comment, a bundle that has doubled in size.
