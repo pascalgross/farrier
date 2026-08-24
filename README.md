@@ -8,8 +8,8 @@ By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
-> Farrier has **shipped phases 1, 2 and 3, and there is no phase 4** — the sequence ended where it was
-> always going to end, at the tier that is never built.
+> Farrier has **shipped phases 1, 2 and 3, and there is no phase 4** — the sequence ends where the
+> product does, and it stops there on purpose.
 >
 > **Phase 1 — the intent catalogue.** All ten catalogue members have an executor: the four read-only
 > operations, the one routine operation, and all five destructive ones — apply every update, start,
@@ -41,9 +41,13 @@ Documentation: [farrier.tools](https://farrier.tools).
 >   behind every guardrail [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception)
 >   lists — and cloud-init does the applying. It is the enrolment-time exception the second paragraph
 >   of the guarantee names, which is why that paragraph is never omitted.
-> - **Never** — Tier 3, pushing configuration to a host that is already enrolled: that is the line
->   between fleet management without a remote shell and a remote shell with extra steps. See the
->   guarantee below.
+>
+> **The product ends at the enrolment boundary, and that is what it is for.** Once a host is enrolled,
+> the control plane may ask it for one of ten typed operations and can never hand it new instructions.
+> Pushing configuration to a running host — Tier 3 — is the single capability that would leave the
+> guarantee below unstateable, so the product stops just short of it. Every competitor that crossed
+> that line traded the claim for the feature. Keeping the claim is what lets a stranger audit it in an
+> afternoon, and it is the reason to choose Farrier at all.
 >
 > Observability ([#14](https://github.com/pascalgross/farrier/issues/14)) and the signing backends that
 > keep a key off a laptop ([#11](https://github.com/pascalgross/farrier/issues/11)) have landed too, and
