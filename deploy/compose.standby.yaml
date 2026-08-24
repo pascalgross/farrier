@@ -1,0 +1,74 @@
+# Optional: a streaming replica of the control plane's database.
+#
+#   docker compose -f compose.yaml -f compose.standby.yaml up -d
+#
+# The primary in compose.yaml is already configured for this — WAL level, walsenders, replication slots,
+# wal_log_hints for pg_rewind, and a replication role that pg_hba already lets in. Nothing here changes
+# the primary, and nothing here needs it restarted, which is the reason those settings are on from the
+# first start rather than added when a replica is finally wanted.
+#
+# What this gives you is a second copy of the database, streaming, readable, and a `pg_ctl promote` away
+# from being a primary. What it does not give you is failover: nothing here promotes anything, and
+# farrier-server is not pointed at the standby. A pair that promotes itself is a pair that becomes two
+# primaries during a network partition, and reconciling those means deciding which fleet's job results
+# to discard. See README.md for the promotion sequence, which is four commands and a decision.
+#
+# Nor is it a backup. A standby replicates a mistaken DELETE as faithfully as anything else. Point
+# archive_command at somewhere durable — postgres/farrier.conf, where it is deliberately a no-op — and
+# take base backups, if what you want is to be able to go back to yesterday.
+
+services:
+  postgres-standby:
+    # The same major version as the primary, necessarily: a standby replays the primary's WAL, and WAL
+    # is not compatible across major versions. Upgrading the pair means upgrading the primary and
+    # rebuilding this one, in that order.
+    image: postgres:17
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # As the postgres user rather than as root, because everything this container does — pg_basebackup
+    # first, then the server — must own its files as that user. The image's own entry point drops
+    # privileges when it starts as root, but our entry point runs before it does.
+    user: postgres
+    entrypoint: ["/usr/local/bin/farrier-standby-entrypoint.sh"]
+    environment:
+      FARRIER_PRIMARY_HOST: postgres
+      FARRIER_REPLICATION_USER: ${FARRIER_REPLICATION_USER:-replicator}
+      FARRIER_REPLICATION_PASSWORD: ${FARRIER_REPLICATION_PASSWORD:?set FARRIER_REPLICATION_PASSWORD in .env}
+      # The slot this standby holds on the primary. A slot is what stops the primary recycling WAL this
+      # standby has not read yet; it is also what makes the primary fill its disk if this standby is
+      # abandoned rather than removed. Drop it on the primary when you retire a replica:
+      #   SELECT pg_drop_replication_slot('standby1');
+      FARRIER_STANDBY_SLOT: ${FARRIER_STANDBY_SLOT:-standby1}
+      # Where the replication password is kept, named explicitly rather than left to $HOME. libpq reads
+      # it at every connection attempt — the base backup's, and every reconnection the walreceiver makes
+      # afterwards — which is what keeps the password out of primary_conninfo, and so out of this
+      # standby's own base backups and out of anything that copies its data directory.
+      PGPASSFILE: /var/lib/postgresql/.pgpass
+    volumes:
+      - postgres-standby-data:/var/lib/postgresql/data
+      - ./postgres/standby-entrypoint.sh:/usr/local/bin/farrier-standby-entrypoint.sh:ro
+      # The same settings file the primary reads: the base backup copies the primary's postgresql.conf,
+      # include line and all, so without this mount the standby starts with a configuration that refers
+      # to a file it does not have. include_if_exists would let that pass silently, which is precisely
+      # how a promoted standby turns out to have none of the settings the primary had.
+      - ./postgres/farrier.conf:/etc/postgresql/farrier.conf:ro
+    healthcheck:
+      # As on the primary, over TCP. pg_isready reports a standby in recovery as accepting connections,
+      # which is what "up" means here; whether it is actually keeping up is pg_stat_replication on the
+      # primary, and README.md has the query.
+      test:
+        ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${FARRIER_DB_USER:-farrier} -d ${FARRIER_DB_NAME:-farrier}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # Longer than the primary's: the first start of this container is a base backup of the whole
+      # cluster, and a health check that gave up on it would restart the container mid-copy, for ever.
+      start_period: 10m
+    stop_grace_period: 1m
+    shm_size: 256mb
+    networks: [farrier]
+
+volumes:
+  postgres-standby-data:

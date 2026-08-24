@@ -3,6 +3,10 @@
 Everything needed to produce the `farrier-agent` Debian package and the signed APT repository it is
 served from.
 
+The **control plane** is packaged separately and elsewhere: a container image and a Compose stack in
+[`../deploy`](../deploy/README.md). Nothing in this directory is about it, and no image here carries the
+agent — a host managed from inside a container on the control plane would be the control plane.
+
 This is built in phase 0, before there is anything to carry, because packaging is where greenfield
 agent projects lose weeks. Proving that the `.deb` installs, the system user is created, the hardened
 unit starts, the conffiles survive an upgrade and the repository verifies is much cheaper against a

@@ -140,7 +140,8 @@ a document rather than an argument.
 | **Transport** | HTTPS long-poll with mTLS. Agent to server, never the reverse |
 
 Open-source software is installed by strangers who close the tab on friction, and a four-service
-Compose stack is friction. Sharing one language between both sides also means the intent catalogue and
+Compose stack is friction. The stack in [`deploy/`](deploy/README.md) is those two services and nothing
+else — no cache, no queue, no worker, no proxy of its own. Sharing one language between both sides also means the intent catalogue and
 signature verification are *literally the same code* on the agent and on the server, rather than two
 implementations that agree until they don't.
 
@@ -160,6 +161,7 @@ stable and oldstable.** Ubuntu 20.04 is excluded as ESM-only.
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The guarantee, the three mechanisms, the permanently-refused list, and an honest statement of what Farrier does *not* defend against |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | The agent protocol, specified well enough to reimplement |
 | [`docs/EXTENDING.md`](docs/EXTENDING.md) | The seams that are open, and the ones that are closed on purpose |
+| [`deploy/README.md`](deploy/README.md) | The control plane in containers: the image, the Compose stack, Traefik without terminating TLS, Let's Encrypt for the interface, and a streaming replica |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | DCO sign-off, English, and the comment rule |
 | [`TRADEMARK.md`](TRADEMARK.md) | What you may call your fork |
 
@@ -172,10 +174,11 @@ make guarantee      # the tests that enforce docs/SECURITY.md §1
 make lint           # golangci-lint + doccheck
 make web            # the Angular application, embedded into farrier-server
 make deb            # the farrier-agent .deb via nfpm
+make image          # the farrier-server container image
 ```
 
 Go 1.26 or newer. `make deb` additionally needs [`nfpm`](https://nfpm.goreleaser.com/);
-`make web` needs Node and pnpm.
+`make web` needs Node and pnpm; `make image` needs Docker.
 
 ## Licence, and why it will not change
 
