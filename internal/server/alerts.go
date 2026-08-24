@@ -374,7 +374,10 @@ func (s *Server) notifyAlert(ctx context.Context, scoped store.Scoped, rule stor
 	ev notify.Event) {
 
 	s.emit(ctx, scoped.Tenant(), ev)
-	s.mailRule(ctx, scoped, rule, ev)
+	// Detached like every other delivery that leaves the process, and here the reason is the
+	// evaluator's own context: it is cancelled by the shutdown signal, so mailing on it directly
+	// would abort exactly the alert a stopping control plane most needs to have sent.
+	s.detach(func(outCtx context.Context) { s.mailRule(outCtx, scoped, rule, ev) })
 }
 
 // mailRule sends one event to a rule's recipients, when there are any and a relay exists.

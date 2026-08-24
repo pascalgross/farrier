@@ -278,27 +278,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 		ttl = time.Duration(req.TTLSeconds) * time.Second
 	}
 
-	if req.Bootstrap != "" {
-		// The template must exist now, and its latest version must be signed. Checking at mint time is
-		// operator protection rather than security — enrolment checks again — but a token that names a
-		// template no enrolment can be issued would fail a machine in a datacentre instead of a person
-		// at a keyboard, which is the expensive place to find out.
-		record, err := who.Store.GetTemplateVersion(r.Context(), req.Bootstrap, 0)
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			writeError(w, http.StatusNotFound, "not_found",
-				"no template named "+req.Bootstrap+" exists in this fleet")
-			return
-		case err != nil:
-			slog.Error("could not read a template for a token", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
-			return
-		case !record.Signed():
-			writeError(w, http.StatusConflict, "unsigned_template",
-				"the latest version of "+req.Bootstrap+" is not signed, so no enrolment could be "+
-					"issued it. Sign it with `farrier sign-template` and store the signed version first.")
-			return
-		}
+	if !checkBootstrapIsIssuable(w, r, who, req.Bootstrap) {
+		return
 	}
 
 	token, hash, err := NewEnrollmentToken()
@@ -386,4 +367,37 @@ func (s *Server) handleCatalogue(w http.ResponseWriter, _ *http.Request, _ opera
 			"that adds to it; new intents arrive only as reviewed source changes. The refused list " +
 			"will never be implemented — see docs/SECURITY.md.",
 	})
+}
+
+// checkBootstrapIsIssuable reports whether a token may name this template, answering the caller if not.
+//
+// The template must exist now and its latest version must be signed. Checking at mint time is operator
+// protection rather than security — enrolment checks again, against the host's own trusted-signers,
+// which is where the decision actually lives — but a token that names a template no enrolment can be
+// issued would fail a machine in a datacentre instead of a person at a keyboard, which is the expensive
+// place to find out.
+//
+// Shared by the two places that mint a token, and shared deliberately: the render endpoint mints one
+// too, and a check that lived in only one of them would be a check the other silently skipped.
+func checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request, who operator, name string) bool {
+	if name == "" {
+		return true
+	}
+	record, err := who.Store.GetTemplateVersion(r.Context(), name, 0)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found",
+			"no template named "+name+" exists in this fleet")
+		return false
+	case err != nil:
+		slog.Error("could not read a template for a token", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+		return false
+	case !record.Signed():
+		writeError(w, http.StatusConflict, "unsigned_template",
+			"the latest version of "+name+" is not signed, so no enrolment could be issued it. "+
+				"Sign it with `farrier sign-template` and store the signed version first.")
+		return false
+	}
+	return true
 }

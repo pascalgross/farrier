@@ -185,12 +185,14 @@ export class TemplatesPage {
     this.api
       .createTemplate({ name: this.draftName().trim(), body: this.draftBody() })
       .subscribe({
-        next: (record) => {
+        next: (stored) => {
           this.busy.set(false);
-          this.opened.set(record);
-          this.rendered.set(null);
-          this.renderParams.set({});
           this.reload();
+          // Re-read rather than opening the create response. That response confirms what was stored
+          // and does not echo the body, so trusting it would leave the pane blank and the editor
+          // holding nothing to start the next version from. Re-reading is also the only way to be
+          // looking at what the control plane holds rather than at what this page sent.
+          this.open(stored.name, stored.version);
         },
         error: (err: unknown) => {
           this.busy.set(false);

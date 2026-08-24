@@ -17,6 +17,7 @@ import {
   RenderTemplateRequest,
   RenderedTemplate,
   ServiceHistoryResponse,
+  StoredTemplateVersion,
   TemplateVersion,
   TemplatesResponse,
   Whoami,
@@ -203,8 +204,8 @@ export class ApiService {
    * There is no update method and no delete, which is the storage model rather than an omission: a
    * host's bootstrap record names a version and must resolve to the bytes that actually ran.
    */
-  createTemplate(request: CreateTemplateRequest): Observable<TemplateVersion> {
-    return this.http.post<TemplateVersion>('/api/v1/templates', request, {
+  createTemplate(request: CreateTemplateRequest): Observable<StoredTemplateVersion> {
+    return this.http.post<StoredTemplateVersion>('/api/v1/templates', request, {
       headers: this.headers(),
     });
   }

@@ -98,10 +98,10 @@ func (b *eventStream) broadcast(tenant store.TenantID, view eventView) {
 
 // outboundBudget bounds one detached delivery pass: the webhook and any alert mail, retries included.
 //
-// Sized from the retry policy rather than guessed — three attempts at a ten-to-fifteen-second sink
-// plus the backoff between them — because a budget shorter than the retries it is meant to allow
-// would turn "the relay was restarting" into a cancellation that looks like a relay fault.
-const outboundBudget = 90 * time.Second
+// Sized from the retry policy rather than guessed — three attempts at a fifteen-second sink plus the
+// eight seconds of backoff between them — because a budget shorter than the retries it is meant to
+// allow would turn "the relay was restarting" into a cancellation that looks like a relay fault.
+const outboundBudget = 60 * time.Second
 
 // emit records an event durably, shows it to open tabs, and delivers it outside best-effort.
 //
@@ -165,12 +165,22 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 
 	s.events.broadcast(tenantID, view)
 
+	s.detach(func(outCtx context.Context) { s.deliverOutside(outCtx, scoped, ev) })
+}
+
+// detach runs one delivery pass outside the caller's request, tracked so a shutdown can drain it.
+//
+// The context it hands over is derived from the server's own rather than from the caller's, which is
+// the whole point: emit is called from handlers an agent is waiting on and from the evaluator's tick,
+// and neither should be able to end a delivery early or be held open by one. The budget bounds a full
+// retry sequence; drainOutbound bounds how long a stopping process honours it.
+func (s *Server) detach(work func(context.Context)) {
 	s.outbound.Add(1)
 	go func() {
 		defer s.outbound.Done()
-		outCtx, done := context.WithTimeout(context.WithoutCancel(ctx), outboundBudget)
+		outCtx, done := context.WithTimeout(s.outboundCtx, outboundBudget)
 		defer done()
-		s.deliverOutside(outCtx, scoped, ev)
+		work(outCtx)
 	}()
 }
 
@@ -181,13 +191,15 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 func (s *Server) deliverOutside(ctx context.Context, scoped store.Scoped, ev notify.Event) {
 	tenantID := scoped.Tenant()
 
-	tenant, err := s.cfg.Store.GetTenant(ctx, tenantID)
-	if err != nil {
-		slog.Warn("could not read a tenant to deliver its events",
+	// The webhook read is allowed to fail without taking mail with it. The two deliveries have
+	// nothing to do with each other, and an unreadable tenant row silently suppressing every alert
+	// mail for an event — with nothing stamped on the rule to say so — is the failure this whole
+	// section exists to avoid.
+	switch tenant, err := s.cfg.Store.GetTenant(ctx, tenantID); {
+	case err != nil:
+		slog.Warn("could not read a tenant to deliver its events to a webhook",
 			"tenant", tenantID, "kind", ev.Kind, "error", err)
-		return
-	}
-	if tenant.WebhookURL != "" {
+	case tenant.WebhookURL != "":
 		// Constructed per event rather than cached. Events are rare, and a cache keyed on a URL an
 		// administrator can change is a cache that eventually posts a customer's events to an
 		// endpoint they have already revoked.

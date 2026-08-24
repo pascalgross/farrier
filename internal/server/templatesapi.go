@@ -374,8 +374,25 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, wh
 		return
 	}
 
+	// Everything that can refuse this request runs before anything is minted. A token is a live
+	// credential the moment it exists, and one minted for a render that then failed on a typo is a
+	// credential nobody was shown, nobody can revoke by name, and nobody knows is there — so the
+	// substitution is rehearsed against a placeholder first, and the real token replaces it only once
+	// the whole render is known to succeed.
+	mints := usesToken(string(body))
+	if mints {
+		params[provision.TokenPlaceholder] = "rehearsal"
+	}
+	if _, err := provision.Render(string(body), params); err != nil {
+		writeError(w, http.StatusBadRequest, "unrenderable", err.Error())
+		return
+	}
+	if req.Token != nil && !checkBootstrapIsIssuable(w, r, who, req.Token.Bootstrap) {
+		return
+	}
+
 	var tokenExpiresAt *time.Time
-	if usesToken(string(body)) {
+	if mints {
 		token, expires, err := s.mintRenderToken(r, who, record.Name, req.Token)
 		if err != nil {
 			slog.Error("could not mint an enrolment token for a render",
@@ -390,6 +407,11 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, wh
 
 	rendered, err := provision.Render(string(body), params)
 	if err != nil {
+		// Unreachable in practice: the rehearsal above ran the same substitution over the same body
+		// with the same parameter names. Handled rather than ignored, because "unreachable" is a
+		// claim about today's Render and the credential has already been minted by this point.
+		slog.Error("a rehearsed render failed on its second pass",
+			"template", record.Name, "version", record.Version, "error", err)
 		writeError(w, http.StatusBadRequest, "unrenderable", err.Error())
 		return
 	}

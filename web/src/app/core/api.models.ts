@@ -700,6 +700,32 @@ export interface TemplateVersion {
   warnings: string[];
 }
 
+/**
+ * What a save answers with.
+ *
+ * Narrower than `TemplateVersion` on purpose, and the narrowness is the server's rather than this
+ * file's: the create response confirms what was stored and deliberately does not echo the body back,
+ * because a body is where operators put the things the warnings are about. A client that wants the
+ * whole version reads it, which is also the only way to be sure it is looking at what was stored
+ * rather than at what it sent.
+ */
+export interface StoredTemplateVersion {
+  /** The template's name. */
+  name: string;
+
+  /** The version just written. */
+  version: number;
+
+  /** Whether it carries an offline signature. */
+  signed: boolean;
+
+  /** The placeholder names the body substitutes. */
+  placeholders: string[];
+
+  /** Secret shapes found in the body, with the consequence spelled out. */
+  warnings: string[];
+}
+
 /** The body of `POST /api/v1/templates`. */
 export interface CreateTemplateRequest {
   /** The template's name; an existing name stores the next version of it. */

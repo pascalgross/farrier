@@ -492,3 +492,84 @@ func sealForHarness(t *testing.T, h *harness, body string) []byte {
 	}
 	return sealed
 }
+
+// countTokens reports how many enrolment tokens this fleet holds.
+func (h *harness) countTokens(t *testing.T) int {
+	t.Helper()
+	tokens, err := h.scoped().ListEnrollmentTokens(context.Background())
+	if err != nil {
+		t.Fatalf("listing tokens: %v", err)
+	}
+	return len(tokens)
+}
+
+// TestARefusedRenderMintsNoToken keeps a failed render from leaving a live credential behind.
+//
+// A render that cannot finish is an ordinary mistake — a placeholder nobody filled in, a bootstrap
+// named with a typo — and the operator sees an error and tries again. What must not happen is a
+// working enrolment token being minted first and then orphaned by the failure: nobody was shown it,
+// nobody can revoke it by name because nobody knows it exists, and it is valid until it expires.
+func TestARefusedRenderMintsNoToken(t *testing.T) {
+	h := newHarness(t)
+	h.saveTemplate(t, h.adminToken, map[string]any{"name": "standard-server", "body": templateBody})
+	before := h.countTokens(t)
+
+	// A missing placeholder: the body needs a hostname and this render supplies nothing.
+	status, raw := h.adminJSON(t, h.adminToken, http.MethodPost,
+		"/api/v1/templates/standard-server/render", map[string]any{"params": map[string]string{}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("a render with no hostname answered %d %s", status, raw)
+	}
+	if after := h.countTokens(t); after != before {
+		t.Fatalf("a refused render minted %d token(s)", after-before)
+	}
+
+	// A bootstrap the fleet does not have: refused for the same reason a mint would be, and before
+	// anything is minted.
+	status, raw = h.adminJSON(t, h.adminToken, http.MethodPost,
+		"/api/v1/templates/standard-server/render", map[string]any{
+			"params": map[string]string{"hostname": "web-01"},
+			"token":  map[string]any{"bootstrap": "no-such-template"},
+		})
+	if status != http.StatusNotFound {
+		t.Fatalf("a render naming an unknown bootstrap answered %d %s", status, raw)
+	}
+	if after := h.countTokens(t); after != before {
+		t.Fatalf("a render refused for its bootstrap minted %d token(s)", after-before)
+	}
+
+	// And the same request without the bad bootstrap does mint one, so the checks above are not
+	// passing because rendering is broken.
+	status, raw = h.adminJSON(t, h.adminToken, http.MethodPost,
+		"/api/v1/templates/standard-server/render", map[string]any{
+			"params": map[string]string{"hostname": "web-01"},
+		})
+	if status != http.StatusOK {
+		t.Fatalf("a complete render answered %d %s", status, raw)
+	}
+	if after := h.countTokens(t); after != before+1 {
+		t.Fatalf("a successful render minted %d token(s)", after-before)
+	}
+}
+
+// TestARenderRefusesAnUnsignedBootstrap applies the mint-time check to the second place that mints.
+//
+// A token may only name a template an enrolment could actually be issued, and an unsigned one cannot
+// be: the agent verifies a bootstrap against its own trusted-signers, which this control plane holds
+// no key for. Catching it here fails a person at a keyboard instead of a machine in a datacentre.
+func TestARenderRefusesAnUnsignedBootstrap(t *testing.T) {
+	h := newHarness(t)
+	h.saveTemplate(t, h.adminToken, map[string]any{"name": "standard-server", "body": templateBody})
+
+	status, raw := h.adminJSON(t, h.adminToken, http.MethodPost,
+		"/api/v1/templates/standard-server/render", map[string]any{
+			"params": map[string]string{"hostname": "web-01"},
+			"token":  map[string]any{"bootstrap": "standard-server"},
+		})
+	if status != http.StatusConflict {
+		t.Fatalf("a render naming an unsigned bootstrap answered %d %s", status, raw)
+	}
+	if !strings.Contains(string(raw), "sign-template") {
+		t.Fatalf("the refusal does not name the way out: %s", raw)
+	}
+}

@@ -359,3 +359,77 @@ func TestAnUndeliverableAlertSaysSoOnTheRule(t *testing.T) {
 		t.Fatalf("the recorded reason does not name the missing relay: %q", rule.LastDeliveryError)
 	}
 }
+
+// TestSilencingARuleKeepsEverythingElseAboutIt pins what PATCH means on an alerting rule.
+//
+// `{"enabled": false}` is how somebody silences a rule during an incident, and it is the request most
+// likely to be sent by hand. Under a body of plain values it decoded as "threshold zero, no cooldown,
+// no recipients" and the update wrote all three — so the rule came back after the incident silenced
+// *and* stripped of its mailing list, with nothing in the request that asked for either.
+func TestSilencingARuleKeepsEverythingElseAboutIt(t *testing.T) {
+	h := newHarness(t)
+	status, raw := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/alerts", map[string]any{
+		"condition": "host_silent", "threshold": 30, "cooldownSeconds": 900,
+		"emailTo": []string{"oncall@example.com"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("creating the rule: %d %s", status, raw)
+	}
+	var created struct {
+		// ID identifies the rule.
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decoding the rule: %v", err)
+	}
+
+	status, raw = h.adminJSON(t, h.adminToken, http.MethodPatch,
+		"/api/v1/alerts/"+created.ID, map[string]any{"enabled": false})
+	if status != http.StatusOK {
+		t.Fatalf("silencing the rule: %d %s", status, raw)
+	}
+
+	var after struct {
+		// Threshold is the minutes-silent line.
+		Threshold int `json:"threshold"`
+
+		// CooldownSeconds bounds re-notification.
+		CooldownSeconds int `json:"cooldownSeconds"`
+
+		// EmailTo lists the recipients.
+		EmailTo []string `json:"emailTo"`
+
+		// Enabled reports whether the rule is live.
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &after); err != nil {
+		t.Fatalf("decoding the update: %v", err)
+	}
+	switch {
+	case after.Enabled:
+		t.Fatal("the rule is still enabled")
+	case after.Threshold != 30:
+		t.Fatalf("the threshold changed to %d", after.Threshold)
+	case after.CooldownSeconds != 900:
+		t.Fatalf("the cooldown changed to %d", after.CooldownSeconds)
+	case len(after.EmailTo) != 1 || after.EmailTo[0] != "oncall@example.com":
+		t.Fatalf("the recipients changed to %v", after.EmailTo)
+	}
+
+	// An explicit empty array still clears them: absent means unchanged, and present means what it
+	// says. Without this the fix would have made recipients impossible to remove.
+	status, raw = h.adminJSON(t, h.adminToken, http.MethodPatch,
+		"/api/v1/alerts/"+created.ID, map[string]any{"emailTo": []string{}})
+	if status != http.StatusOK {
+		t.Fatalf("clearing the recipients: %d %s", status, raw)
+	}
+	if err := json.Unmarshal(raw, &after); err != nil {
+		t.Fatalf("decoding the update: %v", err)
+	}
+	if len(after.EmailTo) != 0 {
+		t.Fatalf("an explicit empty list did not clear the recipients: %v", after.EmailTo)
+	}
+	if after.Threshold != 30 {
+		t.Fatalf("clearing the recipients changed the threshold to %d", after.Threshold)
+	}
+}

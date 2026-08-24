@@ -141,6 +141,16 @@ type Server struct {
 	// outbound counts the deliveries running detached from the request that produced them, so a
 	// shutdown drains them rather than abandoning an alert mail mid-conversation.
 	outbound sync.WaitGroup
+
+	// outboundCtx is the parent of every detached delivery.
+	//
+	// It exists so that a shutdown ends them at a moment this process chooses, rather than whenever
+	// the supervisor loses patience: the listener stops, the drain waits, and anything still going
+	// after the grace period is cancelled with a log line saying so.
+	outboundCtx context.Context
+
+	// outboundStop cancels outboundCtx.
+	outboundStop context.CancelFunc
 }
 
 // New builds a server from a configuration.
@@ -182,6 +192,9 @@ func New(cfg Config) (*Server, error) {
 		paths:        http.NewServeMux(),
 		allow:        map[string][]string{},
 	}
+	// Background rather than derived from a request or from ListenAndServe's context: a detached
+	// delivery must outlive the request that caused it, and must still be cancellable as a group.
+	s.outboundCtx, s.outboundStop = context.WithCancel(context.Background())
 	s.routes()
 	return s, nil
 }
@@ -371,16 +384,45 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			"with client certificates, which do not exist without TLS")
 	}
 	err := srv.ListenAndServeTLS("", "")
-
-	// Deliveries beyond the inbox run detached from the request that produced them, so the process
-	// must not exit while one is in flight: an alert mail abandoned mid-SMTP is precisely the
-	// delivery whose absence somebody would trust. Each carries outboundBudget, so this drains.
-	s.outbound.Wait()
+	s.drainOutbound()
 
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
+}
+
+// outboundDrainGrace is how long a stopping control plane waits for its detached deliveries.
+//
+// Deliveries beyond the inbox run detached from the request that produced them, so the process must
+// not simply exit while one is in flight: an alert mail abandoned mid-SMTP is precisely the delivery
+// whose absence somebody would trust. It must not wait indefinitely either — a full retry sequence
+// against a hanging relay outlasts every reasonable stop timeout, and a service killed by its
+// supervisor is a service that logged nothing about why.
+const outboundDrainGrace = 15 * time.Second
+
+// drainOutbound waits for the detached deliveries, then cancels the ones that are still going.
+//
+// The second wait is bounded by the sinks themselves rather than by another timer: cancelling the
+// group makes the webhook return at once and makes the retry loop stop between attempts, and an SMTP
+// conversation already in progress finishes inside the deadline it set on its own connection.
+func (s *Server) drainOutbound() {
+	done := make(chan struct{})
+	go func() {
+		s.outbound.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(outboundDrainGrace):
+	}
+
+	slog.Warn("event deliveries are still running at shutdown; cancelling them",
+		"waited", outboundDrainGrace)
+	s.outboundStop()
+	<-done
 }
 
 // agentContextKey is the type of the context key carrying an authenticated host.

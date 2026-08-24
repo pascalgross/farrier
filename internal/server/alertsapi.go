@@ -71,33 +71,75 @@ func toAlertRuleView(r store.AlertRule) alertRuleView {
 }
 
 // alertRuleRequest is the body of POST /api/v1/alerts and PATCH /api/v1/alerts/{id}.
+//
+// Every changeable field is a pointer, and that is what makes PATCH mean what the method says. With
+// plain values, `{"enabled": false}` — the obvious way to silence a rule during an incident — decodes
+// with a zero threshold, a zero cooldown and no recipients, and the update writes all three: the rule
+// is silenced and its mailing list is gone, with nothing in the request that asked for that. An absent
+// field now leaves the stored value alone.
 type alertRuleRequest struct {
 	// Condition is what to watch; required on create, refused on update.
 	Condition string `json:"condition,omitempty"`
 
-	// Threshold parameterises the condition.
-	Threshold int `json:"threshold"`
+	// Threshold parameterises the condition. Absent means zero on create, unchanged on update.
+	Threshold *int `json:"threshold,omitempty"`
 
-	// CooldownSeconds bounds re-notification, zero for the server default.
-	CooldownSeconds int `json:"cooldownSeconds"`
+	// CooldownSeconds bounds re-notification; zero is the server default, absent is unchanged.
+	CooldownSeconds *int `json:"cooldownSeconds,omitempty"`
 
-	// EmailTo lists mail recipients, empty for none.
-	EmailTo []string `json:"emailTo"`
+	// EmailTo lists mail recipients. An explicit empty array clears them; absent leaves them.
+	EmailTo *[]string `json:"emailTo,omitempty"`
 
-	// Enabled defaults to true on create; explicit on update.
+	// Enabled defaults to true on create and is unchanged when absent on update.
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
-// validateAlertRuleRequest checks the fields create and update share.
-func validateAlertRuleRequest(req alertRuleRequest, condition store.AlertCondition) string {
-	if condition.Evaluated() && req.Threshold < 1 {
+// resolvedRule is a rule's changeable fields after a request has been applied to what was stored.
+type resolvedRule struct {
+	// Threshold parameterises the condition.
+	Threshold int
+
+	// CooldownSeconds bounds re-notification.
+	CooldownSeconds int
+
+	// EmailTo lists mail recipients.
+	EmailTo []string
+
+	// Enabled reports whether the rule is live.
+	Enabled bool
+}
+
+// resolve applies a request to a base, which is the stored rule on update and the zero value on create.
+func (r alertRuleRequest) resolve(base resolvedRule) resolvedRule {
+	if r.Threshold != nil {
+		base.Threshold = *r.Threshold
+	}
+	if r.CooldownSeconds != nil {
+		base.CooldownSeconds = *r.CooldownSeconds
+	}
+	if r.EmailTo != nil {
+		base.EmailTo = *r.EmailTo
+	}
+	if r.Enabled != nil {
+		base.Enabled = *r.Enabled
+	}
+	return base
+}
+
+// validateAlertRule checks the resolved fields create and update share.
+//
+// The resolved fields rather than the request's, because a PATCH that changes only the cooldown must
+// still be judged against the threshold the rule will have afterwards — which is the one it already
+// had.
+func validateAlertRule(rule resolvedRule, condition store.AlertCondition) string {
+	if condition.Evaluated() && rule.Threshold < 1 {
 		return "an evaluated condition needs a positive threshold: minutes for host_silent, a count " +
 			"for security_updates, days for reboot_required"
 	}
-	if req.CooldownSeconds < 0 {
+	if rule.CooldownSeconds < 0 {
 		return "cooldownSeconds cannot be negative"
 	}
-	for _, address := range req.EmailTo {
+	for _, address := range rule.EmailTo {
 		// Light-touch on purpose: real address validation is the relay's job, and a regex that
 		// refuses a valid address is worse than a bounce the operator can read. What this catches is
 		// the field being used for something that is not an address at all.
@@ -143,7 +185,10 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request, w
 				"job_failed")
 		return
 	}
-	if message := validateAlertRuleRequest(req, condition); message != "" {
+	// A new rule starts enabled: somebody who just described a condition wants it watched, and a rule
+	// that has to be switched on after creation is a rule half the fleet forgets to switch on.
+	resolved := req.resolve(resolvedRule{Enabled: true})
+	if message := validateAlertRule(resolved, condition); message != "" {
 		writeError(w, http.StatusBadRequest, "malformed", message)
 		return
 	}
@@ -157,10 +202,10 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request, w
 	rule := store.AlertRule{
 		ID:              id,
 		Condition:       condition,
-		Threshold:       req.Threshold,
-		CooldownSeconds: req.CooldownSeconds,
-		EmailTo:         req.EmailTo,
-		Enabled:         req.Enabled == nil || *req.Enabled,
+		Threshold:       resolved.Threshold,
+		CooldownSeconds: resolved.CooldownSeconds,
+		EmailTo:         resolved.EmailTo,
+		Enabled:         resolved.Enabled,
 		CreatedAt:       time.Now().UTC(),
 		CreatedBy:       who.Principal(),
 	}
@@ -209,18 +254,22 @@ func (s *Server) handleUpdateAlertRule(w http.ResponseWriter, r *http.Request, w
 		writeError(w, http.StatusNotFound, "not_found", "no such rule")
 		return
 	}
-	if message := validateAlertRuleRequest(req, current.Condition); message != "" {
+	resolved := req.resolve(resolvedRule{
+		Threshold:       current.Threshold,
+		CooldownSeconds: current.CooldownSeconds,
+		EmailTo:         current.EmailTo,
+		Enabled:         current.Enabled,
+	})
+	if message := validateAlertRule(resolved, current.Condition); message != "" {
 		writeError(w, http.StatusBadRequest, "malformed", message)
 		return
 	}
 
 	updated := *current
-	updated.Threshold = req.Threshold
-	updated.CooldownSeconds = req.CooldownSeconds
-	updated.EmailTo = req.EmailTo
-	if req.Enabled != nil {
-		updated.Enabled = *req.Enabled
-	}
+	updated.Threshold = resolved.Threshold
+	updated.CooldownSeconds = resolved.CooldownSeconds
+	updated.EmailTo = resolved.EmailTo
+	updated.Enabled = resolved.Enabled
 	if err := who.Store.UpdateAlertRule(r.Context(), updated); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "no such rule")
