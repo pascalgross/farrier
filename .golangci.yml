@@ -103,6 +103,18 @@ linters:
         linters:
           - depguard
 
+      # ffi.go is the one file in the repository that hands Go memory to a C ABI, and it is one file
+      # for exactly this reason: G103 fires on every unsafe.Pointer in a PKCS#11 attribute template
+      # and can say nothing useful about any of them. What makes them safe is a property gosec cannot
+      # see — the module does not retain a pointer past the call — and what actually checks it is
+      # TestTheCTypesAreTheSizeCExpects plus the round-trip tests against a real module, under both
+      # CGO_ENABLED settings. Scoping the exclusion to this one path is what keeps the alternative
+      # off the table: dozens of //nolint directives, each of which would have to carry a reason for
+      # its own case and none of which would have a different one.
+      - path: internal/signing/backend/pkcs11/ffi\.go
+        linters:
+          - gosec
+
 formatters:
   enable:
     - gofmt

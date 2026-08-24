@@ -32,6 +32,7 @@ import (
 	"golang.org/x/crypto/scrypt"
 
 	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/signing/backend"
 )
 
 // envelopeVersion is the format version written into every key file.
@@ -355,4 +356,26 @@ func writeAtomic(path string, env *envelope) error {
 		return fmt.Errorf("file: closing key: %w", err)
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// init registers this backend under the "file" scheme.
+//
+// A path with no scheme resolves here too, which is what keeps every `--key ~/.config/farrier/ops.key`
+// in the documentation and in operators' shell history working unchanged. The explicit spelling exists
+// for the one case a bare path cannot express: a relative path whose first segment happens to look
+// like another backend's scheme.
+func init() {
+	backend.Register(backend.Backend{
+		Scheme: backend.FileScheme,
+		Open: func(_ context.Context, path string, prompt backend.PassphraseFunc) (signing.Signer, error) {
+			passphrase, err := prompt("Passphrase for " + path + ": ")
+			if err != nil {
+				return nil, err
+			}
+			return Open(path, passphrase)
+		},
+		Inspect: func(_ context.Context, path string, _ backend.PassphraseFunc) (signing.PublicKey, error) {
+			return Inspect(path)
+		},
+	})
 }
