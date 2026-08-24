@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -98,5 +99,89 @@ func TestTheWrongKeyOpensNothing(t *testing.T) {
 		if _, err := beta.Open(mangled); !errors.Is(err, ErrSealed) {
 			t.Fatalf("the wrong key opened %d bytes: %v", len(mangled), err)
 		}
+	}
+}
+
+// TestConcurrentEnsureAgreesOnOneKey is the property a second control-plane replica depends on.
+//
+// The failure it rules out is worse here than for the online signing key, which has the same race and
+// the same fix. A clobbered signing key leaves agents unable to verify the *next* routine job, and
+// re-enrolment repairs it. A clobbered sealing key leaves every template already stored as ciphertext
+// nobody holds the key for, and nothing repairs it — the symptom is a templates page that worked an
+// hour ago and now cannot decrypt its own rows.
+//
+// Rounds, because a race that reproduces in one attempt in three would otherwise pass this suite most
+// of the time and fail in somebody's cluster.
+func TestConcurrentEnsureAgreesOnOneKey(t *testing.T) {
+	for round := range 8 {
+		dir := t.TempDir()
+
+		const starters = 16
+		var wg sync.WaitGroup
+		keys := make([]*Key, starters)
+		errs := make([]error, starters)
+		start := make(chan struct{})
+		for i := range starters {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				keys[i], errs[i] = Ensure(dir)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: starter %d: %v", round, i, err)
+			}
+		}
+
+		// Every starter holds the same key, asserted through the operation that matters rather than
+		// by comparing material: what must hold is that a template sealed by one replica opens on
+		// another, which is the thing an operator notices when it stops being true.
+		sealed, err := keys[0].Seal([]byte("#cloud-config\nhostname: web-01\n"))
+		if err != nil {
+			t.Fatalf("round %d: sealing: %v", round, err)
+		}
+		for i, key := range keys {
+			if _, err := key.Open(sealed); err != nil {
+				t.Fatalf("round %d: starter %d cannot open what starter 0 sealed: %v — a generator "+
+					"clobbered a key that was already in place", round, i, err)
+			}
+		}
+	}
+}
+
+// TestEnsureNeverLeavesAPartialFileBehind checks the property the concurrency test infers.
+//
+// Stated separately because a reader outside this package — an operator, a backup, a second process
+// mid-start — sees only the file. If the only assertion were "concurrent callers agree", an
+// implementation could satisfy it by locking while still exposing a half-written key to everything
+// else, and a half-written sealing key is one that parses and decrypts nothing.
+func TestEnsureNeverLeavesAPartialFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Ensure(dir); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the key directory: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != KeyFile {
+			t.Errorf("%s was left in the key directory; the temporary file is not cleaned up",
+				entry.Name())
+		}
+	}
+
+	info, err := os.Stat(filepath.Join(dir, KeyFile))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("the sealing key is mode %o, not 0600", perm)
 	}
 }

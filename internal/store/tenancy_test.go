@@ -730,6 +730,45 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatalf("alpha's claim blocked beta's: won=%v err=%v", won, err)
 				}
 			},
+			"ReleaseAlertFiring": func(t *testing.T) {
+				// A rule only beta holds, deliberately: the probes run in map order and must not
+				// depend on one another, and sharedRuleID is the pair ClaimAlertNotification asserts
+				// on. Setting a cooldown on that pair here would make the other probe fail
+				// intermittently, depending on which ran first — the exact kind of flake that gets a
+				// real isolation failure dismissed as noise.
+				if err := beta.UpsertAlertState(ctx, AlertState{
+					RuleID: betaOnlyRuleID, HostID: betaHostID, Firing: true,
+					Since: deliveryStamp, LastNotified: deliveryStamp,
+				}); err != nil {
+					t.Fatalf("beta setting up a firing pair: %v", err)
+				}
+				if released, err := alpha.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
+					released {
+					t.Fatalf("alpha released a firing that belongs to beta: released=%v err=%v",
+						released, err)
+				}
+				states, err := beta.ListAlertStates(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's states: %v", err)
+				}
+				var stillFiring bool
+				for _, st := range states {
+					if st.RuleID == betaOnlyRuleID && st.HostID == betaHostID && st.Firing {
+						stillFiring = true
+					}
+				}
+				if !stillFiring {
+					t.Fatal("beta's firing did not survive alpha's release")
+				}
+
+				// Beta releases its own, which asserts the positive case and leaves the fixture as it
+				// was found. The probes share one pair of tenants and run in map order, so a probe
+				// that leaves a row behind is a probe that breaks whichever one happens to run next.
+				if released, err := beta.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
+					!released {
+					t.Fatalf("beta releasing its own firing: released=%v err=%v", released, err)
+				}
+			},
 			"UpsertAlertState": func(t *testing.T) {
 				// Naming a rule only beta holds must be refused — the composite foreign key again —
 				// and must leave beta's state alone.

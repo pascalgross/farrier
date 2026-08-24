@@ -368,6 +368,32 @@ func (s *scopedPostgres) ClaimAlertNotification(ctx context.Context, ruleID, hos
 	return claimed, nil
 }
 
+// ReleaseAlertFiring clears one (rule, host) pair's firing flag, atomically.
+//
+// The WHERE clause is the compare-and-set: only a row that is currently firing is updated, and
+// RETURNING says whether one was. A second control plane arriving after the first matches nothing and
+// sends no second recovery.
+func (s *scopedPostgres) ReleaseAlertFiring(ctx context.Context, ruleID, hostID string) (bool, error) {
+	released := false
+	err := s.withTenant(ctx, "releasing an alert firing", func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE alert_states
+			   SET firing = false, since = NULL, last_notified = NULL
+			 WHERE tenant_id = $1 AND rule_id = $2 AND host_id = $3 AND firing
+			RETURNING rule_id`, string(s.tenant), ruleID, hostID)
+		if err != nil {
+			return wrap(err, "releasing an alert firing")
+		}
+		defer rows.Close()
+		released = rows.Next()
+		return wrap(rows.Err(), "releasing an alert firing")
+	})
+	if err != nil {
+		return false, err
+	}
+	return released, nil
+}
+
 // zeroAsEpoch maps a zero time onto the epoch sentinel the SQL above turns into NULL.
 //
 // The dance exists because a Go zero time is year 1, which PostgreSQL stores happily and then returns

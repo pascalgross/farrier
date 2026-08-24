@@ -296,6 +296,25 @@ func (s *scopedMemory) UpsertAlertState(_ context.Context, st AlertState) error 
 	return nil
 }
 
+// ReleaseAlertFiring clears one (rule, host) pair's firing flag, atomically.
+//
+// The store's mutex stands in for the WHERE clause the SQL uses, so both implementations answer "was
+// it me who cleared it" the same way.
+func (s *scopedMemory) ReleaseAlertFiring(_ context.Context, ruleID, hostID string) (bool, error) {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+
+	key := stateKey{tenant: s.tenant, rule: ruleID, host: hostID}
+	held, exists := s.store.states[key]
+	if !exists || !held.Firing {
+		return false, nil
+	}
+	held.Firing = false
+	held.Since, held.LastNotified = time.Time{}, time.Time{}
+	s.store.states[key] = held
+	return true, nil
+}
+
 // ClaimAlertNotification takes the right to notify for one (rule, host) pair, atomically.
 //
 // The store's own mutex is what makes it atomic here, matching what one SQL statement does in

@@ -252,3 +252,53 @@ func TestRoutingMailsTheRuleThatWinsItsClaim(t *testing.T) {
 		t.Fatalf("mailing left no cooldown behind it: %+v", states)
 	}
 }
+
+// TestTwoEvaluatorsNotifyOnceBetweenThem is the horizontally-deployed case.
+//
+// Two control planes against one database both tick, both read the same state, and before the claim
+// both would have paged. The two passes here are sequential rather than concurrent on purpose: the
+// race is not about timing, it is about a read that does not reserve anything, and a second pass
+// against the state the first left is the sharpest version of that — if the second still notifies,
+// so would a replica.
+//
+// The store's own test covers the concurrent case against both backends.
+func TestTwoEvaluatorsNotifyOnceBetweenThem(t *testing.T) {
+	h := newAlertHarness(t)
+	h.createRule(t)
+	h.silentHosts(t, 2, time.Now().UTC().Add(-2*time.Hour))
+
+	// Two servers, one store: the same shape as two replicas, minus the network.
+	second := &Server{cfg: Config{Store: h.server.cfg.Store, HeartbeatSeconds: 60}}
+	second.outboundCtx, second.outboundStop = context.WithCancel(context.Background())
+	t.Cleanup(second.outboundStop)
+
+	now := time.Now().UTC()
+	h.server.evaluateAlerts(context.Background(), now)
+	second.evaluateAlerts(context.Background(), now)
+
+	if firing := h.eventSummaries(t, string(notify.KindHostSilent)); len(firing) != 2 {
+		t.Fatalf("two hosts across two evaluators produced %d firing events: %v", len(firing), firing)
+	}
+
+	// And the recovery is claimed once too, which is the half a plain "have I notified" check misses
+	// entirely: it reads the same "was firing, is not now" on both replicas.
+	hosts, err := h.scoped.ListHosts(context.Background())
+	if err != nil {
+		t.Fatalf("listing hosts: %v", err)
+	}
+	back := now.Add(time.Minute)
+	for _, host := range hosts {
+		if err := h.scoped.RecordHeartbeat(context.Background(), host.ID, store.HeartbeatUpdate{
+			AgentVersion: "test", BootID: "boot-1", LastSeen: back,
+		}); err != nil {
+			t.Fatalf("heartbeating: %v", err)
+		}
+	}
+	h.server.evaluateAlerts(context.Background(), back)
+	second.evaluateAlerts(context.Background(), back)
+
+	if recovered := h.eventSummaries(t, string(notify.KindHostRecovered)); len(recovered) != 2 {
+		t.Fatalf("two recoveries across two evaluators produced %d events: %v",
+			len(recovered), recovered)
+	}
+}

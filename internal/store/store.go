@@ -992,6 +992,17 @@ type Scoped interface {
 	ClaimAlertNotification(ctx context.Context, ruleID, hostID string, at time.Time,
 		cooldown time.Duration) (bool, error)
 
+	// ReleaseAlertFiring clears one (rule, host) pair's firing flag, atomically.
+	//
+	// It reports whether this caller was the one that cleared it: true means the pair was firing and
+	// is not any more, false means it was already clear and somebody else has already said so.
+	//
+	// The counterpart to ClaimAlertNotification, and needed for the same reason. Every firing has an
+	// un-firing, and two control planes both reading "this was firing and is not now" would both send
+	// the recovery — which for a partition that heals is the moment an operator is least able to
+	// absorb a duplicate of every message.
+	ReleaseAlertFiring(ctx context.Context, ruleID, hostID string) (bool, error)
+
 	// UpsertAlertState records one (rule, host) pair's state, keyed on the pair.
 	UpsertAlertState(ctx context.Context, s AlertState) error
 }

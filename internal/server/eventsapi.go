@@ -351,13 +351,18 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request, who o
 	// customer's incidents replayed to whoever asks next.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// Subscribed before the greeting is written, and the order is the handshake. A client has to
+	// reconcile against the inbox to cover what it missed while disconnected, and it can only know
+	// when that read is safe if some byte on this stream means "you are registered". The greeting is
+	// that byte — but only if nothing can be emitted between it and the subscription, which is what
+	// the other order allowed.
+	events, release := s.events.subscribe(who.Store.Tenant())
+	defer release()
+
 	w.WriteHeader(http.StatusOK)
 	if !writeFrame(w, flusher, ": connected\n\n") {
 		return
 	}
-
-	events, release := s.events.subscribe(who.Store.Tenant())
-	defer release()
 
 	heartbeat := time.NewTicker(streamHeartbeatInterval)
 	defer heartbeat.Stop()

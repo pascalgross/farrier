@@ -79,10 +79,75 @@ func Ensure(dir string) (*Key, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("seal: creating %s: %w", dir, err)
 	}
-	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
-		return nil, fmt.Errorf("seal: writing %s: %w", path, err)
+
+	// Written to a temporary file and linked into place, which is the pattern onlinekey.Ensure
+	// already argues for at length — and this key needs it more than that one does.
+	//
+	// A plain os.WriteFile lets two control planes starting against one fresh CA directory each
+	// generate different material and each overwrite the other. The online key survives that badly;
+	// this one survives it worse. Every template already sealed by the losing replica becomes
+	// permanently unopenable, and the symptom is a decryption failure on a page that worked an hour
+	// ago rather than anything pointing at a startup race.
+	//
+	// link(2) and not rename(2): rename overwrites, which is the behaviour being avoided. link is
+	// atomic and fails with EEXIST, so the loser reads the winner's key instead of clobbering it, and
+	// a concurrent reader sees either no file or a complete one — never the empty window that
+	// O_CREATE|O_EXCL followed by a write would leave.
+	tmp, err := os.CreateTemp(dir, ".template.key-*")
+	if err != nil {
+		return nil, fmt.Errorf("seal: creating a temporary file in %s: %w", dir, err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("seal: setting permissions on the new key: %w", err)
+	}
+	if _, err := tmp.Write([]byte(encoded)); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("seal: writing the new key: %w", err)
+	}
+	// Synced before it is linked, and the directory synced after. Losing this file to a crash is not
+	// recoverable by generating another: every template already stored is ciphertext under the key
+	// that went missing.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("seal: syncing the new key: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, fmt.Errorf("seal: closing the new key: %w", err)
+	}
+
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, fmt.Errorf("seal: reading %s after a concurrent create: %w", path, readErr)
+			}
+			return parse(existing, path)
+		}
+		return nil, fmt.Errorf("seal: linking %s into place: %w", path, err)
+	}
+	if err := syncDir(dir); err != nil {
+		return nil, err
 	}
 	return New(material)
+}
+
+// syncDir fsyncs a directory, making a link inside it durable.
+//
+// Its own function because the failure it prevents is invisible in testing: without it the key file's
+// directory entry can be lost to a power cut the file's own contents survived, and the control plane
+// would come back up generating a second key — under which every stored template is unreadable.
+func syncDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("seal: opening %s to sync it: %w", dir, err)
+	}
+	defer func() { _ = handle.Close() }()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("seal: syncing %s: %w", dir, err)
+	}
+	return nil
 }
 
 // parse decodes a stored key file.

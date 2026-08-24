@@ -198,13 +198,18 @@ export class EventStream {
    * Holds one connection open, then reconnects, until stop() or a lost token.
    *
    * The loop is the reconnect policy: `EventSource` would have supplied one, and this is what
-   * replaces it. Each pass re-reads the inbox first, so the gap the disconnection opened is closed
-   * before the new stream starts adding to it.
+   * replaces it.
+   *
+   * The inbox is re-read *after* the stream says it is registered, and the order is the whole
+   * correctness of the reconciliation. Reading first — or, worse, reading concurrently — leaves a
+   * window: an event emitted after the inbox query ran and before the subscription existed is in
+   * neither answer, and because a healthy stream then stays open for hours, it would not surface
+   * until the next reconnect. Registering first makes the window close in the other direction, where
+   * the overlap is a duplicate the feed's de-duplication already absorbs.
    */
   private async connect(generation: number): Promise<void> {
     while (this.started && this.generation === generation && this.tokens.hasToken()) {
-      this.refresh();
-      const clean = await this.readStream();
+      const clean = await this.readStream(() => this.refresh());
       if (!this.started || this.generation !== generation) {
         return;
       }
@@ -220,8 +225,13 @@ export class EventStream {
    * The return value feeds the backoff and only that: a stream that connected and later dropped is a
    * restart worth retrying immediately, and one that never connected is a control plane that is down
    * or a token that is wrong, which is worth backing off from.
+   *
+   * `onRegistered` fires once the server has confirmed the subscription, which is what the inbox
+   * reconciliation waits for. A response with headers is not that confirmation — the handler could
+   * in principle write them before subscribing — so the signal is the greeting frame, which the
+   * handler writes only after it has registered.
    */
-  private async readStream(): Promise<boolean> {
+  private async readStream(onRegistered: () => void): Promise<boolean> {
     const controller = new AbortController();
     this.controller = controller;
     let connected = false;
@@ -239,7 +249,7 @@ export class EventStream {
       }
       connected = true;
       this.live.set(true);
-      await this.consume(response.body);
+      await this.consume(response.body, onRegistered);
     } catch {
       // Aborts and network failures land here alike, and neither is worth surfacing: the loop above
       // reconnects, and the indicator beside the bell already says the stream is not live.
@@ -260,10 +270,14 @@ export class EventStream {
    * line, take the data lines". Anything the server adds later that this does not understand is
    * ignored, which is the same rule the protocol states for every other direction.
    */
-  private async consume(body: ReadableStream<Uint8Array>): Promise<void> {
+  private async consume(
+    body: ReadableStream<Uint8Array>,
+    onRegistered: () => void,
+  ): Promise<void> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let registered = false;
 
     for (;;) {
       const { done, value } = await reader.read();
@@ -276,6 +290,13 @@ export class EventStream {
       while (boundary >= 0) {
         const frame = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
+        if (!registered) {
+          // Any complete frame proves the subscription exists, because the handler writes its
+          // greeting only after registering. Keyed on the first frame rather than on the greeting's
+          // text so that a server which one day drops the greeting still reconciles.
+          registered = true;
+          onRegistered();
+        }
         this.handleFrame(frame);
         boundary = buffer.indexOf('\n\n');
       }

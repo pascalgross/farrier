@@ -200,24 +200,51 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 			state.Since = time.Time{}
 		}
 
+		// Both notifying transitions go through an atomic operation rather than through the read
+		// above, and the read is not enough for the same reason it was not enough on the
+		// event-routed path: a hosted installation runs more than one control plane, both
+		// evaluators tick, and both would read this pair's state before either wrote it. The state
+		// row is where they agree.
+		//
+		// Each operation writes the row itself, so the bookkeeping write below is skipped when one
+		// ran — otherwise a loser would put its stale last_notified back over the winner's.
 		fire := raw && conditionRipe(rule, state, now)
+		bookkeep := true
+
 		switch {
-		case fire && !state.Firing:
-			state.Firing = true
-			state.LastNotified = now
-			firing = append(firing, firingHost{host: host, summary: summary})
-		case fire && state.Firing && now.Sub(state.LastNotified) >= cooldown:
-			// Still broken past the cooldown: one reminder, not silence — a condition that fired
-			// once at 03:00 and never again is indistinguishable from one that resolved.
-			state.LastNotified = now
-			firing = append(firing, firingHost{host: host, summary: summary})
-		case !fire && state.Firing:
-			state.Firing = false
-			state.LastNotified = time.Time{}
-			recovered = append(recovered, firingHost{host: host, summary: recoverySummary(rule, host)})
+		case fire:
+			// One call covers both firing transitions: the first one, where nothing has notified,
+			// and the reminder past the cooldown — a condition that fired once at 03:00 and never
+			// again is indistinguishable from one that resolved. The claim's own predicate is
+			// exactly that distinction.
+			bookkeep = false
+			won, err := scoped.ClaimAlertNotification(ctx, rule.ID, host.ID, now, cooldown)
+			switch {
+			case err != nil:
+				slog.Error("could not claim an alert notification",
+					"tenant", scoped.Tenant(), "rule", rule.ID, "host", host.ID, "error", err)
+			case won:
+				firing = append(firing, firingHost{host: host, summary: summary})
+			}
+
+		case state.Firing:
+			bookkeep = false
+			won, err := scoped.ReleaseAlertFiring(ctx, rule.ID, host.ID)
+			switch {
+			case err != nil:
+				slog.Error("could not release an alert firing",
+					"tenant", scoped.Tenant(), "rule", rule.ID, "host", host.ID, "error", err)
+			case won:
+				recovered = append(recovered,
+					firingHost{host: host, summary: recoverySummary(rule, host)})
+			}
 		}
 
-		if state != held[rule.ID+"\x00"+host.ID] {
+		// Only the "raw condition started or stopped holding" bookkeeping reaches here, which is
+		// Since and nothing else. Two replicas writing it a second apart is not worth a compare-and-
+		// set: the field feeds reboot_required's days-outstanding threshold, so the disagreement they
+		// can produce is a firing a minute early.
+		if bookkeep && state != held[rule.ID+"\x00"+host.ID] {
 			held[rule.ID+"\x00"+host.ID] = state
 			if err := scoped.UpsertAlertState(ctx, state); err != nil {
 				slog.Error("could not persist an alert state",
@@ -229,6 +256,10 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 	// Recoveries collapse into a digest on the same threshold firings do, and they have to: a
 	// partition that heals recovers every host at once, and three hundred "heartbeating again" mails
 	// are the ones that bury the one host that did not come back.
+	//
+	// With two control planes the batches are split between them rather than duplicated, because each
+	// host was claimed by exactly one. Two digests naming five hosts each is a worse read than one
+	// naming ten, and it is a great deal better than ten pages arriving twice.
 	refused := s.notifyBatch(ctx, scoped, rule, firing, now, firingKind(rule.Condition), true)
 	if reason := s.notifyBatch(ctx, scoped, rule, recovered, now,
 		recoveryKind(rule.Condition), false); reason != "" {

@@ -241,7 +241,9 @@ func TestTheEventStreamDeliversLive(t *testing.T) {
 		t.Fatalf("no greeting: %q, %v", line, err)
 	}
 
-	// The subscription is registered before the greeting is written, so emitting now is safe.
+	// The greeting has arrived, and the handler subscribes before writing it — so this event cannot
+	// fall into a gap between the two. That ordering is what lets a client reconcile against the
+	// inbox only after the greeting, rather than racing its own reconnect.
 	h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
 
 	deadline := time.After(5 * time.Second)
