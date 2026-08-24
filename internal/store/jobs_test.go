@@ -278,7 +278,7 @@ func TestAJobCarriesItsResultOnceTheHostReports(t *testing.T) {
 		if _, err := tenant.ClaimJobs(ctx, host.ID, 10); err != nil {
 			t.Fatalf("claiming: %v", err)
 		}
-		if err := tenant.RecordResult(ctx, host.ID, protocol.ResultRequest{
+		if _, err := tenant.RecordResult(ctx, host.ID, protocol.ResultRequest{
 			JobID: "01JOB1", Status: protocol.StatusSucceeded, ExitCode: 0,
 			StartedAt: time.Now(), FinishedAt: time.Now(), Output: "done",
 		}); err != nil {
@@ -591,7 +591,7 @@ func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
 			JobID: "01JOB1", Status: protocol.StatusSucceeded,
 			StartedAt: time.Now(), FinishedAt: time.Now(), Output: "definitely rebooted",
 		}
-		if err := tenant.RecordResult(ctx, host.ID, forged); !errors.Is(err, ErrNotFound) {
+		if _, err := tenant.RecordResult(ctx, host.ID, forged); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("a result was accepted for a job the host was never given, producing %v; "+
 				"want ErrNotFound", err)
 		}
@@ -609,7 +609,7 @@ func TestGuaranteeAResultIsOnlyAcceptedForWorkTheHostWasGiven(t *testing.T) {
 		}
 
 		// Once it has genuinely been given out, the real result is accepted.
-		if err := tenant.RecordResult(ctx, host.ID, forged); err != nil {
+		if _, err := tenant.RecordResult(ctx, host.ID, forged); err != nil {
 			t.Errorf("the result of a claimed job was refused: %v", err)
 		}
 	})

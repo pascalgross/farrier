@@ -28,11 +28,13 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/ca"
+	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/seal"
@@ -88,6 +90,14 @@ type Config struct {
 	// fleet off during an incident, without deploying a new agent.
 	HeartbeatSeconds int
 
+	// SMTP is how alert mail leaves the control plane, zero-valued for not at all.
+	//
+	// Process configuration rather than tenant data: which relay this control plane may speak to is
+	// the installation operator's decision. Tenants choose recipients, per alert rule, and a rule
+	// with recipients on an installation with no relay is delivered everywhere except mail — with
+	// the gap named in the log rather than silent.
+	SMTP notify.SMTPConfig
+
 	// TokenTTL is how long a newly issued enrolment token remains usable.
 	TokenTTL time.Duration
 }
@@ -124,6 +134,13 @@ type Server struct {
 
 	// enrolLimiter bounds attempts against the one endpoint that needs no client certificate.
 	enrolLimiter *rateLimiter
+
+	// events fans live events out to subscribed browser tabs; the durable copy is the store's inbox.
+	events eventStream
+
+	// outbound counts the deliveries running detached from the request that produced them, so a
+	// shutdown drains them rather than abandoning an alert mail mid-conversation.
+	outbound sync.WaitGroup
 }
 
 // New builds a server from a configuration.
@@ -199,6 +216,14 @@ func (s *Server) routes() {
 	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
 	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))
 	s.route(http.MethodPost, "/api/v1/templates/{name}/render", s.requireOperator(s.handleRenderTemplate))
+	s.route(http.MethodGet, "/api/v1/events", s.requireOperator(s.handleListEvents))
+	s.route(http.MethodGet, "/api/v1/events/stream", s.requireOperator(s.handleEventStream))
+	s.route(http.MethodGet, "/api/v1/services/failed", s.requireOperator(s.handleFailedServices))
+	s.route(http.MethodGet, "/api/v1/hosts/{id}/services/history", s.requireOperator(s.handleServiceHistory))
+	s.route(http.MethodGet, "/api/v1/alerts", s.requireOperator(s.handleListAlertRules))
+	s.route(http.MethodPost, "/api/v1/alerts", s.requireOperator(s.handleCreateAlertRule))
+	s.route(http.MethodPatch, "/api/v1/alerts/{id}", s.requireOperator(s.handleUpdateAlertRule))
+	s.route(http.MethodDelete, "/api/v1/alerts/{id}", s.requireOperator(s.handleDeleteAlertRule))
 
 	// Tenant administration, for whoever runs the installation rather than a fleet in it. These are the
 	// only routes a platform credential can reach, and the only routes an operator credential cannot.
@@ -346,6 +371,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			"with client certificates, which do not exist without TLS")
 	}
 	err := srv.ListenAndServeTLS("", "")
+
+	// Deliveries beyond the inbox run detached from the request that produced them, so the process
+	// must not exit while one is in flight: an alert mail abandoned mid-SMTP is precisely the
+	// delivery whose absence somebody would trust. Each carries outboundBudget, so this drains.
+	s.outbound.Wait()
+
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

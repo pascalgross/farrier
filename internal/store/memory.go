@@ -137,6 +137,19 @@ type Memory struct {
 
 	// templates are provisioning template versions by tenant, name and version, immutable once written.
 	templates map[templateKey]TemplateVersion
+
+	// events is every tenant's inbox, oldest first, evicted per tenant past MaxEventsPerTenant.
+	events []eventRow
+
+	// transitions is unit-state history, oldest first, evicted per host past
+	// MaxUnitTransitionsPerHost.
+	transitions []transitionRow
+
+	// rules are alert rules by tenant and id.
+	rules map[ruleKey]AlertRule
+
+	// states are the alert evaluator's memory by tenant, rule and host.
+	states map[stateKey]AlertState
 }
 
 // NewMemory returns an in-memory store holding the default tenant and nothing else.
@@ -164,6 +177,8 @@ func NewMemory() *Memory {
 		results:   map[jobKey]protocol.ResultRequest{},
 		waiters:   map[string][]chan struct{}{},
 		templates: map[templateKey]TemplateVersion{},
+		rules:     map[ruleKey]AlertRule{},
+		states:    map[stateKey]AlertState{},
 	}
 }
 
@@ -354,6 +369,30 @@ func (m *Memory) DeleteTenant(_ context.Context, id TenantID) error {
 	for key := range m.templates {
 		if key.tenant == id {
 			delete(m.templates, key)
+		}
+	}
+	keptEvents := m.events[:0]
+	for _, row := range m.events {
+		if row.tenant != id {
+			keptEvents = append(keptEvents, row)
+		}
+	}
+	m.events = keptEvents
+	keptTransitions := m.transitions[:0]
+	for _, row := range m.transitions {
+		if row.tenant != id {
+			keptTransitions = append(keptTransitions, row)
+		}
+	}
+	m.transitions = keptTransitions
+	for key := range m.rules {
+		if key.tenant == id {
+			delete(m.rules, key)
+		}
+	}
+	for key := range m.states {
+		if key.tenant == id {
+			delete(m.states, key)
 		}
 	}
 	return nil
@@ -1054,8 +1093,9 @@ func (s *scopedMemory) ClaimJobs(_ context.Context, hostID string, limit int) ([
 	return claimed, nil
 }
 
-// RecordResult stores a job result idempotently, for a job that belongs to the reporting host.
-func (s *scopedMemory) RecordResult(_ context.Context, hostID string, r protocol.ResultRequest) error {
+// RecordResult stores a job result idempotently, for a job that belongs to the reporting host, and
+// reports whether it was the first.
+func (s *scopedMemory) RecordResult(_ context.Context, hostID string, r protocol.ResultRequest) (bool, error) {
 	m := s.store
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1073,16 +1113,16 @@ func (s *scopedMemory) RecordResult(_ context.Context, hostID string, r protocol
 	// permanently excluded from the claim, cannot be re-queued because its signed nonce is taken, and
 	// the dashboard shows "succeeded" for work nobody ever authorised, let alone performed.
 	if !ok || rec.HostID != hostID || rec.ClaimedAt.IsZero() {
-		return ErrNotFound
+		return false, ErrNotFound
 	}
 	if _, exists := m.results[key]; exists {
 		// Already recorded. A repeated result changes nothing and is not an error: the agent retries
 		// until it gets a 2xx, and a second delivery means the first response was lost, not that the
-		// work happened twice.
-		return nil
+		// work happened twice. False is what tells the caller not to notify twice about it.
+		return false, nil
 	}
 	m.results[key] = r
 	rec.CompletedAt = time.Now()
 	m.records[key] = rec
-	return nil
+	return true, nil
 }

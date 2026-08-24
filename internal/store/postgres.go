@@ -1102,17 +1102,18 @@ func (s *scopedPostgres) ClaimJobs(ctx context.Context, hostID string, limit int
 }
 
 // RecordResult stores a job result idempotently, for a job that belongs to the reporting host.
-func (s *scopedPostgres) RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) error {
+func (s *scopedPostgres) RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) (bool, error) {
 	resultJSON := []byte("null")
 	if r.Result != nil {
 		encoded, err := json.Marshal(r.Result)
 		if err != nil {
-			return fmt.Errorf("store: encoding a job result: %w", err)
+			return false, fmt.Errorf("store: encoding a job result: %w", err)
 		}
 		resultJSON = encoded
 	}
 
-	return s.withTenant(ctx, "recording a job result", func(tx pgx.Tx) error {
+	inserted := false
+	err := s.withTenant(ctx, "recording a job result", func(tx pgx.Tx) error {
 		// The job must belong to the reporting host. Every enrolled host is authenticated and none is
 		// trusted: without this, any host could post a result for another host's job, and because
 		// recording is idempotent the forged result would then suppress the real one when it arrived.
@@ -1138,17 +1139,20 @@ func (s *scopedPostgres) RecordResult(ctx context.Context, hostID string, r prot
 		// DO NOTHING rather than DO UPDATE. A repeated result means the first response was lost, not
 		// that the work happened twice, and overwriting would replace a genuine record with a retry's
 		// view of it. The conflict target is the whole primary key, which is now the tenant and the job
-		// together.
-		if _, err := tx.Exec(ctx, `
+		// together. The affected-row count is what answers "was this the first": zero means a record
+		// already stood, which is the retry the caller must not notify about again.
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO job_results (job_id, tenant_id, host_id, status, started_at, finished_at,
 			                         exit_code, output, output_truncated, result, error)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (tenant_id, job_id) DO NOTHING`,
 			r.JobID, string(s.tenant), hostID, r.Status, r.StartedAt, r.FinishedAt, r.ExitCode,
 			r.Output, r.OutputTruncated, resultJSON, r.Error,
-		); err != nil {
+		)
+		if err != nil {
 			return wrap(err, "recording a job result")
 		}
+		inserted = tag.RowsAffected() > 0
 		if _, err := tx.Exec(ctx, `
 			UPDATE jobs
 			   SET completed_at = COALESCE(completed_at, now())
@@ -1159,6 +1163,10 @@ func (s *scopedPostgres) RecordResult(ctx context.Context, hostID string, r prot
 		}
 		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 // Subscribe registers interest in work for a host and returns a channel closed when some arrives.

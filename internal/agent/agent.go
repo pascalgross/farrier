@@ -349,6 +349,7 @@ func policyView(p policy.Policy) map[string]any {
 		},
 		"services": map[string]any{
 			"restartable": append([]string{}, p.Services.Restartable...),
+			"watched":     append([]string{}, p.Services.Watched...),
 		},
 		"limits": map[string]any{
 			"maxJobAgeSeconds": p.Limits.MaxJobAgeSeconds,

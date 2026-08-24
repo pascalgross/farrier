@@ -463,7 +463,7 @@ func TestRecordResultIsIdempotent(t *testing.T) {
 		Result: map[string]any{"hostname": "web-01"},
 	}
 	for i := range 3 {
-		if err := tenant.RecordResult(ctx, host.ID, result); err != nil {
+		if _, err := tenant.RecordResult(ctx, host.ID, result); err != nil {
 			t.Fatalf("delivery %d: %v", i+1, err)
 		}
 	}

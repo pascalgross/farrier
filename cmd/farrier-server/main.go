@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/ca"
 	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/seal"
 	"github.com/pascalgross/farrier/internal/server"
@@ -102,6 +104,16 @@ func serve(argv []string) int {
 	webhook := fs.String("webhook", "",
 		"URL to POST this tenant's events to; sinks send data out and nothing sends code in")
 	heartbeat := fs.Int("heartbeat-seconds", 60, "pacing handed to agents, which they clamp to 15..3600")
+	smtpHost := fs.String("smtp-host", envOr("FARRIER_SMTP_HOST", ""),
+		"mail relay for alert rules; unset means alert mail is off and every other delivery still works")
+	smtpPort := fs.Int("smtp-port", 587, "465 for implicit TLS, anything else upgrades with STARTTLS")
+	smtpFrom := fs.String("smtp-from", envOr("FARRIER_SMTP_FROM", ""),
+		"sender address for alert mail")
+	smtpUser := fs.String("smtp-username", envOr("FARRIER_SMTP_USERNAME", ""),
+		"relay credential, empty for an open relay on a trusted network")
+	smtpPasswordFile := fs.String("smtp-password-file", "",
+		"file holding the relay password; a file rather than a flag, because argv is world-readable "+
+			"in ps. FARRIER_SMTP_PASSWORD is read when this is unset")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -222,6 +234,12 @@ func serve(argv []string) int {
 			"enrol_with", "farrier enroll --ca "+filepath.Join(*caDir, "ca.crt"))
 	}
 
+	smtp, err := smtpConfig(*smtpHost, *smtpPort, *smtpFrom, *smtpUser, *smtpPasswordFile)
+	if err != nil {
+		slog.Error("could not configure alert mail", "error", err)
+		return 1
+	}
+
 	srv, err := server.New(server.Config{
 		Addr:             *addr,
 		TLSCert:          *tlsCert,
@@ -233,17 +251,50 @@ func serve(argv []string) int {
 		TemplateKey:      templateKey,
 		HeartbeatSeconds: *heartbeat,
 		TokenTTL:         24 * time.Hour,
+		SMTP:             smtp,
 	})
 	if err != nil {
 		slog.Error("could not build the server", "error", err)
 		return 1
 	}
 
+	// The evaluator shares the process for the same reason the UI does: one binary plus PostgreSQL is
+	// the entire deployment. It stops with the same context the listener stops with.
+	go srv.RunAlertEvaluator(ctx)
+
 	if err := srv.ListenAndServe(ctx); err != nil {
 		slog.Error("the server stopped with an error", "error", err)
 		return 1
 	}
 	return 0
+}
+
+// smtpConfig assembles the relay configuration for alert mail.
+//
+// The password comes from a file or from the environment and never from a flag, because argv is
+// world-readable in ps and shows up in shell history — the same reasoning as the admin token, applied
+// to a credential that reaches somebody else's infrastructure.
+func smtpConfig(host string, port int, from, username, passwordFile string) (notify.SMTPConfig, error) {
+	cfg := notify.SMTPConfig{Host: host, Port: port, From: from, Username: username}
+	if host == "" {
+		return notify.SMTPConfig{}, nil
+	}
+	if from == "" {
+		return notify.SMTPConfig{}, errors.New("--smtp-host is set and --smtp-from is not; alert " +
+			"mail needs a sender address")
+	}
+	switch {
+	case passwordFile != "":
+		raw, err := os.ReadFile(passwordFile)
+		if err != nil {
+			return notify.SMTPConfig{}, fmt.Errorf("reading %s: %w", passwordFile, err)
+		}
+		cfg.Password = strings.TrimSpace(string(raw))
+	default:
+		cfg.Password = os.Getenv("FARRIER_SMTP_PASSWORD")
+	}
+	slog.Info("alert mail is configured", "relay", host, "port", port, "from", from)
+	return cfg, nil
 }
 
 // requireRowLevelSecurity refuses to start when the database role can see through the tenant boundary.

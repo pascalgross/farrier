@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/canonical"
@@ -368,6 +369,14 @@ func (s *Server) storeDocumentIfPresent(ctx context.Context, who caller, kind st
 	}
 	if err := storeFn(ctx, hostID, actual, encoded); err != nil {
 		slog.Error("could not store a reported document", "kind", kind, "host", hostID, "error", err)
+		return
+	}
+
+	// Unit monitoring rides the facts report, because the report arriving is the only moment a
+	// "before" and an "after" both exist. who.Host still carries the document this one replaced —
+	// it was loaded before the store above ran.
+	if kind == "facts" {
+		s.detectUnitTransitions(ctx, who, who.Host.Facts, encoded)
 	}
 }
 
@@ -480,7 +489,8 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, who caller
 	req.JobID = jobID
 	req.Output, req.OutputTruncated = protocol.TruncateOutput(req.Output)
 
-	switch err := who.Store.RecordResult(r.Context(), host.ID, req); {
+	first, err := who.Store.RecordResult(r.Context(), host.ID, req)
+	switch {
 	case errors.Is(err, store.ErrNotFound):
 		// Either the job never existed or it belongs to a different host. The two are one response, as
 		// everywhere else: distinguishing them would let an enrolled host enumerate other hosts' jobs.
@@ -496,7 +506,51 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, who caller
 
 	slog.Info("job result recorded",
 		"host", host.ID, "job", jobID, "status", req.Status, "exit_code", req.ExitCode)
+
+	// Emitted only for the first recording of a result: the agent retries until acknowledged, and an
+	// operator paged twice per failure starts counting failures wrong. Failures and expiries only —
+	// a refusal is the system working, and an event stream that treats refused_by_policy as an
+	// incident teaches its readers to ignore incidents.
+	if first {
+		switch req.Status {
+		case protocol.StatusFailed:
+			s.emit(r.Context(), who.Store.Tenant(), notify.Event{
+				Kind: string(notify.KindJobFailed), HostID: host.ID, Hostname: host.Hostname,
+				At:      time.Now().UTC(),
+				Summary: "a job failed on " + host.Hostname + ": " + firstLine(req.Error),
+				Detail: map[string]any{
+					"jobId": jobID, "status": req.Status, "exitCode": req.ExitCode,
+				},
+			})
+		case protocol.StatusExpired:
+			s.emit(r.Context(), who.Store.Tenant(), notify.Event{
+				Kind: string(notify.KindJobExpired), HostID: host.ID, Hostname: host.Hostname,
+				At: time.Now().UTC(),
+				Summary: "a job expired unexecuted on " + host.Hostname +
+					"; it sat past its validity window and the host refused to run stale work",
+				Detail: map[string]any{"jobId": jobID, "status": req.Status},
+			})
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
+}
+
+// firstLine trims an error report to something a one-line summary can carry.
+//
+// Job errors legitimately arrive as multi-line helper output, and a summary is a sentence in a chat
+// message or an inbox row — the full text is on the job's own page.
+func firstLine(s string) string {
+	if s == "" {
+		return "no error text was reported"
+	}
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }
 
 // handleRenew issues a fresh certificate for an already-authenticated host.
@@ -537,44 +591,6 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller)
 		CABundle:    string(s.cfg.Authority.CertificatePEM()),
 		NotAfter:    cert.NotAfter,
 	})
-}
-
-// emit delivers an event to every configured sink.
-//
-// Failures are logged and never propagated: a webhook endpoint being down must not fail an enrolment.
-// Delivery is synchronous with a short deadline rather than fire-and-forget, so that a request cannot
-// outlive the goroutine reporting on it and lose the log line.
-//
-// The tenant is a parameter and not a convenience. The server used to hold one list of sinks and
-// deliver every event to all of them, which on a hosted installation means one customer's hostnames,
-// intents and operator names arriving at another customer's chat channel — a leak no test would catch
-// and a customer would. An event now goes to the endpoint its own tenant configured, and to nowhere
-// else, and it carries its tenant so that one which somehow arrived in the wrong place is identifiable
-// as such rather than looking like an ordinary event.
-func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Event) {
-	ev.TenantID = string(tenantID)
-
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	defer cancel()
-
-	tenant, err := s.cfg.Store.GetTenant(ctx, tenantID)
-	if err != nil {
-		slog.Warn("could not read a tenant to deliver its events",
-			"tenant", tenantID, "kind", ev.Kind, "error", err)
-		return
-	}
-	if tenant.WebhookURL == "" {
-		return
-	}
-
-	// Constructed per event rather than cached. Events are rare — an enrolment, a job, an approval —
-	// and a cache keyed on a URL an administrator can change is a cache that eventually posts a
-	// customer's events to an endpoint they have already revoked.
-	sink := notify.NewWebhook("tenant-webhook", tenant.WebhookURL)
-	if err := sink.Deliver(ctx, ev); err != nil {
-		slog.Warn("event delivery failed",
-			"tenant", tenantID, "sink", sink.Name(), "kind", ev.Kind, "error", err)
-	}
 }
 
 // onlineKeyLine renders the control plane's own public key for an agent to store.
