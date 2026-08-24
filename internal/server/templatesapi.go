@@ -139,11 +139,8 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request, who
 func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request, who operator) {
 	var req templateRequest
 	if err := decodeJSON(w, r, MaxTemplateRequestBytes, &req); err != nil {
-		if isTooLarge(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, "too_large", "the request body is too large")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+		writeDecodeError(w, err, "this endpoint stores one template version, and the body holds more "+
+			"than one JSON value. Nothing was stored; send them as separate requests.")
 		return
 	}
 
@@ -333,7 +330,8 @@ type renderTokenRequest struct {
 func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, who operator) {
 	var req renderRequest
 	if err := decodeJSON(w, r, MaxTemplateRequestBytes, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+		writeDecodeError(w, err, "this endpoint renders one template, and the body holds more than one "+
+			"JSON value. Nothing was rendered and no token was minted; send them as separate requests.")
 		return
 	}
 	if req.Version < 0 {
@@ -380,8 +378,18 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, wh
 	// substitution is rehearsed against a placeholder first, and the real token replaces it only once
 	// the whole render is known to succeed.
 	mints := usesToken(string(body))
+	if req.Token != nil && !mints {
+		// Refused rather than ignored. Every field of the token block — the group a host joins, the
+		// bootstrap template it may apply — describes a credential this render is not going to produce,
+		// and accepting the request would hand back user-data that does nothing the caller asked for.
+		// It is the same strictness Render already applies to a parameter that substitutes nothing.
+		writeError(w, http.StatusBadRequest, "malformed",
+			"this template does not substitute {{"+provision.TokenPlaceholder+"}}, so no enrolment "+
+				"token is minted and the token field would have no effect")
+		return
+	}
 	if mints {
-		params[provision.TokenPlaceholder] = "rehearsal"
+		params[provision.TokenPlaceholder] = EnrollmentTokenStandIn()
 	}
 	if _, err := provision.Render(string(body), params); err != nil {
 		writeError(w, http.StatusBadRequest, "unrenderable", err.Error())

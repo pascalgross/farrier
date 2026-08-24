@@ -207,19 +207,11 @@ func jobState(rec store.JobRecord) string {
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who operator) {
 	var req jobRequest
 	if err := decodeJSON(w, r, MaxJobRequestBytes, &req); err != nil {
-		switch {
-		case isTooLarge(err):
-			writeError(w, http.StatusRequestEntityTooLarge, "too_large", "the request body is too large")
-		case errors.Is(err, errTrailingData):
-			// Worth its own message here. This endpoint is the one somebody scripts in a loop, and the
-			// failure it catches — two concatenated requests, of which only the first was ever going to
-			// be read — otherwise looks exactly like success for both.
-			writeError(w, http.StatusBadRequest, "malformed",
-				"this endpoint issues one job to one host, and the body holds more than one JSON "+
-					"value. Nothing was queued; send them as separate requests.")
-		default:
-			writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
-		}
+		// The trailing-data message is worth its own words here. This endpoint is the one somebody
+		// scripts in a loop, and the failure it catches — two concatenated requests, of which only the
+		// first was ever going to be read — otherwise looks exactly like success for both.
+		writeDecodeError(w, err, "this endpoint issues one job to one host, and the body holds more "+
+			"than one JSON value. Nothing was queued; send them as separate requests.")
 		return
 	}
 
