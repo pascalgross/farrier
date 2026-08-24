@@ -176,7 +176,7 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 		cooldown = DefaultAlertCooldownSeconds * time.Second
 	}
 
-	var firing []firingHost
+	var firing, recovered []firingHost
 	for _, host := range hosts {
 		if host.Revoked {
 			continue
@@ -207,14 +207,7 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 		case !fire && state.Firing:
 			state.Firing = false
 			state.LastNotified = time.Time{}
-			s.notifyAlert(ctx, scoped, rule, notify.Event{
-				Kind:     string(recoveryKind(rule.Condition)),
-				HostID:   host.ID,
-				Hostname: host.Hostname,
-				At:       now,
-				Summary:  recoverySummary(rule, host),
-				Detail:   map[string]any{"ruleId": rule.ID, "condition": string(rule.Condition)},
-			})
+			recovered = append(recovered, firingHost{host: host, summary: recoverySummary(rule, host)})
 		}
 
 		if state != held[rule.ID+"\x00"+host.ID] {
@@ -226,37 +219,70 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 		}
 	}
 
-	if len(firing) == 0 {
-		return
+	// Recoveries collapse into a digest on the same threshold firings do, and they have to: a
+	// partition that heals recovers every host at once, and three hundred "heartbeating again" mails
+	// are the ones that bury the one host that did not come back.
+	refused := s.notifyBatch(ctx, scoped, rule, firing, now, firingKind(rule.Condition), true)
+	if reason := s.notifyBatch(ctx, scoped, rule, recovered, now,
+		recoveryKind(rule.Condition), false); reason != "" {
+		refused = reason
 	}
-	if len(firing) > alertDigestThreshold {
+
+	// One record per rule per pass, not one per host. The refusal this describes is a property of the
+	// control plane rather than of any particular host, and the field it lands in is on the rule —
+	// writing it three hundred times during the overload it reports would serialise three hundred
+	// round trips into the tick that is already behind.
+	if refused != "" {
+		s.recordDelivery(scoped, rule.ID, refused)
+	}
+}
+
+// notifyBatch sends one rule's firings or recoveries, collapsing to a digest past the threshold.
+//
+// It returns the reason a delivery was refused, empty when none was, so the caller can record it once
+// for the whole pass.
+func (s *Server) notifyBatch(ctx context.Context, scoped store.Scoped, rule store.AlertRule,
+	batch []firingHost, now time.Time, kind notify.Kind, isFiring bool) string {
+
+	if len(batch) == 0 {
+		return ""
+	}
+	if len(batch) > alertDigestThreshold {
 		// The digest form: one notification naming the count and the first few hosts, because 300
 		// identical pages during a partition is how the one different page gets missed.
 		names := make([]string, 0, alertDigestThreshold)
-		for _, f := range firing[:alertDigestThreshold] {
+		for _, f := range batch[:alertDigestThreshold] {
 			names = append(names, f.host.Hostname)
 		}
-		s.notifyAlert(ctx, scoped, rule, notify.Event{
-			Kind: string(firingKind(rule.Condition)),
+		verb := recoveryPhrase(rule)
+		if isFiring {
+			verb = conditionPhrase(rule)
+		}
+		return s.notifyAlert(ctx, scoped, rule, notify.Event{
+			Kind: string(kind),
 			At:   now,
-			Summary: strconv.Itoa(len(firing)) + " hosts " + conditionPhrase(rule) + ": " +
+			Summary: strconv.Itoa(len(batch)) + " hosts " + verb + ": " +
 				strings.Join(names, ", ") + ", …",
 			Detail: map[string]any{
-				"ruleId": rule.ID, "condition": string(rule.Condition), "hosts": len(firing),
+				"ruleId": rule.ID, "condition": string(rule.Condition), "hosts": len(batch),
 			},
 		})
-		return
 	}
-	for _, f := range firing {
-		s.notifyAlert(ctx, scoped, rule, notify.Event{
-			Kind:     string(firingKind(rule.Condition)),
+
+	var refused string
+	for _, f := range batch {
+		if reason := s.notifyAlert(ctx, scoped, rule, notify.Event{
+			Kind:     string(kind),
 			HostID:   f.host.ID,
 			Hostname: f.host.Hostname,
 			At:       now,
 			Summary:  f.summary,
 			Detail:   map[string]any{"ruleId": rule.ID, "condition": string(rule.Condition)},
-		})
+		}); reason != "" {
+			refused = reason
+		}
 	}
+	return refused
 }
 
 // conditionHolds reports whether the raw condition is true for one host right now, and the summary a
@@ -352,6 +378,22 @@ func conditionPhrase(rule store.AlertRule) string {
 	}
 }
 
+// recoveryPhrase renders a resolution for a digest summary.
+//
+// Its own function rather than "recovered from " prefixed to conditionPhrase, because that produces
+// "300 hosts recovered from silent for over 30 minutes" — a sentence somebody has to read twice at
+// three in the morning, which is the only hour this line is ever read.
+func recoveryPhrase(rule store.AlertRule) string {
+	switch rule.Condition {
+	case store.ConditionHostSilent:
+		return "are heartbeating again"
+	case store.ConditionSecurityUpdates:
+		return "are back under " + strconv.Itoa(rule.Threshold) + " security updates"
+	default:
+		return "no longer need a reboot"
+	}
+}
+
 // recoverySummary renders the un-firing line.
 func recoverySummary(rule store.AlertRule, host store.Host) string {
 	switch rule.Condition {
@@ -370,27 +412,26 @@ func recoverySummary(rule store.AlertRule, host store.Host) string {
 // A rule produces a notification. A rule never produces a job — there is deliberately nothing here
 // that could, and any future "auto-remediate" is a different feature with a different threat model
 // that gets its own argument.
+//
+// It returns the reason the mail could not be started, empty when it was. The caller records that
+// once per pass: this pair's cooldown has already been stamped, so nothing will try again for hours — and a
+// dropped recovery is not retried at all — which is precisely the silence the delivery record exists
+// to distinguish from a rule that never fired.
 func (s *Server) notifyAlert(ctx context.Context, scoped store.Scoped, rule store.AlertRule,
-	ev notify.Event) {
+	ev notify.Event) string {
 
 	s.emit(ctx, scoped.Tenant(), ev)
 	if len(rule.EmailTo) == 0 {
-		return
+		return ""
 	}
 
 	// Detached like every other delivery that leaves the process, and here the reason is the
 	// evaluator's own context: it is cancelled by the shutdown signal, so mailing on it directly
 	// would abort exactly the alert a stopping control plane most needs to have sent.
-	started, reason := s.detach("alert mail", func(outCtx context.Context) {
+	_, reason := s.detach("alert mail", func(outCtx context.Context) {
 		s.mailRule(outCtx, scoped, rule, ev)
 	})
-	if !started {
-		// The caller has already stamped this pair's cooldown, so the next few hours will produce no
-		// second attempt — and a recovery mail that is dropped is not retried at all. Recording why
-		// is the whole point of the field: an alert that never went out and an alert that never
-		// fired are indistinguishable from an inbox.
-		s.recordDelivery(scoped, rule.ID, reason)
-	}
+	return reason
 }
 
 // mailRule sends one event to a rule's recipients, when there are any and a relay exists.
@@ -435,17 +476,18 @@ const deliveryRecordTimeout = 10 * time.Second
 // recordDelivery stamps one rule with the outcome of its most recent mail attempt.
 //
 // It takes no context from its caller, deliberately. This runs after a delivery that may have been
-// cancelled — by its own sink budget, or by the pass budget around it — and writing the outcome on
-// that same cancelled context would fail with "context canceled" and leave the rule showing nothing
-// at all: indistinguishable from a rule that never fired, which is the exact confusion the whole
-// record exists to prevent. It uses the server's outbound context instead, which is cancelled only by
-// the shutdown drain — so the record survives every failure it is meant to describe, and still cannot
-// hold up a stopping process.
+// cancelled — by its own sink budget, or by the shutdown drain — and writing the outcome on that same
+// cancelled context would fail with "context canceled" and leave the rule showing nothing at all:
+// indistinguishable from a rule that never fired, which is the exact confusion the whole record
+// exists to prevent. It writes on a context nothing cancels, with a short deadline of its own, so the
+// record survives every failure it is meant to describe and still cannot hold up a stopping process
+// for long.
 //
 // Its own failure is logged and dropped: this is the reporting path, and a control plane that gave up
 // on an alert because it could not write down how the alert went is the wrong trade in every case.
 func (s *Server) recordDelivery(scoped store.Scoped, ruleID, failure string) {
-	recordCtx, done := context.WithTimeout(s.outboundCtx, deliveryRecordTimeout)
+	recordCtx, done := context.WithTimeout(context.WithoutCancel(s.outboundCtx),
+		deliveryRecordTimeout)
 	defer done()
 	if err := scoped.RecordAlertDelivery(recordCtx, ruleID, time.Now().UTC(), failure); err != nil {
 		slog.Warn("could not record an alert delivery outcome", "rule", ruleID, "error", err)
@@ -469,16 +511,26 @@ func (s *Server) routeEventMail(ctx context.Context, scoped store.Scoped, ev not
 		return
 	}
 
-	rules, err := scoped.ListAlertRules(ctx)
-	if err != nil {
-		slog.Warn("could not list alert rules to route an event", "kind", ev.Kind, "error", err)
+	// Each read is bounded on its own. The pass around them deliberately is not — a ceiling above the
+	// sinks would let a black-holed webhook eat the mail behind it — so an unreachable database has
+	// to be stopped here or not at all.
+	readCtx, readDone := context.WithTimeout(ctx, outboundStoreTimeout)
+	rules, err := scoped.ListAlertRules(readCtx)
+	if err == nil {
+		var states []store.AlertState
+		states, err = scoped.ListAlertStates(readCtx)
+		readDone()
+		s.routeToRules(ctx, scoped, ev, condition, rules, states)
 		return
 	}
-	states, err := scoped.ListAlertStates(ctx)
-	if err != nil {
-		slog.Warn("could not list alert states to route an event", "kind", ev.Kind, "error", err)
-		return
-	}
+	readDone()
+	slog.Warn("could not read the alert rules to route an event", "kind", ev.Kind, "error", err)
+}
+
+// routeToRules mails each rule that routes this event kind and is past its cooldown.
+func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notify.Event,
+	condition store.AlertCondition, rules []store.AlertRule, states []store.AlertState) {
+
 	now := time.Now().UTC()
 
 	for _, rule := range rules {
@@ -499,9 +551,13 @@ func (s *Server) routeEventMail(ctx context.Context, scoped store.Scoped, ev not
 			continue
 		}
 		s.mailRule(ctx, scoped, rule, ev)
-		if err := scoped.UpsertAlertState(ctx, store.AlertState{
+
+		stampCtx, stampDone := context.WithTimeout(ctx, outboundStoreTimeout)
+		err := scoped.UpsertAlertState(stampCtx, store.AlertState{
 			RuleID: rule.ID, HostID: ev.HostID, Firing: true, Since: now, LastNotified: now,
-		}); err != nil {
+		})
+		stampDone()
+		if err != nil {
 			slog.Warn("could not persist an event-routing cooldown", "rule", rule.ID, "error", err)
 		}
 	}

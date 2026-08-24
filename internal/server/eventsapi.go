@@ -106,22 +106,21 @@ func (b *eventStream) broadcast(tenant store.TenantID, view eventView) {
 // it — the two have nothing to do with each other and fail independently.
 const deliveryBudget = 60 * time.Second
 
-// outboundPassBudget bounds one detached pass end to end.
+// outboundStoreTimeout bounds each store read a delivery pass makes.
 //
-// Every sink has its own budget, so this is not what stops a slow relay; it is what stops a pass that
-// is *not* talking to a sink at all. A pass reads the tenant row, the rules and their states, and an
-// unreachable database has no deadline of its own here — without this ceiling those reads would park
-// a goroutine until the process stopped. Three minutes is comfortably more than a webhook and a
-// handful of rules' mail need, and finite, which is the property that matters.
-const outboundPassBudget = 3 * time.Minute
+// It is deliberately *not* a budget over the whole pass. A ceiling above the sinks would mean a
+// black-holed webhook eating the alert mail queued behind it — the exact failure the per-sink budgets
+// exist to prevent — so the non-sink work is bounded where it happens instead: the tenant row, the
+// rules and their states. An unreachable database has no deadline of its own here, and without one
+// those reads would park a goroutine until the process stopped.
+const outboundStoreTimeout = 10 * time.Second
 
 // maxOutboundInFlight caps the detached passes running at once.
 //
-// The cap and outboundPassBudget together are the whole bound: at worst this many goroutines for that
-// long. Without them, a fleet flapping against a sink that is down converts every event into a
-// goroutine, and the pile-up outlasts the incident that caused it. Past the cap a pass is refused with
-// a log line — which is the correct loss, because the event is already in the inbox and the inbox is
-// the delivery that was promised.
+// Without it, a fleet flapping against a sink that is down converts every event into a goroutine, and
+// the pile-up outlasts the incident that caused it. Past the cap a pass is refused with a log line —
+// which is the correct loss, because the event is already in the inbox and the inbox is the delivery
+// that was promised. A pass is bounded by its sinks' own budgets, so the cap bounds the whole thing.
 const maxOutboundInFlight = 64
 
 // emit records an event durably, shows it to open tabs, and delivers it outside best-effort.
@@ -232,17 +231,18 @@ func (s *Server) detach(what string, work func(context.Context)) (started bool, 
 			s.outboundMu.Unlock()
 			s.outbound.Done()
 		}()
-		passCtx, done := context.WithTimeout(s.outboundCtx, outboundPassBudget)
-		defer done()
-		work(passCtx)
+		work(s.outboundCtx)
 	}()
 	return true, ""
 }
 
 // deliverOutside posts the event to the tenant's webhook and mails the rules that route it.
 //
-// Split out of emit so the part that leaves the process is one function with one budget, and so the
-// part that must be synchronous — the inbox, the stream — cannot accidentally grow a network call.
+// Split out of emit so the part that leaves the process is one function, and so the part that must be
+// synchronous — the inbox, the stream — cannot accidentally grow a network call. Every sink call here
+// carries its own deliveryBudget and every store read its own outboundStoreTimeout; there is
+// deliberately no ceiling over the whole function, because one would let a black-holed webhook eat
+// the alert mail behind it.
 func (s *Server) deliverOutside(ctx context.Context, scoped store.Scoped, ev notify.Event) {
 	tenantID := scoped.Tenant()
 
@@ -250,7 +250,11 @@ func (s *Server) deliverOutside(ctx context.Context, scoped store.Scoped, ev not
 	// nothing to do with each other, and an unreadable tenant row silently suppressing every alert
 	// mail for an event — with nothing stamped on the rule to say so — is the failure this whole
 	// section exists to avoid.
-	switch tenant, err := s.cfg.Store.GetTenant(ctx, tenantID); {
+	tenantCtx, readDone := context.WithTimeout(ctx, outboundStoreTimeout)
+	tenant, tenantErr := s.cfg.Store.GetTenant(tenantCtx, tenantID)
+	readDone()
+
+	switch err := tenantErr; {
 	case err != nil:
 		slog.Warn("could not read a tenant to deliver its events to a webhook",
 			"tenant", tenantID, "kind", ev.Kind, "error", err)
