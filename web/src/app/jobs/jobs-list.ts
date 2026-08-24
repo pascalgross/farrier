@@ -67,12 +67,13 @@ export class JobsList {
   protected readonly awaiting = signal<Job[]>([]);
 
   /**
-   * Whether the approval queue itself was cut short, so its oldest entries are missing.
+   * Whether the approval queue filled its bound, so its oldest entries may be missing.
    *
    * Its own flag rather than a share of `truncated`, because the two truncations mean opposite
-   * things: a bounded history is routine, a bounded approval queue is hiding exactly the jobs that
-   * have waited longest from exactly the person who must see them. It is rendered inside the card as
-   * a warning, not as a footnote.
+   * things: a bounded history is routine, a bounded approval queue may be hiding exactly the jobs
+   * that have waited longest from exactly the person who must see them. It is rendered inside the
+   * card as a warning, not as a footnote — and the warning says "may", because the server reports
+   * the bound being filled, which a queue of exactly the bound's size does without losing anything.
    */
   protected readonly awaitingTruncated = signal(false);
 
