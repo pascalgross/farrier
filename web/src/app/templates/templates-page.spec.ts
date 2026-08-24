@@ -85,6 +85,23 @@ function render(
   return fixture;
 }
 
+/**
+ * Every h2 on the page, collapsed.
+ *
+ * The detail pane's heading is not the first h2 — the stored-templates list has one above it — so a
+ * spec asking "is this template open" has to look at the set rather than at whichever comes first.
+ */
+function headings(fixture: ComponentFixture<TemplatesPage>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('h2')).map((h) => text(h as Element));
+}
+
+/** Every card title on the page, collapsed, so a spec can assert a pane is absent. */
+function cardTitles(fixture: ComponentFixture<TemplatesPage>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('mat-card-title')).map((t) =>
+    text(t as Element),
+  );
+}
+
 /** Collapses whitespace, so an assertion can be written the way a row actually reads. */
 function text(element: Element | null): string {
   return (element?.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -158,5 +175,85 @@ describe('TemplatesPage version history', () => {
 
     expect(titles).not.toContain('Versions');
     expect(titles).toContain('Render');
+  });
+});
+
+describe('TemplatesPage pane correlation', () => {
+  /**
+   * Opening a template is two requests — the body and the history — and nothing else ties their
+   * answers together. They can disagree in both directions: reading a version decrypts a sealed body
+   * and answers 500 where the listing, which decrypts nothing, answers 200; and two clicks in flight
+   * can land in either order. Either way the markup would compare one template's revision numbers
+   * against another's open version, marking the wrong row "open" and offering buttons that pair this
+   * name with that one's versions.
+   */
+  it('discards a history that belongs to a different template', () => {
+    const open = version({ name: 'standard-server', version: 2 });
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        {
+          provide: ApiService,
+          useValue: {
+            templates: () => of({ templates: [] }),
+            template: () => of(open),
+            // A late answer about the template the operator has already navigated away from.
+            templateVersions: () =>
+              of({
+                name: 'something-else',
+                versions: [revision({ version: 9 }), revision({ version: 8 })],
+              }),
+          } as unknown as ApiService,
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(TemplatesPage);
+    fixture.detectChanges();
+    (fixture.componentInstance as unknown as PageInternals).open('standard-server');
+    fixture.detectChanges();
+
+    expect(cardTitles(fixture)).not.toContain('Versions');
+    expect(headings(fixture)).toContain('standard-server v2');
+  });
+
+  /**
+   * The complementary half: a failed body fetch must not leave the previous template on screen while
+   * the new one's history loads underneath it. Clearing both up front is what makes the pane's two
+   * halves always describe the same template, including in the window before either answer arrives.
+   */
+  it('does not show one template\'s history against another template\'s body', () => {
+    let call = 0;
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        {
+          provide: ApiService,
+          useValue: {
+            templates: () => of({ templates: [] }),
+            // The first open succeeds; the second — a different template — fails on the body.
+            template: () =>
+              call++ === 0
+                ? of(version({ name: 'first', version: 1 }))
+                : throwError(() => new Error('sealed')),
+            templateVersions: (name: string) =>
+              of({ name, versions: [revision({ version: 4 }), revision({ version: 3 })] }),
+          } as unknown as ApiService,
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(TemplatesPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance as unknown as PageInternals;
+
+    page.open('first');
+    fixture.detectChanges();
+    expect(headings(fixture)).toContain('first v1');
+
+    page.open('second');
+    fixture.detectChanges();
+
+    // No stale header, and therefore no pane pairing "second"'s revisions with "first"'s version.
+    expect(headings(fixture).join(' ')).not.toContain('first v1');
+    expect(cardTitles(fixture)).not.toContain('Versions');
   });
 });

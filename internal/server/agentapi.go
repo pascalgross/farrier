@@ -257,6 +257,16 @@ func (s *Server) resolveBootstrap(w http.ResponseWriter, r *http.Request, tenant
 		return nil, false
 	}
 
+	// Checked again here, and the repetition is the point — the same reason the signature is checked
+	// again a few lines above. A token names a template, never a version, so the row resolved when the
+	// token was minted and the row resolved now are two different reads of "the latest": storing a new
+	// version during a token's lifetime is ordinary, and a check that ran only at mint time would let
+	// that version through. This is where the bytes are actually chosen, so this is where it has to
+	// hold.
+	if !bootstrapDoesNotMintItsOwnToken(w, record.Name, string(body)) {
+		return nil, false
+	}
+
 	return &protocol.Bootstrap{
 		Name:        record.Name,
 		Version:     record.Version,

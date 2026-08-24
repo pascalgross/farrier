@@ -11,6 +11,8 @@ import (
 	"math/big"
 	"mime"
 	"net"
+	"net/smtp"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -518,6 +520,14 @@ func TestSTARTTLSIsTakenAndTheRelayIsVerified(t *testing.T) {
 	}
 }
 
+// privilegedPortsEnv turns the skip below into a failure.
+//
+// CI sets it after arranging for an unprivileged process to bind 465. It is the shape
+// TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate uses for the same reason: a check that opts
+// itself out reports exactly what a passing one does, so where the environment is supposed to support
+// it, not running is a failure.
+const privilegedPortsEnv = "FARRIER_TEST_PRIVILEGED_PORTS"
+
 // implicitTLSPort is the port that selects implicit TLS, and the reason the test below can be skipped.
 //
 // It is a constant here rather than a literal in one place because the skip message has to name it: a
@@ -540,9 +550,22 @@ const implicitTLSPort = 465
 func TestPortFourSixFiveSpeaksTLSFromTheFirstByte(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(implicitTLSPort))
 	if err != nil {
+		// A skip is the right answer on a laptop and the wrong one in CI, so the environment decides
+		// which it gets. Without the variable this is the one property here an unprivileged process
+		// cannot observe, and skipping says so. With it, the runner has been arranged to make the bind
+		// possible, and a skip would then be a check that quietly stopped running — the failure this
+		// repository already refuses to accept from the store tests and the PKCS#11 ones. Same shape:
+		// a test that opts itself out is worse than no test, because the summary reads the same.
+		if os.Getenv(privilegedPortsEnv) != "" {
+			t.Fatalf("%s is set, so this runner is meant to be able to bind %d, and it could not: %v. "+
+				"Either the setup step that lowers ip_unprivileged_port_start did not run, or something "+
+				"else holds the port — do not paper over it by unsetting the variable",
+				privilegedPortsEnv, implicitTLSPort, err)
+		}
 		t.Skipf("this test needs a listener on the privileged port %d, which this process may not "+
-			"bind (%v); it is the one assertion here that an unprivileged runner cannot make",
-			implicitTLSPort, err)
+			"bind (%v); it is the one assertion here that an unprivileged runner cannot make. CI sets "+
+			"%s so that this is a failure there rather than a silent skip",
+			implicitTLSPort, err, privilegedPortsEnv)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 
@@ -661,9 +684,160 @@ func TestAnUnconfiguredRelayAndAnEmptyRecipientListAreRefusedBeforeAnySocket(t *
 	if err == nil || !strings.Contains(err.Error(), "SMTP") {
 		t.Fatalf("an unconfigured relay: %v", err)
 	}
-	err = NewSMTP(SMTPConfig{Host: "relay.invalid", Port: 587, From: "farrier@example.org"}, nil).
-		Deliver(context.Background(), testEvent)
+
+	// The recipient half gets a live relay to not connect to, because this is the arrangement where a
+	// socket is actually possible: the host, the port and the sender are all valid, and only the list
+	// of people to tell is empty. Reading the error text alone would pass against a build that dialled,
+	// greeted, negotiated TLS and only then noticed it had nobody to send to — which is a connection to
+	// a mail server on every event, from an installation that mails nothing.
+	connected := make(chan struct{})
+	r := startRelay(t, func(_ *relay, _ net.Conn, _ *bufio.Reader) { close(connected) })
+
+	err = NewSMTP(r.config(), nil).Deliver(context.Background(), testEvent)
 	if err == nil || !strings.Contains(err.Error(), "recipients") {
 		t.Fatalf("an empty recipient list: %v", err)
 	}
+	select {
+	case <-connected:
+		t.Fatal("a delivery with no recipients opened a connection to the relay anyway")
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+// TestImplicitTLSIsSelectedByThePortAndNothingElse covers the half of the transport decision that a
+// runner unable to bind 465 can still observe.
+//
+// The decision is made twice — once to choose the dialer, once to decide whether STARTTLS is still
+// owed — and a build where the two disagreed would dial TLS and then write the word STARTTLS into a
+// stream the relay is already reading as TLS records. That is why it is one predicate rather than two
+// comparisons, and asserting the predicate directly is what keeps the classification covered on every
+// runner, whatever the port bind does.
+//
+// 587 and 25 are here because they are the ports operators actually configure, and both must take the
+// STARTTLS path; 0 is the unconfigured zero value, which must not accidentally mean implicit TLS.
+func TestImplicitTLSIsSelectedByThePortAndNothingElse(t *testing.T) {
+	for _, c := range []struct {
+		// port is the configured relay port.
+		port int
+
+		// want is whether TLS is expected from the first byte.
+		want bool
+	}{
+		{465, true},
+		{587, false},
+		{25, false},
+		{2525, false},
+		{0, false},
+		{4650, false},
+	} {
+		if got := (SMTPConfig{Host: "relay.invalid", Port: c.port}).implicitTLS(); got != c.want {
+			t.Errorf("port %d: implicitTLS() = %v, want %v", c.port, got, c.want)
+		}
+	}
+}
+
+// TestNetSMTPRefusesALineBreakInAnAddress pins the mechanism that closes the two headers
+// sanitizeHeader does not touch.
+//
+// Only the Subject is sanitized. From and To are interpolated into the message verbatim, and one of
+// them is operator-supplied — a rule's recipient list. internal/server refuses a recipient containing
+// a line break, but that is a validation two packages away, and this package's own correctness should
+// not depend on a row having come through that handler: a migration, a restore, or a future writer
+// that forgets would each produce a recipient nobody checked.
+//
+// What actually closes it is the standard library. Client.Mail and Client.Rcpt each run the address
+// through validateLine, which refuses CR and LF, and Deliver calls both of them *before* it renders
+// the message — so a poisoned address ends the conversation with an error rather than becoming a Bcc
+// header. That is a dependency on somebody else's implementation detail, which is exactly the kind of
+// thing worth an assertion: if a future Go release stopped validating, this package would silently
+// lose its only defence for those two headers, and nothing else here would notice.
+//
+// Driven against net/smtp directly rather than through Deliver, deliberately. Deliver verifies the
+// relay's certificate before it reaches Mail or Rcpt, so an end-to-end version would be refused at the
+// handshake and would pass without ever exercising the property it names.
+func TestNetSMTPRefusesALineBreakInAnAddress(t *testing.T) {
+	poisoned := []string{
+		"oncall@example.org>\r\nBcc: attacker@example.net",
+		"oncall@example.org\nBcc: attacker@example.net",
+		"oncall@example.org\rBcc: attacker@example.net",
+	}
+
+	for _, address := range poisoned {
+		r, client := conversingRelay(t)
+
+		if err := client.Mail(address); err == nil {
+			t.Errorf("Mail(%q) was accepted", address)
+		}
+		if err := client.Rcpt(address); err == nil {
+			t.Errorf("Rcpt(%q) was accepted", address)
+		}
+		_ = client.Close()
+
+		<-r.closed
+		for _, line := range r.received.all() {
+			if strings.Contains(strings.ToLower(line), "bcc:") {
+				t.Errorf("%q: an injected header reached the relay: %q", address, line)
+			}
+		}
+		if r.received.sawCommand("DATA") {
+			t.Errorf("%q: the conversation reached DATA", address)
+		}
+	}
+
+	// And a clean address is accepted by the same relay, or every assertion above would be satisfied
+	// by a client that could not send anything at all.
+	r, client := conversingRelay(t)
+	if err := client.Mail("farrier@example.org"); err != nil {
+		t.Fatalf("a clean sender was refused, so this test proves nothing: %v", err)
+	}
+	if err := client.Rcpt("oncall@example.org"); err != nil {
+		t.Fatalf("a clean recipient was refused, so this test proves nothing: %v", err)
+	}
+	_ = client.Close()
+	<-r.closed
+	if !r.received.sawCommand("MAIL FROM") || !r.received.sawCommand("RCPT TO") {
+		t.Fatalf("the clean pair never reached the relay: %v", r.received.all())
+	}
+}
+
+// conversingRelay starts a plaintext relay that answers every command, and returns a client on it.
+//
+// Plaintext because this is about address validation rather than transport: the client here is
+// net/smtp's, driven directly, and the point is what it refuses to put on the wire at all. Deliver's
+// own refusal to speak to a relay like this one is asserted separately, and unconditionally, by
+// TestGuaranteeAlertMailIsRefusedRatherThanSentInPlaintext.
+func conversingRelay(t *testing.T) (*relay, *smtp.Client) {
+	t.Helper()
+
+	r := startRelay(t, func(r *relay, conn net.Conn, in *bufio.Reader) {
+		_, _ = conn.Write([]byte("220 relay.invalid ESMTP\r\n"))
+		for {
+			line, err := r.readLine(in)
+			if err != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(strings.ToUpper(line), "EHLO"):
+				_, _ = conn.Write([]byte("250-relay.invalid\r\n250 SIZE 10240000\r\n"))
+			case strings.HasPrefix(strings.ToUpper(line), "QUIT"):
+				_, _ = conn.Write([]byte("221 2.0.0 Bye\r\n"))
+				return
+			default:
+				_, _ = conn.Write([]byte("250 2.0.0 Ok\r\n"))
+			}
+		}
+	})
+
+	conn, err := net.Dial("tcp", net.JoinHostPort(r.host, strconv.Itoa(r.port)))
+	if err != nil {
+		t.Fatalf("dialling the relay: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client, err := smtp.NewClient(conn, r.host)
+	if err != nil {
+		t.Fatalf("greeting the relay: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return r, client
 }

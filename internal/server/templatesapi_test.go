@@ -574,36 +574,44 @@ func TestARenderRefusesAnUnsignedBootstrap(t *testing.T) {
 	}
 }
 
-// TestABootstrapTemplateWithAPlaceholderIsRefusedAtMintTime asserts the check that keeps a Tier 1
-// template from being handed to a host as a Tier 2 one.
+// TestABootstrapThatMintsItsOwnTokenIsRefusedAtEveryPoint pins the one substitution a verbatim body
+// cannot carry, and the much larger set it must.
 //
-// A bootstrap template is delivered verbatim — the offline signature covers those exact bytes, so
-// nothing renders it on the way — and a body that still substitutes {{hostname}} would reach cloud-init
-// with the braces in it and write a literal "{{hostname}}" into the machine's configuration. The
-// failure is silent at every point that could catch it later: the signature verifies, cloud-init
-// accepts the document, and the machine comes up wrong. So it is caught here, while an operator is at a
-// keyboard, and on both paths that mint a token naming a bootstrap.
-func TestABootstrapTemplateWithAPlaceholderIsRefusedAtMintTime(t *testing.T) {
+// {{enrollmentToken}} is minted by the render endpoint, and a bootstrap never goes through it: the
+// body is handed to the host exactly as the offline signature covers it. So a bootstrap carrying that
+// placeholder reaches cloud-init with the braces intact and enrols nothing — there is no reading of it
+// that works, which is what makes a refusal right rather than officious.
+//
+// Every other brace pair is the opposite case and the reason this check is one name wide. cloud-init
+// resolves its own `## template: jinja` documents on the machine, and verbatim delivery is precisely
+// what lets it: a per-host bootstrap is written that way. A broader check would refuse the templates
+// this path exists to carry, and because the body is signed by a key the control plane does not hold,
+// an operator could not edit their way past it without re-signing offline.
+func TestABootstrapThatMintsItsOwnTokenIsRefusedAtEveryPoint(t *testing.T) {
 	h := newHarness(t)
+	store1 := func(name, body string) {
+		t.Helper()
+		if _, err := h.scoped().CreateTemplateVersion(context.Background(), store.TemplateVersion{
+			Name: name, BodySealed: sealForHarness(t, h, body),
+			Signature: "c2lnbmF0dXJl", SignerKeyID: "ops-1", SignerAlgorithm: "ed25519",
+			CreatedAt: time.Now().UTC(), CreatedBy: "test",
+		}); err != nil {
+			t.Fatalf("storing %s: %v", name, err)
+		}
+	}
 
 	// Signed, so the refusal under test is the placeholder one and not the unsigned-template check
 	// that runs before it.
-	if _, err := h.scoped().CreateTemplateVersion(context.Background(), store.TemplateVersion{
-		Name: "half-rendered", BodySealed: sealForHarness(t, h, templateBody),
-		Signature: "c2lnbmF0dXJl", SignerKeyID: "ops-1", SignerAlgorithm: "ed25519",
-		CreatedAt: time.Now().UTC(), CreatedBy: "test",
-	}); err != nil {
-		t.Fatalf("storing the template: %v", err)
-	}
+	store1("mints-a-token", templateBody)
 
 	status, raw := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/tokens", map[string]any{
-		"label": "web", "group": "web-prod", "bootstrap": "half-rendered",
+		"label": "web", "group": "web-prod", "bootstrap": "mints-a-token",
 	})
 	if status != http.StatusConflict || !strings.Contains(string(raw), "unrendered_template") {
-		t.Fatalf("a template with placeholders was issued as a bootstrap: %d %s", status, raw)
+		t.Fatalf("a bootstrap substituting the reserved placeholder was issued: %d %s", status, raw)
 	}
-	if !strings.Contains(string(raw), "hostname") {
-		t.Fatalf("the refusal did not name the placeholder that caused it: %s", raw)
+	if !strings.Contains(string(raw), "enrollmentToken") {
+		t.Fatalf("the refusal does not name the placeholder that caused it: %s", raw)
 	}
 	if h.countTokens(t) != 0 {
 		t.Fatalf("the refusal minted a token anyway")
@@ -615,7 +623,7 @@ func TestABootstrapTemplateWithAPlaceholderIsRefusedAtMintTime(t *testing.T) {
 	status, raw = h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/templates/userdata/render",
 		map[string]any{
 			"params": map[string]string{"hostname": "web-01"},
-			"token":  map[string]any{"group": "web-prod", "bootstrap": "half-rendered"},
+			"token":  map[string]any{"group": "web-prod", "bootstrap": "mints-a-token"},
 		})
 	if status != http.StatusConflict || !strings.Contains(string(raw), "unrendered_template") {
 		t.Fatalf("the render path issued it: %d %s", status, raw)
@@ -624,18 +632,78 @@ func TestABootstrapTemplateWithAPlaceholderIsRefusedAtMintTime(t *testing.T) {
 		t.Fatalf("the render path minted a token before refusing")
 	}
 
-	// And a bootstrap template that substitutes nothing is issuable, which is what makes the refusal
-	// above a check rather than a wall.
-	if _, err := h.scoped().CreateTemplateVersion(context.Background(), store.TemplateVersion{
-		Name: "complete", BodySealed: sealForHarness(t, h, "#cloud-config\nhostname: fixed\n"),
-		Signature: "c2lnbmF0dXJl", SignerKeyID: "ops-1", SignerAlgorithm: "ed25519",
-		CreatedAt: time.Now().UTC(), CreatedBy: "test",
-	}); err != nil {
-		t.Fatalf("storing the complete template: %v", err)
-	}
+	// The half that matters more, because getting it wrong breaks templates that were working: a body
+	// full of braces that are not Farrier's is issuable. This is a real cloud-init jinja document —
+	// the header cloud-init requires, a variable it resolves on the machine, and a write_files payload
+	// carrying somebody else's template syntax to disk.
+	store1("jinja", "## template: jinja\n#cloud-config\nhostname: {{ v1.local_hostname }}\n"+
+		"write_files:\n  - path: /etc/prometheus/rules.yml\n    content: '{{ .Labels.alertname }}'\n")
 	if status, raw := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/tokens", map[string]any{
-		"label": "web", "group": "web-prod", "bootstrap": "complete",
+		"label": "web", "group": "web-prod", "bootstrap": "jinja",
 	}); status != http.StatusCreated {
-		t.Fatalf("a fully-substituted bootstrap template was refused: %d %s", status, raw)
+		t.Fatalf("a cloud-init jinja bootstrap was refused, which is the class verbatim delivery "+
+			"exists to carry: %d %s", status, raw)
+	}
+}
+
+// TestABootstrapIsCheckedWhereItsBytesAreChosen closes the window between minting and enrolling.
+//
+// A token names a template, never a version. The row resolved when the token was minted and the row
+// resolved when a host enrols are two separate reads of "the latest", and storing a new version during
+// a token's lifetime is ordinary work — the default token lifetime is a day. So a check that ran only
+// at mint time would let exactly the body it exists to refuse through, at the one moment it matters.
+// This is the same reason the signature is checked in both places rather than trusted from the first.
+func TestABootstrapIsCheckedWhereItsBytesAreChosen(t *testing.T) {
+	h := newHarness(t)
+	signed := func(body string) store.TemplateVersion {
+		return store.TemplateVersion{
+			Name: "standard-server", BodySealed: sealForHarness(t, h, body),
+			Signature: "c2lnbmF0dXJl", SignerKeyID: "ops-1", SignerAlgorithm: "ed25519",
+			CreatedAt: time.Now().UTC(), CreatedBy: "test",
+		}
+	}
+
+	// v1 is issuable, and a token is minted naming it.
+	if _, err := h.scoped().CreateTemplateVersion(context.Background(),
+		signed("#cloud-config\nhostname: fixed\n")); err != nil {
+		t.Fatalf("storing v1: %v", err)
+	}
+	status, raw := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/tokens", map[string]any{
+		"label": "web", "group": "web-prod", "bootstrap": "standard-server",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("minting against a clean v1: %d %s", status, raw)
+	}
+	var minted struct {
+		// Token is the credential a host would enrol with.
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &minted); err != nil {
+		t.Fatalf("decoding the token: %v", err)
+	}
+
+	// v2 lands afterwards, signed, and substitutes the one thing a verbatim body cannot.
+	if _, err := h.scoped().CreateTemplateVersion(context.Background(),
+		signed("#cloud-config\nruncmd:\n  - farrier enroll --token {{enrollmentToken}}\n")); err != nil {
+		t.Fatalf("storing v2: %v", err)
+	}
+
+	status, _, raw = h.enrollDirect(t, protocol.EnrollRequest{
+		Token: minted.Token, Hostname: "web-01", RequestedBootstrap: "standard-server",
+	})
+	if status != http.StatusConflict || !strings.Contains(string(raw), "unrendered_template") {
+		t.Fatalf("a version stored after the token was minted reached the host: %d %s", status, raw)
+	}
+	if strings.Contains(string(raw), "enrollmentToken}}") && strings.Contains(string(raw), "runcmd") {
+		t.Fatalf("the refusal carried the template body: %s", raw)
+	}
+
+	// The refusal consumed nothing: the same token still enrols the machine without a bootstrap,
+	// which is the retry an operator actually makes.
+	status, res, raw := h.enrollDirect(t, protocol.EnrollRequest{
+		Token: minted.Token, Hostname: "web-01",
+	})
+	if status != http.StatusOK || res.HostID == "" {
+		t.Fatalf("the token did not survive the refusal: %d %s", status, raw)
 	}
 }

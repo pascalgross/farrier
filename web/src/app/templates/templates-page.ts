@@ -81,6 +81,16 @@ export class TemplatesPage {
   protected readonly opened = signal<TemplateVersion | null>(null);
 
   /**
+   * The template this pane is currently about, empty when none is.
+   *
+   * It exists because opening a template is two requests — the version and its history — and nothing
+   * else ties their answers together. Without a name to check them against, a response that arrives
+   * for a template the operator has already navigated away from overwrites the one they are looking
+   * at. Written before either request goes out, so both have something to be late for.
+   */
+  private readonly opening = signal('');
+
+  /**
    * Every stored revision of the open template, newest first, empty when none is open.
    *
    * Held beside the open version rather than derived from it, because it answers a different
@@ -161,31 +171,59 @@ export class TemplatesPage {
   protected open(name: string, version?: number): void {
     this.clearRenderForm();
     this.actionError.set('');
+    this.opened.set(null);
+    this.revisions.set([]);
+    this.opening.set(name);
+
     this.api.template(name, version).subscribe({
-      next: (record) => this.opened.set(record),
-      error: (err: unknown) => this.actionError.set(describeError(err)),
+      next: (record) => {
+        if (this.opening() === record.name) {
+          this.opened.set(record);
+        }
+      },
+      error: (err: unknown) => {
+        if (this.opening() === name) {
+          this.actionError.set(describeError(err));
+        }
+      },
     });
     this.loadRevisions(name);
   }
 
   /**
-   * Re-reads the open template's revision history.
+   * Re-reads one template's revision history, discarding an answer about a different template.
    *
-   * Its failure is silent, and deliberately so: the history is context beside the version, not the
+   * The discard is not defensive coding, it is the correctness of the pane. This is a second request
+   * racing the one that fetches the body, and the two can disagree in both directions: reading a
+   * version decrypts a sealed body and can answer 500 where this listing, which decrypts nothing,
+   * answers 200; and two clicks in flight can land in either order. Either way the markup would then
+   * compare one template's revision numbers against another template's open version — marking the
+   * wrong row "open" and offering buttons that pair this name with that one's versions. The response
+   * names the template it is about, so it can be checked rather than assumed.
+   *
+   * Its failure stays silent, and deliberately so: the history is context beside the version, not the
    * thing the operator asked for, and an error banner over an empty list would report a page as
    * broken when the version it exists to show is on screen and correct. What a failure costs is the
    * list of older revisions, which the operator can get back by opening the template again.
    */
   private loadRevisions(name: string): void {
-    this.revisions.set([]);
     this.api.templateVersions(name).subscribe({
-      next: (response) => this.revisions.set(response.versions),
-      error: () => this.revisions.set([]),
+      next: (response) => {
+        if (this.opening() === response.name) {
+          this.revisions.set(response.versions);
+        }
+      },
+      error: () => {
+        if (this.opening() === name) {
+          this.revisions.set([]);
+        }
+      },
     });
   }
 
   /** Closes the open version, dropping the render form and any render with it. */
   protected close(): void {
+    this.opening.set('');
     this.opened.set(null);
     this.revisions.set([]);
     this.clearRenderForm();

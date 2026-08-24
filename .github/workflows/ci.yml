@@ -108,7 +108,17 @@ jobs:
       - name: Doc comments on every type and function, exported or not
         run: make doccheck
 
+      - name: An unprivileged runner may bind 465, so the implicit-TLS test does not skip
+        # The mail sink chooses its transport on an exact port comparison, and the only way to observe
+        # the implicit-TLS half is a listener on 465 itself — which is privileged, so on a runner it
+        # skips, and a skipped test reads exactly like a passing one. Lowering the threshold for the
+        # job is cheaper than a seam in the production code, and FARRIER_TEST_PRIVILEGED_PORTS turns
+        # the test's skip into a failure so that a runner where this step stops working says so.
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=465
+
       - name: Tests, including the store against a real PostgreSQL
+        env:
+          FARRIER_TEST_PRIVILEGED_PORTS: "1"
         run: make test
 
       - name: The store tests actually ran rather than skipping
