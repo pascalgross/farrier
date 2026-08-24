@@ -96,12 +96,24 @@ func (b *eventStream) broadcast(tenant store.TenantID, view eventView) {
 	}
 }
 
-// outboundBudget bounds one detached delivery pass: the webhook and any alert mail, retries included.
+// deliveryBudget bounds one sink's full retry sequence.
 //
-// Sized from the retry policy rather than guessed — three attempts at a fifteen-second sink plus the
-// eight seconds of backoff between them — because a budget shorter than the retries it is meant to
+// Sized from the retry policy rather than guessed: three attempts at a fifteen-second sink plus the
+// eight seconds of backoff between them, rounded up. A budget shorter than the retries it is meant to
 // allow would turn "the relay was restarting" into a cancellation that looks like a relay fault.
-const outboundBudget = 60 * time.Second
+//
+// It is per sink and not per pass, which is the correction to an earlier version of this: one pass
+// covers the tenant webhook and every routed rule's mail, so a single aggregate budget meant a dead
+// webhook silently ate the alert mail behind it.
+const deliveryBudget = 60 * time.Second
+
+// maxOutboundInFlight caps the detached deliveries running at once.
+//
+// Without it, a fleet flapping against a sink that is down converts every event into a goroutine that
+// lives for a minute, and the pile-up outlasts the incident that caused it. Past the cap a delivery is
+// dropped with a log line — which is the correct loss, because the event is already in the inbox and
+// the inbox is the delivery that was promised.
+const maxOutboundInFlight = 64
 
 // emit records an event durably, shows it to open tabs, and delivers it outside best-effort.
 //
@@ -165,22 +177,46 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 
 	s.events.broadcast(tenantID, view)
 
-	s.detach(func(outCtx context.Context) { s.deliverOutside(outCtx, scoped, ev) })
+	s.detach("event delivery", func(outCtx context.Context) { s.deliverOutside(outCtx, scoped, ev) })
 }
 
-// detach runs one delivery pass outside the caller's request, tracked so a shutdown can drain it.
+// detach runs work outside the caller's request, tracked so a shutdown can drain it.
 //
 // The context it hands over is derived from the server's own rather than from the caller's, which is
 // the whole point: emit is called from handlers an agent is waiting on and from the evaluator's tick,
-// and neither should be able to end a delivery early or be held open by one. The budget bounds a full
-// retry sequence; drainOutbound bounds how long a stopping process honours it.
-func (s *Server) detach(work func(context.Context)) {
+// and neither should be able to end a delivery early or be held open by one. Each sink inside applies
+// its own deliveryBudget; drainOutbound bounds how long a stopping process honours them.
+//
+// Once the drain has begun, work is refused rather than started. That is what makes the WaitGroup
+// safe — a counter going from zero back up while somebody is waiting on it is a documented misuse —
+// and it is also the honest behaviour: a delivery begun during shutdown would be cancelled seconds
+// later, and the event is in the inbox either way.
+func (s *Server) detach(what string, work func(context.Context)) {
+	s.outboundMu.Lock()
+	switch {
+	case s.draining:
+		s.outboundMu.Unlock()
+		slog.Warn("an outbound delivery was dropped because the control plane is stopping",
+			"delivery", what)
+		return
+	case s.inFlight >= maxOutboundInFlight:
+		s.outboundMu.Unlock()
+		slog.Warn("an outbound delivery was dropped: too many are already in flight",
+			"delivery", what, "limit", maxOutboundInFlight)
+		return
+	}
+	s.inFlight++
 	s.outbound.Add(1)
+	s.outboundMu.Unlock()
+
 	go func() {
-		defer s.outbound.Done()
-		outCtx, done := context.WithTimeout(s.outboundCtx, outboundBudget)
-		defer done()
-		work(outCtx)
+		defer func() {
+			s.outboundMu.Lock()
+			s.inFlight--
+			s.outboundMu.Unlock()
+			s.outbound.Done()
+		}()
+		work(s.outboundCtx)
 	}()
 }
 
@@ -204,7 +240,10 @@ func (s *Server) deliverOutside(ctx context.Context, scoped store.Scoped, ev not
 		// administrator can change is a cache that eventually posts a customer's events to an
 		// endpoint they have already revoked.
 		sink := notify.NewWebhook("tenant-webhook", tenant.WebhookURL)
-		if err := notify.DeliverWithRetry(ctx, sink, ev); err != nil {
+		hookCtx, done := context.WithTimeout(ctx, deliveryBudget)
+		err := notify.DeliverWithRetry(hookCtx, sink, ev)
+		done()
+		if err != nil {
 			slog.Warn("event delivery failed",
 				"tenant", tenantID, "sink", sink.Name(), "kind", ev.Kind, "error", err)
 		}

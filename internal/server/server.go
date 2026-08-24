@@ -142,6 +142,15 @@ type Server struct {
 	// shutdown drains them rather than abandoning an alert mail mid-conversation.
 	outbound sync.WaitGroup
 
+	// outboundMu guards draining and inFlight, and serialises them against outbound.Add.
+	outboundMu sync.Mutex
+
+	// draining reports that the shutdown drain has begun, after which no new delivery starts.
+	draining bool
+
+	// inFlight is how many detached deliveries are running, for the cap in detach.
+	inFlight int
+
 	// outboundCtx is the parent of every detached delivery.
 	//
 	// It exists so that a shutdown ends them at a moment this process chooses, rather than whenever
@@ -358,7 +367,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// *because* ctx was cancelled, so deriving the shutdown deadline from it would produce a context
 	// that is already done and a Shutdown that abandons every in-flight request instead of draining it.
 	// The fifteen seconds are what a long-poll needs to finish.
+	// Closed once Shutdown has returned, which is what the drain below waits for. ListenAndServeTLS
+	// returns the moment Shutdown is *invoked*, so draining on that alone would race the connection
+	// drain and abandon deliveries detached by requests that were still being served.
+	shutdownDone := make(chan struct{})
 	go func() { //nolint:gosec // G118: the request-scoped context is the cancelled one; see above.
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -384,11 +398,17 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			"with client certificates, which do not exist without TLS")
 	}
 	err := srv.ListenAndServeTLS("", "")
-	s.drainOutbound()
-
 	if errors.Is(err, http.ErrServerClosed) {
+		// A deliberate stop: the handlers are still finishing, and some of them are still detaching
+		// deliveries. Wait for that to be over before deciding what is outstanding.
+		<-shutdownDone
+		s.drainOutbound()
 		return nil
 	}
+
+	// Any other error means the listener never ran or died under us, so nothing is waiting on
+	// Shutdown to return. Drain anyway: the evaluator may have detached work already.
+	s.drainOutbound()
 	return err
 }
 
@@ -407,6 +427,13 @@ const outboundDrainGrace = 15 * time.Second
 // group makes the webhook return at once and makes the retry loop stop between attempts, and an SMTP
 // conversation already in progress finishes inside the deadline it set on its own connection.
 func (s *Server) drainOutbound() {
+	// Closed to new work first, and under the same lock detach takes. A WaitGroup whose counter goes
+	// from zero back up while somebody waits on it is a documented misuse, and the evaluator's tick
+	// can still be mid-pass when this runs.
+	s.outboundMu.Lock()
+	s.draining = true
+	s.outboundMu.Unlock()
+
 	done := make(chan struct{})
 	go func() {
 		s.outbound.Wait()

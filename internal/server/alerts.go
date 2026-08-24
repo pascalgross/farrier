@@ -377,7 +377,7 @@ func (s *Server) notifyAlert(ctx context.Context, scoped store.Scoped, rule stor
 	// Detached like every other delivery that leaves the process, and here the reason is the
 	// evaluator's own context: it is cancelled by the shutdown signal, so mailing on it directly
 	// would abort exactly the alert a stopping control plane most needs to have sent.
-	s.detach(func(outCtx context.Context) { s.mailRule(outCtx, scoped, rule, ev) })
+	s.detach("alert mail", func(outCtx context.Context) { s.mailRule(outCtx, scoped, rule, ev) })
 }
 
 // mailRule sends one event to a rule's recipients, when there are any and a relay exists.
@@ -401,8 +401,12 @@ func (s *Server) mailRule(ctx context.Context, scoped store.Scoped, rule store.A
 	}
 
 	sink := notify.NewSMTP(s.cfg.SMTP, rule.EmailTo)
+	mailCtx, done := context.WithTimeout(ctx, deliveryBudget)
+	err := notify.DeliverWithRetry(mailCtx, sink, ev)
+	done()
+
 	failure := ""
-	if err := notify.DeliverWithRetry(ctx, sink, ev); err != nil {
+	if err != nil {
 		slog.Warn("alert mail delivery failed", "rule", rule.ID, "sink", sink.Name(),
 			"kind", ev.Kind, "error", err)
 		failure = err.Error()
@@ -410,12 +414,25 @@ func (s *Server) mailRule(ctx context.Context, scoped store.Scoped, rule store.A
 	s.recordDelivery(ctx, scoped, rule.ID, failure)
 }
 
+// deliveryRecordTimeout bounds the write that says how a delivery went.
+//
+// Short, because it is one narrow UPDATE and the process it runs in may be stopping.
+const deliveryRecordTimeout = 10 * time.Second
+
 // recordDelivery stamps one rule with the outcome of its most recent mail attempt.
+//
+// The context is deliberately detached from the caller's. This runs after a delivery that may have
+// been cancelled — by the shutdown drain, or by its own budget — and writing the outcome on that same
+// cancelled context would fail with "context canceled" and leave the rule showing nothing at all:
+// indistinguishable from a rule that never fired, which is the exact confusion the whole record
+// exists to prevent.
 //
 // Its own failure is logged and dropped: this is the reporting path, and a control plane that gave up
 // on an alert because it could not write down how the alert went is the wrong trade in every case.
 func (s *Server) recordDelivery(ctx context.Context, scoped store.Scoped, ruleID, failure string) {
-	if err := scoped.RecordAlertDelivery(ctx, ruleID, time.Now().UTC(), failure); err != nil {
+	recordCtx, done := context.WithTimeout(context.WithoutCancel(ctx), deliveryRecordTimeout)
+	defer done()
+	if err := scoped.RecordAlertDelivery(recordCtx, ruleID, time.Now().UTC(), failure); err != nil {
 		slog.Warn("could not record an alert delivery outcome", "rule", ruleID, "error", err)
 	}
 }
