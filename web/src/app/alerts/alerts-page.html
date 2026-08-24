@@ -1,0 +1,158 @@
+@if (rules() === null && !error()) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading the alerting rules"></mat-progress-bar>
+}
+
+@if (error()) {
+  <mat-card class="max-w-xl mx-auto mt-12">
+    <mat-card-content class="!pt-6 flex items-start gap-3">
+      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <p class="m-0">{{ error() }}</p>
+    </mat-card-content>
+  </mat-card>
+}
+
+@if (rules(); as list) {
+  <header class="mb-6">
+    <h1 class="text-2xl font-medium m-0">Alerts</h1>
+    <p class="m-0 mt-2 text-sm opacity-80 max-w-3xl">
+      A rule decides which events are worth interrupting somebody for. Every event reaches the inbox,
+      the live stream and this fleet's webhook regardless; recipients below are the one delivery that
+      reaches a person who is not looking.
+    </p>
+    <p class="m-0 mt-2 text-sm opacity-80 max-w-3xl">
+      A rule produces a notification. A rule never produces a job — there is deliberately nothing here
+      that could, because a control plane that acts on a schedule of its own is a different product
+      with a different threat model.
+    </p>
+  </header>
+
+  @if (!mailConfigured()) {
+    <mat-card class="mb-6 max-w-3xl">
+      <mat-card-content class="!pt-6 flex items-start gap-3">
+        <mat-icon class="text-farrier-warn">mark_email_unread</mat-icon>
+        <p class="m-0 text-sm">
+          This control plane has no mail relay, so recipients on a rule are recorded and never
+          delivered — every other route still works. Start <code>farrier-server</code> with
+          <code>--smtp-host</code> and <code>--smtp-from</code> to enable mail.
+        </p>
+      </mat-card-content>
+    </mat-card>
+  }
+
+  <mat-card class="mb-8 max-w-3xl">
+    <mat-card-header>
+      <mat-card-title>New rule</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content class="!pt-4 flex flex-col gap-4">
+      <mat-form-field appearance="outline">
+        <mat-label>Condition</mat-label>
+        <mat-select [ngModel]="newCondition()" (ngModelChange)="newCondition.set($event)">
+          @for (condition of conditions; track condition.value) {
+            <mat-option [value]="condition.value">{{ condition.label }}</mat-option>
+          }
+        </mat-select>
+        <mat-hint>{{ chosenSpec().rationale }}</mat-hint>
+      </mat-form-field>
+
+      @if (needsThreshold()) {
+        <mat-form-field appearance="outline">
+          <mat-label>Threshold</mat-label>
+          <input matInput type="number" min="1"
+                 [ngModel]="newThreshold()" (ngModelChange)="newThreshold.set(+$event)" />
+          <span matTextSuffix class="text-sm opacity-70">{{ chosenSpec().unit }}</span>
+        </mat-form-field>
+      }
+
+      <mat-form-field appearance="outline">
+        <mat-label>Cooldown</mat-label>
+        <input matInput type="number" min="0"
+               [ngModel]="newCooldownMinutes()" (ngModelChange)="newCooldownMinutes.set(+$event)" />
+        <span matTextSuffix class="text-sm opacity-70">minutes</span>
+        <mat-hint>
+          How long before one host may notify again for this rule. Zero uses the control plane's
+          default. A flapping unit is simultaneously the most interesting case and the noisiest.
+        </mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Mail recipients</mat-label>
+        <input matInput autocomplete="off" spellcheck="false"
+               [ngModel]="newRecipients()" (ngModelChange)="newRecipients.set($event)" />
+        <mat-hint>Optional, comma separated. Leave empty for a rule that only reaches the inbox.</mat-hint>
+      </mat-form-field>
+
+      @if (actionError()) {
+        <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+      }
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button mat-flat-button [disabled]="!canCreate()" (click)="create()">Create rule</button>
+    </mat-card-actions>
+  </mat-card>
+
+  @if (list.length === 0) {
+    <mat-card class="max-w-3xl">
+      <mat-card-content class="!pt-6 text-sm opacity-80">
+        <p class="m-0">
+          No rules yet. Nothing is lost in the meantime: every event is in the inbox whether or not a
+          rule matched it.
+        </p>
+      </mat-card-content>
+    </mat-card>
+  } @else {
+    <div class="flex flex-col gap-3">
+      @for (rule of list; track rule.id) {
+        <mat-card>
+          <mat-card-content class="!pt-6 flex flex-wrap items-start gap-4">
+            <div class="min-w-0 flex-1">
+              <p class="m-0 font-medium">{{ describe(rule) }}</p>
+
+              <p class="m-0 mt-1 text-sm opacity-80 farrier-numeric">
+                Cooldown {{ cooldown(rule) }} ·
+                @if (rule.emailTo.length > 0) {
+                  mails {{ rule.emailTo.join(', ') }}
+                } @else {
+                  no mail recipients
+                }
+                · created by {{ rule.createdBy || 'unknown' }}
+              </p>
+
+              @if (rule.lastDeliveryError) {
+                <p class="m-0 mt-2 text-sm text-farrier-bad flex items-start gap-2">
+                  <mat-icon class="!w-4 !h-4 !text-base" aria-hidden="true">outgoing_mail</mat-icon>
+                  <span>Last mail did not go out: {{ rule.lastDeliveryError }}</span>
+                </p>
+              } @else if (rule.lastDeliveryAt) {
+                <p class="m-0 mt-2 text-sm opacity-70">Last mail delivered.</p>
+              }
+
+              @if (rule.emailTo.length > 0 && !mailConfigured()) {
+                <p class="m-0 mt-2 text-sm text-farrier-warn">
+                  These recipients will not be mailed until this control plane has a relay.
+                </p>
+              }
+            </div>
+
+            <div class="flex items-center gap-2">
+              <mat-slide-toggle
+                [checked]="rule.enabled"
+                [disabled]="busy()"
+                (change)="setEnabled(rule, $event.checked)"
+                [matTooltip]="'Disabling keeps the rule and its history and stops it notifying'">
+                Enabled
+              </mat-slide-toggle>
+
+              <button mat-icon-button [disabled]="busy()" (click)="remove(rule)"
+                      [matTooltip]="'Delete this rule and the firing state it has accumulated'"
+                      aria-label="Delete this rule">
+                <mat-icon>delete_outline</mat-icon>
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      }
+    </div>
+  }
+}

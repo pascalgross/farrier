@@ -1,5 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { MatBadgeModule } from '@angular/material/badge';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -10,6 +11,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { ApiService } from './core/api.service';
+import { EventStream } from './core/event-stream';
 import { Whoami } from './core/api.models';
 import { describeError } from './core/errors';
 import { TokenStore } from './core/token-store';
@@ -30,6 +32,7 @@ import { TokenStore } from './core/token-store';
   selector: 'farrier-root',
   imports: [
     FormsModule,
+    MatBadgeModule,
     MatButtonModule,
     MatCardModule,
     MatFormFieldModule,
@@ -51,6 +54,15 @@ export class App {
   /** Talks to the control plane. */
   private readonly api = inject(ApiService);
 
+  /**
+   * The live event feed, connected here rather than on the events page.
+   *
+   * The shell is the only component that is always mounted, and the bell has to keep counting while
+   * an operator is on the fleet list — which is the whole point of a bell. The page reads the same
+   * feed rather than opening a second stream.
+   */
+  protected readonly events = inject(EventStream);
+
   /** The token being typed, before it is stored. */
   protected readonly draft = signal('');
 
@@ -64,6 +76,7 @@ export class App {
   constructor() {
     if (this.tokens.hasToken()) {
       this.loadIdentity();
+      this.events.start();
     }
   }
 
@@ -89,6 +102,7 @@ export class App {
     this.tokens.set(this.draft());
     this.draft.set('');
     this.loadIdentity();
+    this.events.start();
   }
 
   /** Forgets the token, returning the application to the prompt. */
@@ -96,5 +110,9 @@ export class App {
     this.tokens.clear();
     this.me.set(null);
     this.identityError.set('');
+    // The feed is dropped rather than left running: it holds this fleet's events, and a signed-out
+    // console showing the last hour of somebody else's incidents is the sort of leak nobody notices
+    // until it matters.
+    this.events.stop();
   }
 }

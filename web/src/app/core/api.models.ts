@@ -72,6 +72,22 @@ export interface HostFacts {
     serviceScanComplete?: boolean;
   };
 
+  /**
+   * Every systemd unit the host reported, with its load, active and sub state.
+   *
+   * The full list rather than only the failed ones, because the distinction between `failed`,
+   * `inactive` and `not-found` is the point: a masked unit and a crashed unit are different problems.
+   */
+  services?: UnitState[];
+
+  /**
+   * Whether that list was cut at the protocol's cap, in sorted order.
+   *
+   * Reported so that "no failed units" and "the failed unit sorts after the cap" do not render
+   * identically — the same rule `serviceScanComplete` follows, and for the same reason.
+   */
+  servicesTruncated?: boolean;
+
   /** Ubuntu Pro state, or a not-applicable marker on Debian. */
   subscription?: {
     /**
@@ -172,6 +188,15 @@ export interface HostPolicy {
   services: {
     /** Units the host will act on, matched as shell globs. Empty means none. */
     restartable: string[];
+
+    /**
+     * Units whose state changes this host considers worth an event, matched the same way.
+     *
+     * Empty means every unit, which is the opposite default from `restartable` and deliberately so:
+     * a fresh host should surface a failed unit rather than hide it behind a setting nobody has
+     * heard of, and permitting an action is a different question from reporting a fact.
+     */
+    watched?: string[];
   };
 
   /** The `[limits]` section. */
@@ -412,4 +437,330 @@ export interface Whoami {
 
   /** The fleet this credential acts in. */
   tenant: Tenant;
+}
+
+/**
+ * One event as the inbox and the live stream render it.
+ *
+ * The same shape from both sources on purpose: a page that reconciles a live stream against the
+ * durable inbox must not have to translate between two spellings of the same event.
+ */
+export interface FleetEvent {
+  /** The event identifier, which is what de-duplicates a streamed event against a fetched one. */
+  id: string;
+
+  /** A member of the control plane's closed vocabulary, such as `service.failed`. */
+  kind: string;
+
+  /** The host it concerns, absent for fleet-wide events such as a digest. */
+  hostId?: string;
+
+  /** The hostname, carried for display because an opaque identifier helps nobody. */
+  hostname?: string;
+
+  /** One line of human-readable text. */
+  summary: string;
+
+  /** When it happened, by the control plane's clock. */
+  at: string;
+
+  /** Event-specific fields, rendered only where a page knows what to do with them. */
+  detail?: Record<string, unknown>;
+}
+
+/** The response of `GET /api/v1/events`. */
+export interface EventsResponse {
+  /** The inbox, newest first. */
+  events: FleetEvent[];
+
+  /** The control plane's clock, so ages are rendered against it rather than the browser's. */
+  serverTime: string;
+}
+
+/** One systemd unit as a host reported it. */
+export interface UnitState {
+  /** The unit name, such as `nginx.service`. */
+  name: string;
+
+  /** Whether the unit is loaded, masked or absent. A masked unit is a different problem from a crash. */
+  loadState: string;
+
+  /** The active state, which is what `failed` is read from. */
+  activeState: string;
+
+  /** The finer-grained state, carried for display. */
+  subState: string;
+}
+
+/** One host's failed units, as the fleet-wide service view renders them. */
+export interface FailedServiceHost {
+  /** The host. */
+  hostId: string;
+
+  /** What it calls itself. */
+  hostname: string;
+
+  /** Whether it has been heard from recently. */
+  online: boolean;
+
+  /** Its units in the failed state. */
+  failed: UnitState[];
+
+  /**
+   * Whether this host's unit list was cut at the protocol's cap.
+   *
+   * Rendered rather than swallowed: "no failed units here" and "the failed unit sorts after the cap"
+   * must not look the same, which is the same rule the needrestart scan already follows.
+   */
+  servicesTruncated: boolean;
+}
+
+/** The response of `GET /api/v1/services/failed`. */
+export interface FailedServicesResponse {
+  /** Only the hosts with something failed, or with a truncated list. */
+  hosts: FailedServiceHost[];
+
+  /** How many hosts were examined, so "3 of 300" is renderable. */
+  total: number;
+
+  /** The control plane's clock. */
+  serverTime: string;
+}
+
+/** One recorded change of a unit's active state. */
+export interface UnitTransition {
+  /** The unit that changed. */
+  unit: string;
+
+  /** The state it was in. */
+  from: string;
+
+  /** The state it moved to. */
+  to: string;
+
+  /** When the control plane observed the change. */
+  at: string;
+}
+
+/** The response of `GET /api/v1/hosts/{id}/services/history`. */
+export interface ServiceHistoryResponse {
+  /** The transitions, newest first. */
+  transitions: UnitTransition[];
+
+  /**
+   * The heartbeat interval, which is this history's resolution.
+   *
+   * Stated by the server rather than assumed by the page: a unit that failed and recovered between
+   * two beats is not in here, and an operator reading the history during an incident needs to know
+   * that before they conclude nothing happened.
+   */
+  resolutionSeconds: number;
+
+  /** The control plane's clock. */
+  serverTime: string;
+}
+
+/** One alerting rule as the control plane holds it. */
+export interface AlertRule {
+  /** The rule identifier. */
+  id: string;
+
+  /** What it watches: `host_silent`, `security_updates`, `reboot_required`, `unit_failed`, `job_failed`. */
+  condition: string;
+
+  /** Parameterises the condition: minutes silent, pending updates, or days a reboot has been due. */
+  threshold: number;
+
+  /** How long before one firing pair may notify again, zero for the server's default. */
+  cooldownSeconds: number;
+
+  /** Who gets mailed. Everything else — the inbox, the stream, the webhook — happens regardless. */
+  emailTo: string[];
+
+  /** Whether the rule is live. */
+  enabled: boolean;
+
+  /** When it was created. */
+  createdAt: string;
+
+  /** Which operator created it. */
+  createdBy: string;
+
+  /** When it last tried to mail somebody, absent for never. */
+  lastDeliveryAt?: string;
+
+  /**
+   * Why that attempt failed, absent when it succeeded.
+   *
+   * Shown on the rule rather than left in a server log, because an alert that never went out and an
+   * alert that never fired are indistinguishable from an inbox.
+   */
+  lastDeliveryError?: string;
+}
+
+/** The response of `GET /api/v1/alerts`. */
+export interface AlertRulesResponse {
+  /** The rules, oldest first. */
+  rules: AlertRule[];
+
+  /** What a zero cooldown means, reported so the page does not hard-code the server's number. */
+  defaultCooldownSeconds: number;
+
+  /**
+   * Whether this control plane has a mail relay at all.
+   *
+   * Rendered as a warning beside any rule with recipients when it is false: adding an address to a
+   * rule on an installation that was never given `--smtp-host` is the commonest version of the
+   * mistake, and it fails silently everywhere except here.
+   */
+  mailConfigured: boolean;
+}
+
+/** The body of `POST /api/v1/alerts` and `PATCH /api/v1/alerts/{id}`. */
+export interface AlertRuleRequest {
+  /** What to watch. Required on create and refused on update: a rule's condition is its identity. */
+  condition?: string;
+
+  /** Parameterises the condition. */
+  threshold: number;
+
+  /** Re-notification bound in seconds, zero for the server's default. */
+  cooldownSeconds: number;
+
+  /** Mail recipients, empty for none. */
+  emailTo: string[];
+
+  /** Whether the rule is live. */
+  enabled?: boolean;
+}
+
+/** One provisioning template, as the list renders it. */
+export interface TemplateSummary {
+  /** The template's name, which is what an enrolment token names to request it. */
+  name: string;
+
+  /** The highest version stored. Every save is a new version; there is no update path. */
+  latestVersion: number;
+
+  /** When the latest version was stored. */
+  createdAt: string;
+
+  /** Which operator stored it. */
+  createdBy: string;
+
+  /**
+   * Whether the latest version carries an offline signature.
+   *
+   * An unsigned template can be rendered and pasted into a provisioner; only a signed one may be
+   * handed to an enrolling agent, because the agent verifies it against its own trusted-signers and
+   * this control plane cannot produce that signature.
+   */
+  signed: boolean;
+}
+
+/** The response of `GET /api/v1/templates`. */
+export interface TemplatesResponse {
+  /** One summary per template, newest first. */
+  templates: TemplateSummary[];
+}
+
+/** One immutable version of a template, body included. */
+export interface TemplateVersion {
+  /** The template's name. */
+  name: string;
+
+  /** This version's number. */
+  version: number;
+
+  /** The cloud-config body, verbatim. */
+  body: string;
+
+  /** Whether an offline signature is attached. */
+  signed: boolean;
+
+  /** The key that signed it, absent for an unsigned version. */
+  signerKeyId?: string;
+
+  /** When it was stored. */
+  createdAt: string;
+
+  /** Which operator stored it. */
+  createdBy: string;
+
+  /** The placeholder names the body substitutes, so a render form can be built without parsing it. */
+  placeholders: string[];
+
+  /**
+   * Secret shapes found in the body, with the consequence spelled out.
+   *
+   * Warnings and never refusals: user-data is readable from inside the instance and from the metadata
+   * service, so a secret in a template is a secret in plaintext on every host it provisions — and a
+   * control that blocked the save would only teach operators to route around it.
+   */
+  warnings: string[];
+}
+
+/** The body of `POST /api/v1/templates`. */
+export interface CreateTemplateRequest {
+  /** The template's name; an existing name stores the next version of it. */
+  name: string;
+
+  /** The cloud-config body. */
+  body: string;
+
+  /** A detached signature made offline by `farrier sign-template`, absent for an unsigned version. */
+  signature?: string;
+
+  /** The signing key's identity, required with a signature. */
+  signerKeyId?: string;
+
+  /** The signature algorithm, required with a signature. */
+  signerAlgorithm?: string;
+}
+
+/** The body of `POST /api/v1/templates/{name}/render`. */
+export interface RenderTemplateRequest {
+  /** Which version to render, omitted for the latest. */
+  version?: number;
+
+  /** The values substituted into the template's placeholders. */
+  params: Record<string, string>;
+
+  /** How to configure the enrolment token, when the body substitutes one. */
+  token?: {
+    /** A human-readable name for the token, defaulted to naming the template. */
+    label?: string;
+    /** The fleet group hosts enrolled with it join. */
+    group?: string;
+    /** The token's lifetime, defaulted to the server's. */
+    ttlSeconds?: number;
+    /** The template this token may request at enrolment, which is how a Tier 2 bootstrap is armed. */
+    bootstrap?: string;
+  };
+}
+
+/**
+ * The response of a render.
+ *
+ * It is a credential and is treated as one: nothing stores it, it is not cacheable, and an operator
+ * who loses it renders again — which mints a fresh token and costs nothing.
+ */
+export interface RenderedTemplate {
+  /** The template rendered. */
+  name: string;
+
+  /** The version rendered. */
+  version: number;
+
+  /** The user-data, ready to paste into a provisioner. */
+  userData: string;
+
+  /** Secret shapes found in the *rendered* output, which includes what substitution introduced. */
+  warnings: string[];
+
+  /** When the minted enrolment token expires, absent when the template mints none. */
+  tokenExpiresAt?: string | null;
+
+  /** The control plane's own sentence about the output being shown once. */
+  note: string;
 }

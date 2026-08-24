@@ -1,0 +1,366 @@
+import { Injectable, computed, inject, signal } from '@angular/core';
+
+import { FleetEvent } from './api.models';
+import { ApiService } from './api.service';
+import { TokenStore } from './token-store';
+
+/** How many events the in-memory feed keeps, which is what the bell and the inbox page read. */
+const FEED_LIMIT = 200;
+
+/** Where the browser-notification opt-in is remembered between page loads. */
+const NOTIFY_KEY = 'farrier.desktopNotifications';
+
+/** Where the id of the newest event the operator has seen is remembered. */
+const SEEN_KEY = 'farrier.lastSeenEvent';
+
+/**
+ * The reconnect delays, in milliseconds, one per consecutive failure.
+ *
+ * Bounded and short at the start, because the commonest reason a stream drops is a control plane
+ * being restarted and an operator staring at a stale page for thirty seconds concludes the feature is
+ * broken. The last entry repeats for every further failure, so a control plane that is down for an
+ * afternoon is polled twice a minute rather than continuously.
+ */
+const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 15_000, 30_000];
+
+/**
+ * The live event feed: a connection to the control plane's stream, and what to do with what arrives.
+ *
+ * Three decisions are worth stating, because each has an obvious alternative that is wrong here.
+ *
+ * **`fetch` rather than `EventSource`.** `EventSource` cannot set a request header, and this API
+ * authenticates with a bearer token. The usual workaround is a token in the query string, which puts
+ * an operator's credential into every access log and proxy trace it passes. Reading the stream from a
+ * `fetch` response body costs the reconnect logic below and keeps the credential in the one place it
+ * belongs.
+ *
+ * **The stream is never the source of truth.** A dropped connection, a full buffer or a deploy loses
+ * events, by design on the server side. So every connection begins by re-reading the durable inbox and
+ * merging, and the feed de-duplicates on the event id. A missed event shows up on the next reconnect
+ * rather than being lost.
+ *
+ * **A notification is never actionable.** There is no approve-from-toast and no retry-from-toast here
+ * or anywhere downstream of it. Clicking one focuses the tab; everything that changes state goes
+ * through the admin API with its normal authentication, and a destructive job still needs its offline
+ * signature and its second-person release. The notification's whole job is to make somebody look.
+ */
+@Injectable({ providedIn: 'root' })
+export class EventStream {
+  /** Talks to the control plane. */
+  private readonly api = inject(ApiService);
+
+  /** Holds the operator's bearer token, and decides whether there is anything to connect with. */
+  private readonly tokens = inject(TokenStore);
+
+  /** The merged feed, newest first, bounded to FEED_LIMIT. */
+  private readonly feed = signal<FleetEvent[]>([]);
+
+  /** Whether a stream is currently connected, for the indicator beside the bell. */
+  private readonly live = signal(false);
+
+  /** The id of the newest event the operator has acknowledged, for the unread count. */
+  private readonly lastSeen = signal(readStored(SEEN_KEY));
+
+  /** Whether the operator asked for desktop notifications, independent of whether the browser agrees. */
+  private readonly wanted = signal(readStored(NOTIFY_KEY) === 'yes');
+
+  /** Aborts the in-flight stream when the token changes or the operator signs out. */
+  private controller: AbortController | null = null;
+
+  /** How many consecutive connection attempts have failed, which picks the reconnect delay. */
+  private failures = 0;
+
+  /** Set once start() has run, so a second call from a second component does not open a second stream. */
+  private started = false;
+
+  /** The events, newest first. */
+  readonly events = this.feed.asReadonly();
+
+  /** Whether the live stream is connected. A page can say "live" rather than implying it. */
+  readonly connected = this.live.asReadonly();
+
+  /** Whether the operator has asked for desktop notifications. */
+  readonly desktopWanted = this.wanted.asReadonly();
+
+  /**
+   * How many events have arrived since the operator last opened the inbox.
+   *
+   * Counted by position rather than by a per-event flag: the feed is ordered newest first, so
+   * everything above the last acknowledged id is unread, and an event that arrives while the page is
+   * closed is counted the moment the inbox is fetched.
+   */
+  readonly unread = computed(() => {
+    const seen = this.lastSeen();
+    if (!seen) {
+      return this.feed().length;
+    }
+    const index = this.feed().findIndex((event) => event.id === seen);
+    return index < 0 ? this.feed().length : index;
+  });
+
+  /**
+   * Connects the stream and loads the inbox behind it.
+   *
+   * Idempotent, because the shell and the inbox page both want the feed and neither should have to
+   * know whether the other got there first.
+   */
+  start(): void {
+    if (this.started || !this.tokens.hasToken()) {
+      return;
+    }
+    this.started = true;
+    void this.connect();
+  }
+
+  /** Disconnects and forgets everything, for sign-out. */
+  stop(): void {
+    this.started = false;
+    this.controller?.abort();
+    this.controller = null;
+    this.live.set(false);
+    this.feed.set([]);
+  }
+
+  /** Marks everything currently in the feed as read. */
+  markSeen(): void {
+    const newest = this.feed()[0];
+    if (!newest) {
+      return;
+    }
+    this.lastSeen.set(newest.id);
+    writeStored(SEEN_KEY, newest.id);
+  }
+
+  /**
+   * Re-reads the durable inbox and merges it into the feed.
+   *
+   * Exposed because the inbox page calls it on open: the feed only holds what this tab has seen, and
+   * an operator who has just signed in wants overnight's events rather than the last four minutes'.
+   */
+  refresh(): void {
+    this.api.events().subscribe({
+      next: (response) => this.merge(response.events),
+      // Swallowed on purpose: this runs on every reconnect, and a page that popped an error card each
+      // time a control plane restarted would be a page whose errors nobody reads. The inbox page
+      // fetches for itself and shows its own failures.
+      error: () => undefined,
+    });
+  }
+
+  /**
+   * Asks the browser for permission to show desktop notifications, and remembers the answer.
+   *
+   * Requested on a click and never on load, because a permission prompt that appears unprompted is
+   * the one every operator denies — after which the browser will not ask again and the feature is
+   * gone for that origin.
+   */
+  async enableDesktop(): Promise<void> {
+    if (!supportsDesktopNotifications()) {
+      return;
+    }
+    const permission =
+      Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+    const granted = permission === 'granted';
+    this.wanted.set(granted);
+    writeStored(NOTIFY_KEY, granted ? 'yes' : 'no');
+  }
+
+  /** Stops showing desktop notifications, without touching the browser's own permission. */
+  disableDesktop(): void {
+    this.wanted.set(false);
+    writeStored(NOTIFY_KEY, 'no');
+  }
+
+  /** Reports whether this browser can show desktop notifications at all. */
+  desktopAvailable(): boolean {
+    return supportsDesktopNotifications();
+  }
+
+  /** Reports the browser's own permission state, for a page that needs to explain a denial. */
+  desktopPermission(): NotificationPermission | 'unsupported' {
+    return supportsDesktopNotifications() ? Notification.permission : 'unsupported';
+  }
+
+  /**
+   * Holds one connection open, then reconnects, until stop() or a lost token.
+   *
+   * The loop is the reconnect policy: `EventSource` would have supplied one, and this is what
+   * replaces it. Each pass re-reads the inbox first, so the gap the disconnection opened is closed
+   * before the new stream starts adding to it.
+   */
+  private async connect(): Promise<void> {
+    while (this.started && this.tokens.hasToken()) {
+      this.refresh();
+      const clean = await this.readStream();
+      if (!this.started) {
+        return;
+      }
+      this.failures = clean ? 0 : this.failures + 1;
+      const delay = RECONNECT_DELAYS[Math.min(this.failures, RECONNECT_DELAYS.length - 1)];
+      await sleep(delay);
+    }
+  }
+
+  /**
+   * Reads one connection to exhaustion and returns whether it was established at all.
+   *
+   * The return value feeds the backoff and only that: a stream that connected and later dropped is a
+   * restart worth retrying immediately, and one that never connected is a control plane that is down
+   * or a token that is wrong, which is worth backing off from.
+   */
+  private async readStream(): Promise<boolean> {
+    const controller = new AbortController();
+    this.controller = controller;
+    let connected = false;
+
+    try {
+      const response = await fetch('/api/v1/events/stream', {
+        headers: { Authorization: `Bearer ${this.tokens.token()}` },
+        signal: controller.signal,
+        // The stream is a credentialed read of control-plane state; a shared cache holding one would
+        // be one customer's incidents replayed to whoever asked next. The server says no-store too.
+        cache: 'no-store',
+      });
+      if (!response.ok || !response.body) {
+        return false;
+      }
+      connected = true;
+      this.live.set(true);
+      await this.consume(response.body);
+    } catch {
+      // Aborts and network failures land here alike, and neither is worth surfacing: the loop above
+      // reconnects, and the indicator beside the bell already says the stream is not live.
+    } finally {
+      this.live.set(false);
+      if (this.controller === controller) {
+        this.controller = null;
+      }
+    }
+    return connected;
+  }
+
+  /**
+   * Decodes the server-sent-events framing and hands each event to the feed.
+   *
+   * A minimal parser rather than a library: the server sends only comment lines for its heartbeat and
+   * `data:` lines carrying one JSON object each, so the whole grammar this needs is "split on a blank
+   * line, take the data lines". Anything the server adds later that this does not understand is
+   * ignored, which is the same rule the protocol states for every other direction.
+   */
+  private async consume(body: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return;
+      }
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        this.handleFrame(frame);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+  }
+
+  /** Turns one SSE frame into an event, ignoring the heartbeat comments and anything unparseable. */
+  private handleFrame(frame: string): void {
+    for (const line of frame.split('\n')) {
+      if (!line.startsWith('data:')) {
+        continue;
+      }
+      try {
+        const event = JSON.parse(line.slice(5).trim()) as FleetEvent;
+        if (event.id) {
+          this.merge([event]);
+          this.announce(event);
+        }
+      } catch {
+        // A frame this build cannot parse is a frame from a newer server. Ignored rather than
+        // logged: the durable inbox has it, and a console full of parse errors during an upgrade
+        // helps nobody.
+      }
+    }
+  }
+
+  /**
+   * Merges events into the feed, newest first, de-duplicated on id.
+   *
+   * De-duplication is what makes the stream and the inbox safe to combine: the same event arrives
+   * from both, and an operator counting incidents must not count it twice.
+   */
+  private merge(incoming: FleetEvent[]): void {
+    if (incoming.length === 0) {
+      return;
+    }
+    this.feed.update((held) => {
+      const byId = new Map(held.map((event) => [event.id, event]));
+      for (const event of incoming) {
+        byId.set(event.id, event);
+      }
+      return [...byId.values()]
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+        .slice(0, FEED_LIMIT);
+    });
+  }
+
+  /**
+   * Shows one desktop notification, when the operator asked for them and the browser agreed.
+   *
+   * Tagged with the event id so that a browser which re-delivers, or a second tab of the same
+   * console, replaces the notification rather than stacking a second copy of it.
+   */
+  private announce(event: FleetEvent): void {
+    if (!this.wanted() || !supportsDesktopNotifications() || Notification.permission !== 'granted') {
+      return;
+    }
+    try {
+      const notification = new Notification(event.hostname || 'Farrier', {
+        body: event.summary,
+        tag: event.id,
+      });
+      // Focusing the tab is the whole interaction. A notification is a read of control-plane state
+      // and never a control: anything that would start or release a job belongs on a page behind the
+      // admin API's authentication, not behind a click on a system toast.
+      notification.onclick = () => window.focus();
+    } catch {
+      // Some browsers refuse to construct one outside a service worker even with permission granted.
+      // The event is in the feed either way, which is the delivery that was promised.
+    }
+  }
+}
+
+/** Reports whether this browser exposes the Notification API at all. */
+function supportsDesktopNotifications(): boolean {
+  return typeof Notification !== 'undefined';
+}
+
+/** Reads a remembered value, tolerating a storage API that refuses to answer. */
+function readStored(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** Remembers a value, tolerating a storage API that refuses to answer. */
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Private browsing refuses storage. Losing the opt-in across reloads is a smaller problem than a
+    // page that will not render.
+  }
+}
+
+/** Resolves after a delay, so the reconnect loop can read as a loop. */
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

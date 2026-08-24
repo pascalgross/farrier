@@ -1,0 +1,246 @@
+@if (templates() === null && !error()) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading the templates"></mat-progress-bar>
+}
+
+@if (error()) {
+  <mat-card class="max-w-xl mx-auto mt-12">
+    <mat-card-content class="!pt-6 flex items-start gap-3">
+      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <p class="m-0">{{ error() }}</p>
+    </mat-card-content>
+  </mat-card>
+}
+
+@if (templates(); as list) {
+  <header class="mb-6">
+    <h1 class="text-2xl font-medium m-0">Templates</h1>
+    <p class="m-0 mt-2 text-sm opacity-80 max-w-3xl">
+      Cloud-init user-data that Farrier stores, versions and renders — and never delivers. Rendering
+      produces text you paste into whatever creates the machine; the control plane has no path to a
+      host, before enrolment or after it.
+    </p>
+  </header>
+
+  <div class="grid gap-6 lg:grid-cols-2">
+    <section>
+      <h2 class="text-lg font-medium mt-0 mb-3">Stored</h2>
+
+      @if (list.length === 0) {
+        <mat-card>
+          <mat-card-content class="!pt-6 text-sm opacity-80">
+            <p class="m-0">Nothing stored yet. Write one below.</p>
+          </mat-card-content>
+        </mat-card>
+      } @else {
+        <div class="flex flex-col gap-2">
+          @for (template of list; track template.name) {
+            <mat-card>
+              <mat-card-content class="!pt-6 flex flex-wrap items-center gap-3">
+                <div class="min-w-0 flex-1">
+                  <p class="m-0 font-medium">{{ template.name }}</p>
+                  <p class="m-0 text-xs opacity-70 farrier-numeric">
+                    v{{ template.latestVersion }} · stored by {{ template.createdBy || 'unknown' }}
+                  </p>
+                </div>
+
+                @if (template.signed) {
+                  <span class="text-xs text-farrier-ok"
+                        [matTooltip]="'Signed offline, so an enrolling agent may be handed it. The agent verifies the signature against its own trusted-signers; this control plane cannot produce one.'">
+                    signed
+                  </span>
+                } @else {
+                  <span class="text-xs opacity-70"
+                        [matTooltip]="'Renderable and pasteable. An enrolling agent will refuse it: a bootstrap must be signed by a key in the host&rsquo;s own trusted-signers.'">
+                    unsigned
+                  </span>
+                }
+
+                <button mat-button (click)="open(template.name)">Open</button>
+              </mat-card-content>
+            </mat-card>
+          }
+        </div>
+      }
+
+      <h2 class="text-lg font-medium mt-8 mb-3">New version</h2>
+
+      <mat-card>
+        <mat-card-content class="!pt-6 flex flex-col gap-4">
+          <mat-form-field appearance="outline">
+            <mat-label>Name</mat-label>
+            <input matInput autocomplete="off" spellcheck="false"
+                   [ngModel]="draftName()" (ngModelChange)="draftName.set($event)" />
+            <mat-hint>
+              An existing name stores the next version of it. Nothing is ever edited in place: a
+              host's bootstrap record names a version and must resolve to the bytes that ran.
+            </mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Body</mat-label>
+            <textarea matInput rows="16" spellcheck="false"
+                      [ngModel]="draftBody()" (ngModelChange)="draftBody.set($event)"></textarea>
+            <mat-hint>
+              cloud-config, with <code>{{ placeholderSyntax }}</code> substituted at render time.
+              <code>{{ tokenSyntax }}</code> is reserved: it is minted per render and cannot be
+              supplied.
+            </mat-hint>
+          </mat-form-field>
+
+          <p class="m-0 text-sm opacity-80">
+            Saved unsigned. A signature is made offline with <code>farrier sign-template</code>, by a
+            key this control plane does not hold — which is exactly why an agent will accept a
+            bootstrap signed that way and nothing else.
+          </p>
+
+          @if (actionError()) {
+            <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+          }
+        </mat-card-content>
+
+        <mat-card-actions align="end">
+          <button mat-flat-button [disabled]="!canSave()" (click)="save()">Save version</button>
+        </mat-card-actions>
+      </mat-card>
+    </section>
+
+    <section>
+      @if (opened(); as record) {
+        <div class="flex items-baseline gap-3 mb-3">
+          <h2 class="text-lg font-medium m-0">{{ record.name }} v{{ record.version }}</h2>
+          <span class="flex-1"></span>
+          <button mat-button (click)="editOpen()">Edit as new version</button>
+          <button mat-button (click)="close()">Close</button>
+        </div>
+
+        @if (record.warnings.length > 0) {
+          <mat-card class="mb-4">
+            <mat-card-content class="!pt-6 flex items-start gap-3">
+              <mat-icon class="text-farrier-warn">warning_amber</mat-icon>
+              <div class="text-sm">
+                <p class="m-0 font-medium">This body looks like it carries secrets.</p>
+                <ul class="m-0 mt-2 pl-5">
+                  @for (warning of record.warnings; track warning) {
+                    <li>{{ warning }}</li>
+                  }
+                </ul>
+                <p class="m-0 mt-2 opacity-80">
+                  Stored anyway, on purpose. A refusal here would only move the secret somewhere
+                  nobody reviews.
+                </p>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+
+        <mat-card class="mb-4">
+          <mat-card-content class="!pt-6">
+            <pre><code>{{ record.body }}</code></pre>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card>
+          <mat-card-header>
+            <mat-card-title>Render</mat-card-title>
+          </mat-card-header>
+
+          <mat-card-content class="!pt-4 flex flex-col gap-4">
+            @if (askedPlaceholders().length === 0 && !mintsToken()) {
+              <p class="m-0 text-sm opacity-80">This template substitutes nothing; render it as it is.</p>
+            }
+
+            @for (name of askedPlaceholders(); track name) {
+              <mat-form-field appearance="outline">
+                <mat-label>{{ name }}</mat-label>
+                <input matInput autocomplete="off" spellcheck="false"
+                       [ngModel]="param(name)" (ngModelChange)="setParam(name, $event)" />
+              </mat-form-field>
+            }
+
+            @if (mintsToken()) {
+              <p class="m-0 text-sm opacity-80">
+                This template substitutes an enrolment token, which is minted fresh for each render
+                and expires like any other.
+              </p>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Fleet group</mat-label>
+                <input matInput autocomplete="off" spellcheck="false"
+                       [ngModel]="renderGroup()" (ngModelChange)="renderGroup.set($event)" />
+                <mat-hint>Optional. The group hosts enrolled with this token join.</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Bootstrap template</mat-label>
+                <input matInput autocomplete="off" spellcheck="false"
+                       [ngModel]="renderBootstrap()" (ngModelChange)="renderBootstrap.set($event)" />
+                <mat-hint>
+                  Optional, and only a signed template. Names what the enrolling agent may request
+                  and apply exactly once, verified against its own trusted-signers.
+                </mat-hint>
+              </mat-form-field>
+            }
+
+            @if (actionError()) {
+              <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+            }
+          </mat-card-content>
+
+          <mat-card-actions align="end">
+            <button mat-flat-button [disabled]="busy()" (click)="render()">Render</button>
+          </mat-card-actions>
+        </mat-card>
+
+        @if (rendered(); as result) {
+          <mat-card class="mt-4">
+            <mat-card-header>
+              <mat-card-title>user-data</mat-card-title>
+            </mat-card-header>
+
+            <mat-card-content class="!pt-4 flex flex-col gap-3">
+              <p class="m-0 text-sm text-farrier-warn flex items-start gap-2">
+                <mat-icon class="!w-5 !h-5 !text-lg" aria-hidden="true">vpn_key</mat-icon>
+                <span>{{ result.note }}</span>
+              </p>
+
+              @if (result.tokenExpiresAt) {
+                <p class="m-0 text-sm opacity-80 farrier-numeric">
+                  The enrolment token in it expires at {{ result.tokenExpiresAt }}.
+                </p>
+              }
+
+              @if (result.warnings.length > 0) {
+                <ul class="m-0 pl-5 text-sm text-farrier-warn">
+                  @for (warning of result.warnings; track warning) {
+                    <li>{{ warning }}</li>
+                  }
+                </ul>
+              }
+
+              <pre><code>{{ result.userData }}</code></pre>
+            </mat-card-content>
+
+            <mat-card-actions align="end">
+              <button mat-button (click)="copyRendered()">
+                <mat-icon>content_copy</mat-icon>
+                Copy
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        }
+      } @else {
+        <mat-card>
+          <mat-card-content class="!pt-6 text-sm opacity-80">
+            <p class="m-0">Open a template to read it, render it, or start its next version.</p>
+            <p class="m-0 mt-3">
+              There is no control here that delivers a template to a running host, and there will not
+              be one. Pushing configuration to an already-enrolled machine is the tier Farrier does
+              not build — it is the whole reason an attacker who owns this control plane still cannot
+              run code on your fleet.
+            </p>
+          </mat-card-content>
+        </mat-card>
+      }
+    </section>
+  </div>
+}
