@@ -162,7 +162,7 @@ than loudly, so "it worked on my machine" does not detect them.
 ## Reporting security issues
 
 **Do not open a public issue.** Use GitHub's private advisory flow, described in
-[`docs/SECURITY.md` §10](docs/SECURITY.md#10-reporting-a-vulnerability).
+[`docs/SECURITY.md` §11](docs/SECURITY.md#11-reporting-a-vulnerability).
 
 ## Code of conduct
 

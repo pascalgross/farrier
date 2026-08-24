@@ -91,11 +91,15 @@ workflow that no maintainer can override:
   and Debian, plus `needrestart`'s answer to "which running services still hold the old library".
 - **Policy-gated update application** — the host decides what it will accept; the control plane can
   only ask for something within that.
-- **Provisioning templates** *(planned — phase 2,
-  [#9](https://github.com/pascalgross/farrier/issues/9))* — cloud-init templates stored, versioned
-  and rendered by Farrier, and handed to *you*. Farrier is not in the delivery path. The design is
-  argued out in [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception);
-  none of it is built yet.
+- **Provisioning templates** — cloud-init templates stored, versioned, encrypted at rest and rendered
+  by Farrier, and handed to *you*. Farrier is not in the delivery path. A template signed offline may
+  additionally be applied by a machine **once, at enrolment**, which is the one exception to
+  everything else here and is argued out in
+  [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception).
+- **Observability that reaches somebody** — unit-state history at heartbeat resolution, a durable
+  event inbox, a live feed in the interface, and alerting rules that mail, post to a webhook or raise
+  a browser notification. A rule produces a notification and never a job; see
+  [`docs/SECURITY.md` §8](docs/SECURITY.md#8-observability).
 
 ## What it will never do
 
@@ -184,4 +188,4 @@ Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Two rules catch most fir
   comment about why the function exists.
 
 Security issues go through GitHub's private advisory flow, not the public tracker —
-[`docs/SECURITY.md` §10](docs/SECURITY.md#10-reporting-a-vulnerability).
+[`docs/SECURITY.md` §11](docs/SECURITY.md#11-reporting-a-vulnerability).

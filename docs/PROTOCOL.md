@@ -252,6 +252,7 @@ so an agent and a server that agree on the encoding agree on the digest.
       "name": "nginx.service", "loadState": "loaded",
       "activeState": "active", "subState": "running"
     }],
+    "servicesTruncated": false,
     "extra": { "network": { "interfaces": [{ "name": "eth0", "mtu": 1500, "up": true }] } }
   },
   "policy": { "...": "the effective parsed policy, for display and for min() checks server-side" },
@@ -276,6 +277,19 @@ in an audit trail needs no more than this.
 `subscription.applicable` is `false` on Debian, where Ubuntu Pro and Livepatch do not exist. Clients
 rendering this MUST show "not applicable" rather than "unknown" or an empty amber badge; a Debian host
 that permanently displays an ESM warning teaches operators to ignore the dashboard.
+
+`services` is capped, and `servicesTruncated` is set when the list was cut. The cut is in sorted order,
+so a failed unit late in the alphabet is exactly what disappears — which means **"no failed units" and
+"the failed unit sorts after the cap" MUST NOT render identically**, the same rule
+`serviceScanComplete` states and for the same reason.
+
+A control plane MAY compare the `services` of one full report against the previous one to record unit
+state changes. Farrier's does, which is where its `service.failed` and `service.recovered` events come
+from, and this is the whole of the mechanism: the resolution is the heartbeat interval, so a unit that
+fails and recovers between two beats is invisible. That is a property of reporting on the heartbeat
+rather than a defect, and a client rendering such a history SHOULD say so beside it. Which units are
+worth an event is the *host's* decision, reported as `policy.services.watched`; an empty list means
+every unit, because permitting an action and reporting a fact are different questions.
 
 ### 4.3 Server-set pacing
 

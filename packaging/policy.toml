@@ -78,6 +78,21 @@ reboot = "never"
 #   restartable = ["nginx.service", "docker.service", "farrier-*.service"]
 restartable = []
 
+# Units whose state changes this host considers worth reporting as an event.
+#
+# Matched the same way as `restartable`, and deliberately with the opposite default: empty means
+# *every* unit. Permitting an action and reporting a fact are different questions, and a fresh host
+# should surface a failed unit rather than hide it behind a setting nobody has heard of.
+#
+# Write a list when the noise is not worth it — a machine whose timers fail routinely, say — and the
+# host will keep quiet about everything else. It bounds what the control plane says about this host,
+# never what may be done to it, so widening it is not a permission change. The full unit list still
+# rides the heartbeat either way; this decides what becomes an event.
+#
+# Example:
+#   watched = ["nginx.service", "postgresql*.service"]
+watched = []
+
 [limits]
 
 # How long after issue a job may still be executed.

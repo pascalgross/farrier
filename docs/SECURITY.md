@@ -5,7 +5,7 @@ claim below is either enforced by code with a test in the `guarantee` CI workflo
 marked as a boundary that Farrier does **not** defend.
 
 If you find a way to violate the guarantee in [§1](#1-the-guarantee), that is the most serious class
-of bug this project can have. See [§10](#10-reporting-a-vulnerability).
+of bug this project can have. See [§11](#11-reporting-a-vulnerability).
 
 ---
 
@@ -547,7 +547,92 @@ therefore:
 
 ---
 
-## 8. What Farrier does *not* defend against
+## 8. Observability
+
+Farrier tells an operator what it noticed. It does not act on it — the two halves of that sentence are
+the whole of this section.
+
+### 8.1 What may be said, and where it goes
+
+The event vocabulary is **closed at compile time**, like the intent catalogue and for a related reason:
+a kind is a word operators build webhook filters, mail rules and dashboards on, and a control plane
+that let a handler invent one under deadline is a control plane whose dashboards each miss half the
+events. The set lives in `internal/notify/kinds.go`, and a test fails when it changes without the
+expected-set literal changing in the same commit.
+
+| Kind | When |
+| --- | --- |
+| `host.enrolled` | A machine joined the fleet |
+| `host.silent` / `host.recovered` | A host stopped, then resumed, heartbeating |
+| `job.created` / `job.approved` | A job was queued, or released by an operator |
+| `job.failed` | A host attempted a job and failed it |
+| `job.expired` | A job's validity window closed before it executed |
+| `service.failed` / `service.recovered` | A watched unit failed, then ran again |
+| `updates.pending` / `updates.resolved` | A host's security backlog crossed a rule's line, then fell back |
+| `reboot.overdue` / `reboot.done` | A reboot went unaddressed past a rule's line, then happened |
+
+A refusal is deliberately not in that list. `refused_by_policy` is the system working, and an event
+stream that painted it the same colour as a failure would teach its readers to ignore both.
+
+Every event is written to its tenant's **inbox** before any delivery is attempted, because the inbox is
+the only delivery with a guarantee. Everything after it is best-effort and has to *look* best-effort:
+an open tab receives the event over a server-sent-events stream, the tenant's webhook receives it if
+one is configured, and an alert rule's recipients receive mail. A tab that was closed, a webhook that
+was down and a relay that refused all produce the same outcome — the event is on the page when somebody
+looks.
+
+Delivery outside the process runs **detached from the request that produced it**, retried with a short
+backoff and bounded, and drained on shutdown. That is not an optimisation: `emit` is called from
+handlers an agent is waiting on, and a control plane made slow by somebody else's mail server is a
+control plane whose heartbeats time out.
+
+Scoping is the same as everywhere else. An event carries its tenant, reaches that tenant's endpoint and
+that tenant's tabs, and nothing else; the stream is authorised exactly like any other read of
+control-plane state ([§5](#5-tenants)).
+
+### 8.2 What the host decides
+
+`[services] watched` in `policy.toml` lists the units whose state changes this host considers worth an
+event, with the same shell-style globbing as `restartable`. It is on the host because which units
+matter is a per-host question: the machine's owner knows that `nginx.service` matters and
+`motd-news.timer` does not.
+
+Two properties of it are worth stating, because both are the opposite of what the neighbouring key
+does. The empty default watches **everything** — permitting an action and reporting a fact are
+different questions, and a fresh host should surface a failed unit rather than hide it behind a setting
+nobody has heard of. And widening the list is **not a permission change**: it bounds what the control
+plane says about this host, never what may be done to it.
+
+The resolution is the heartbeat interval, by construction: state changes are noticed by comparing one
+full report against the previous one, so a unit that fails and recovers between two beats is invisible.
+That is a stated property rather than a bug, and the UI states it where the history is rendered rather
+than leaving somebody to discover it during an incident.
+
+### 8.3 The line an alerting rule does not cross
+
+**A rule produces a notification. A rule never produces a job.**
+
+"Apply the security updates when more than five are pending" is the obvious next request, and it does
+not break [§1](#1-the-guarantee) — the host's own policy still bounds it, and anything destructive
+still needs a signature from a key in that host's own `trusted-signers`. What it does is convert the
+control plane from something that asks into something that acts on a schedule of its own, and that is a
+different feature with a different threat model. There is deliberately no code path here that could,
+and it gets its own argument or it does not happen.
+
+Rules live in the control plane's own database and not in `policy.toml`, for the reason that file
+exists: `policy.toml` is the *host's* authority over what may be done to it, and an alerting rule is the
+control plane's business. Putting them together would blur the one distinction the whole design rests
+on. Like everything else a tenant owns, rules are behind forced row-level security.
+
+Mail leaves over STARTTLS on 587 or implicit TLS on 465 and never in plaintext, because an alert
+legitimately carries hostnames and failure text. The relay is process configuration — which mail server
+an installation may speak to is the installation operator's decision — and the recipients are per rule,
+which is the one delivery a tenant opts into. A rule whose last mail did not go out says so on the
+rule: an alert that never went out and an alert that never fired are indistinguishable from an inbox.
+
+---
+
+## 9. What Farrier does *not* defend against
 
 An honest guarantee needs an honest boundary. Farrier does not protect you from:
 
@@ -595,7 +680,7 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
 
 ---
 
-## 9. Hardening notes for operators
+## 10. Hardening notes for operators
 
 - Put real keys in `trusted-signers` and use a touch-required hardware token where you can. The
   audit log distinguishes `ops-laptop (file)` from `ops-yubikey-1 (PKCS#11)` precisely so that this is
@@ -622,7 +707,7 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
 
 ---
 
-## 10. Reporting a vulnerability
+## 11. Reporting a vulnerability
 
 Report security issues privately through GitHub's **Report a vulnerability** button on the repository's
 Security tab, which opens a private advisory. Please do not open a public issue for a vulnerability.

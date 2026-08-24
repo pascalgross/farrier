@@ -50,6 +50,27 @@ Back up `ca.key` **separately from the database**. An attacker with both can imp
 control plane; an attacker with the database alone cannot. Neither lets them run code on a host: an
 agent authorises a job by its class and its signature, not by who asked.
 
+### Mail, for alerts that reach somebody who is not looking
+
+Optional, and off until you configure it. Alerting rules are per fleet and editable in the interface;
+which relay this installation may speak to is yours:
+
+```bash
+farrier-server serve \
+  --smtp-host smtp.example.com --smtp-port 587 \
+  --smtp-from farrier@example.com --smtp-username farrier \
+  --smtp-password-file /etc/farrier-server/smtp.password \
+  ...
+```
+
+Port 465 speaks TLS from the first byte and anything else — 587 in practice — upgrades with STARTTLS.
+Plaintext SMTP is not offered: an alert legitimately carries hostnames and failure text, and a relay
+that does not offer STARTTLS is refused rather than downgraded to. The password comes from a file, or
+from `FARRIER_SMTP_PASSWORD`, and never from a flag, because `argv` is world-readable in `ps`.
+
+Without a relay, every other route still works — the event inbox, the live feed in the interface, and
+each fleet's webhook — and a rule that names recipients says on the rule that its mail did not go out.
+
 ### More than one fleet
 
 The command above gives you a fleet called `default`, and if that is all you want you can stop reading
@@ -175,6 +196,7 @@ Straight after installation, before you change anything:
 | Applies *every* update because the control plane asked | **no** — `packages.applyAll` needs a signature from a key you place on the host |
 | Applies updates because an administrator ran the helper on the host | only security updates, and only what the policy below allows |
 | Restarts a service, or reboots | **no**, from anyone, until you change the two files below |
+| Reports which of its units are in the failed state | **yes**, for every unit, until `[services] watched` narrows it |
 
 The two files are the whole of it:
 
@@ -184,6 +206,12 @@ any job is `min(what the control plane asked for, what this file allows)` — ne
 edit with `farrier-agent policy check` before restarting anything: a file that does not parse makes the
 host refuse all privileged work rather than fall back to a default, which is deliberate and is a
 miserable way to discover a typo.
+
+One key in it is the exception to everything the paragraph above says. `[services] watched` decides
+which unit-state changes become events, and its empty default means *every* unit rather than none:
+permitting an action and reporting a fact are different questions, and a fresh host should surface a
+failed unit rather than hide it. Narrowing it quietens a noisy machine; widening it grants nothing,
+because it bounds what the control plane is told, never what may be done.
 
 **`/etc/farrier/trusted-signers`** — root-owned, a dpkg conffile, and **empty**. Every destructive
 operation needs a signature from a key listed here, and the control plane holds none of them. Generate

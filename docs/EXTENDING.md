@@ -116,6 +116,25 @@ This is the one seam the **server** may extend at run time: an operator can conf
 without recompiling. That is safe because of the asymmetry that governs the whole design —
 **sinks send data out; nothing sends code in.**
 
+Three sinks exist: the tenant webhook, SMTP for the recipients an alert rule names, and the browser —
+which is not a `Sink` at all but a server-sent-events stream held open by an operator's tab, because a
+subscription that vanishes when somebody closes a laptop is not something the `Deliver` contract can
+describe. What is durable is neither of those: every event is written to the tenant's inbox before any
+delivery is attempted, so best-effort delivery *looks* best-effort rather than turning into silence.
+
+What a sink may deliver is **closed at compile time**, like the intent catalogue and for a related
+reason. `notify.Kind` is an unexported-in-spirit set of constants with a test that fails when the set
+changes, because a kind is a word operators build webhook filters, mail rules and dashboards on: one
+handler spelling it `job.fail` and another `job.failed` is two dashboards that each miss half the
+events. Adding a member means editing `internal/notify/kinds.go` and the expected set in
+`notify_test.go` in the same commit.
+
+Alerting rules sit on top of the sinks and add nothing to what may leave: a rule decides *which*
+events are worth interrupting somebody for and *who*, never what may be done. **A rule produces a
+notification. A rule never produces a job** — there is deliberately no code path that could, and
+"auto-remediate when more than five updates are pending" is a different feature with a different
+argument, not a checkbox on this one.
+
 ### `auth.Provider` — operator authentication
 
 ```go
@@ -133,9 +152,15 @@ run code on a host.
 
 ### The Angular application
 
-Standalone components and lazily loaded routes, in `web/src/app`. There is no panel registry: with
-three pages it would be indirection without a reader, and it can be introduced when there is a second
-thing to register. Adding a page means a component and a route.
+Standalone components and lazily loaded routes, in `web/src/app`. There is no panel registry: it would
+be indirection without a reader, and it can be introduced when there is a second thing to register.
+Adding a page means a component and a route.
+
+One piece of it is worth knowing before you copy it. The live event feed reads the stream with `fetch`
+and a `ReadableStream`, not with `EventSource`, because `EventSource` cannot set a request header and
+this API authenticates with a bearer token — the usual workaround puts an operator's credential into
+the query string, and from there into every access log and proxy trace it passes. The cost is the
+reconnect loop in `core/event-stream.ts`, which `EventSource` would otherwise have supplied.
 
 Whatever it grows into, the UI reads the API and can reach no host directly — it has no credential that
 any agent would accept, because agents authenticate the *control plane* by certificate and authorise
