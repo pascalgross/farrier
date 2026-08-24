@@ -148,6 +148,31 @@ const maxOutboundInFlight = 64
 // own tenant, and to nowhere else, and it carries its tenant so that one which somehow arrived in the
 // wrong place is identifiable as such rather than looking like an ordinary event.
 func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Event) {
+	scoped, ev := s.record(ctx, tenantID, ev)
+
+	// The refusal is logged by detach and otherwise ignored here, unlike in notifyAlert. A refused
+	// pass means the webhook and any event-routed mail did not go out, which leaves an event in the
+	// inbox with no delivery beside it — whereas a refused *alert* pass has a rule whose cooldown the
+	// evaluator has already stamped, so there is both somewhere to record it and an obligation to.
+	_, _ = s.detach("event delivery", func(outCtx context.Context) {
+		s.deliverOutside(outCtx, scoped, ev)
+	})
+}
+
+// record writes an event to the inbox and the open tabs, and delivers it nowhere.
+//
+// Split out of emit for two callers that must not deliver. A digest collapses three hundred firings
+// into one mail so that a partition does not send three hundred pages — but the inbox is documented as
+// the durable, complete record, and collapsing it there too would leave an operator with one row
+// naming three hostnames and no way to learn the other 297. So the batch is recorded here, host by
+// host, and the digest is delivered on its own. The other caller is the delivery-failure notice, which
+// must not be delivered through the delivery that just failed.
+//
+// It returns the scoped store and the event with its identity filled in, so a caller that then
+// delivers is delivering exactly what was recorded.
+func (s *Server) record(ctx context.Context, tenantID store.TenantID,
+	ev notify.Event) (store.Scoped, notify.Event) {
+
 	ev.TenantID = string(tenantID)
 	if ev.At.IsZero() {
 		ev.At = time.Now().UTC()
@@ -190,14 +215,7 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 	}
 
 	s.events.broadcast(tenantID, view)
-
-	// The refusal is logged by detach and otherwise ignored here, unlike in notifyAlert. A refused
-	// pass means the webhook and any event-routed mail did not go out, which leaves an event in the
-	// inbox with no delivery beside it — whereas a refused *alert* pass has a rule whose cooldown the
-	// evaluator has already stamped, so there is both somewhere to record it and an obligation to.
-	_, _ = s.detach("event delivery", func(outCtx context.Context) {
-		s.deliverOutside(outCtx, scoped, ev)
-	})
+	return scoped, ev
 }
 
 // detach runs work outside the caller's request, tracked so a shutdown can drain it.
@@ -275,6 +293,20 @@ func (s *Server) deliverOutside(ctx context.Context, scoped store.Scoped, ev not
 		if err != nil {
 			slog.Warn("event delivery failed",
 				"tenant", tenantID, "sink", sink.Name(), "kind", ev.Kind, "error", err)
+			// And recorded where an operator looks, not only in a log they do not have. A webhook
+			// that is down takes every event with it in silence: the inbox fills, the chat channel
+			// stays quiet, and nothing on either side says which of the two is happening. This notice
+			// is recorded and never delivered — sending it through the delivery that just failed
+			// would either fail again or report a failure that had already resolved.
+			s.record(ctx, tenantID, notify.Event{
+				Kind:     string(notify.KindDeliveryFailed),
+				HostID:   ev.HostID,
+				Hostname: ev.Hostname,
+				At:       time.Now().UTC(),
+				Summary: "the tenant webhook did not accept " + ev.Kind +
+					"; the event is in this inbox and went nowhere else",
+				Detail: map[string]any{"sink": sink.Name(), "kind": ev.Kind, "error": err.Error()},
+			})
 		}
 	}
 

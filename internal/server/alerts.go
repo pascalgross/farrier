@@ -154,9 +154,9 @@ func (s *Server) evaluateTenantAlerts(ctx context.Context, tenantID store.Tenant
 	if err != nil {
 		return fmt.Errorf("listing states: %w", err)
 	}
-	held := map[string]store.AlertState{}
+	held := map[store.AlertKey]store.AlertState{}
 	for _, st := range states {
-		held[st.RuleID+"\x00"+st.HostID] = st
+		held[st.AlertKey] = st
 	}
 
 	for _, rule := range evaluated {
@@ -176,7 +176,7 @@ type firingHost struct {
 
 // evaluateRule advances one rule's state machine across the fleet and notifies on the transitions.
 func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule store.AlertRule,
-	hosts []store.Host, held map[string]store.AlertState, now time.Time) {
+	hosts []store.Host, held map[store.AlertKey]store.AlertState, now time.Time) {
 
 	cooldown := time.Duration(rule.CooldownSeconds) * time.Second
 	if cooldown <= 0 {
@@ -188,8 +188,12 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 		if host.Revoked {
 			continue
 		}
-		state := held[rule.ID+"\x00"+host.ID]
-		state.RuleID, state.HostID = rule.ID, host.ID
+		// Subject stays empty: every evaluated condition is about the machine as a whole. The
+		// dimension exists for the event-routed ones, where one host can be failing about two units
+		// at once.
+		key := store.AlertKey{RuleID: rule.ID, HostID: host.ID}
+		state := held[key]
+		state.AlertKey = key
 
 		raw, summary := s.conditionHolds(rule, host, state, now)
 
@@ -218,7 +222,7 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 			// again is indistinguishable from one that resolved. The claim's own predicate is
 			// exactly that distinction.
 			bookkeep = false
-			won, err := scoped.ClaimAlertNotification(ctx, rule.ID, host.ID, now, cooldown)
+			won, err := scoped.ClaimAlertNotification(ctx, key, now, cooldown)
 			switch {
 			case err != nil:
 				slog.Error("could not claim an alert notification",
@@ -229,7 +233,7 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 
 		case state.Firing:
 			bookkeep = false
-			won, err := scoped.ReleaseAlertFiring(ctx, rule.ID, host.ID)
+			won, err := scoped.ReleaseAlertFiring(ctx, key)
 			switch {
 			case err != nil:
 				slog.Error("could not release an alert firing",
@@ -244,8 +248,8 @@ func (s *Server) evaluateRule(ctx context.Context, scoped store.Scoped, rule sto
 		// Since and nothing else. Two replicas writing it a second apart is not worth a compare-and-
 		// set: the field feeds reboot_required's days-outstanding threshold, so the disagreement they
 		// can produce is a firing a minute early.
-		if bookkeep && state != held[rule.ID+"\x00"+host.ID] {
-			held[rule.ID+"\x00"+host.ID] = state
+		if bookkeep && state != held[key] {
+			held[key] = state
 			if err := scoped.UpsertAlertState(ctx, state); err != nil {
 				slog.Error("could not persist an alert state",
 					"tenant", scoped.Tenant(), "rule", rule.ID, "host", host.ID, "error", err)
@@ -288,9 +292,27 @@ func (s *Server) notifyBatch(ctx context.Context, scoped store.Scoped, rule stor
 	if len(batch) > alertDigestThreshold {
 		// The digest form: one notification naming the count and the first few hosts, because 300
 		// identical pages during a partition is how the one different page gets missed.
+		//
+		// Every host still lands in the inbox, one row each. The inbox is documented as the durable,
+		// complete record — it is the answer to "what did I miss overnight" — and a digest that
+		// collapsed it too would leave an operator with one row naming three hostnames and no way at
+		// all to learn the other 297. The collapse is a property of what interrupts somebody, not of
+		// what is written down.
 		names := make([]string, 0, alertDigestThreshold)
-		for _, f := range batch[:alertDigestThreshold] {
-			names = append(names, f.host.Hostname)
+		for _, f := range batch {
+			if len(names) < alertDigestThreshold {
+				names = append(names, f.host.Hostname)
+			}
+			s.record(ctx, scoped.Tenant(), notify.Event{
+				Kind:     string(kind),
+				HostID:   f.host.ID,
+				Hostname: f.host.Hostname,
+				At:       now,
+				Summary:  f.summary,
+				Detail: map[string]any{
+					"ruleId": rule.ID, "condition": string(rule.Condition), "digested": true,
+				},
+			})
 		}
 		verb := recoveryPhrase(rule)
 		if isFiring {
@@ -349,6 +371,22 @@ func (s *Server) conditionHolds(rule store.AlertRule, host store.Host, state sto
 			host.Hostname + ": " + strconv.Itoa(probe.Packages.UpgradableSecurity) +
 				" security updates pending"
 
+	case store.ConditionSecurityUpdatesAge:
+		probe, ok := parseFactsProbe(host.Facts)
+		if !ok {
+			return false, ""
+		}
+		// The raw condition is "there is a backlog at all"; the threshold is applied to how long it
+		// has held, in conditionRipe, exactly as reboot_required does. That reuse is the whole
+		// implementation: Since already records when a raw condition started holding, and the age of
+		// a backlog is that value.
+		summary := host.Hostname + ": " + strconv.Itoa(probe.Packages.UpgradableSecurity) +
+			" security updates pending"
+		if !state.Since.IsZero() {
+			summary += ", " + plainDays(now.Sub(state.Since)) + " old"
+		}
+		return probe.Packages.UpgradableSecurity > 0, summary
+
 	case store.ConditionRebootRequired:
 		probe, ok := parseFactsProbe(host.Facts)
 		if !ok {
@@ -371,7 +409,7 @@ func (s *Server) conditionHolds(rule store.AlertRule, host store.Host, state sto
 // needed" is Tuesday and "a reboot has been needed for a fortnight" is the thing that never gets done
 // until it is an incident. The other conditions bake their duration into the condition itself.
 func conditionRipe(rule store.AlertRule, state store.AlertState, now time.Time) bool {
-	if rule.Condition != store.ConditionRebootRequired {
+	if !rule.Condition.MeasuredInDays() {
 		return true
 	}
 	if state.Since.IsZero() {
@@ -380,12 +418,28 @@ func conditionRipe(rule store.AlertRule, state store.AlertState, now time.Time) 
 	return now.Sub(state.Since) >= time.Duration(rule.Threshold)*24*time.Hour
 }
 
+// plainDays renders a duration the way a subject line should read.
+//
+// "14 days" rather than Go's "336h0m0s". This line ends up in a mail subject an operator scans in a
+// list, and a duration nobody can read at a glance is a subject line that gets filtered into a folder.
+func plainDays(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	switch {
+	case days <= 0:
+		return "under a day"
+	case days == 1:
+		return "1 day"
+	default:
+		return strconv.Itoa(days) + " days"
+	}
+}
+
 // firingKind maps an evaluated condition to the event kind its firing emits.
 func firingKind(c store.AlertCondition) notify.Kind {
 	switch c {
 	case store.ConditionHostSilent:
 		return notify.KindHostSilent
-	case store.ConditionSecurityUpdates:
+	case store.ConditionSecurityUpdates, store.ConditionSecurityUpdatesAge:
 		return notify.KindUpdatesPending
 	default:
 		return notify.KindRebootOverdue
@@ -397,7 +451,7 @@ func recoveryKind(c store.AlertCondition) notify.Kind {
 	switch c {
 	case store.ConditionHostSilent:
 		return notify.KindHostRecovered
-	case store.ConditionSecurityUpdates:
+	case store.ConditionSecurityUpdates, store.ConditionSecurityUpdatesAge:
 		return notify.KindUpdatesResolved
 	default:
 		return notify.KindRebootDone
@@ -411,6 +465,8 @@ func conditionPhrase(rule store.AlertRule) string {
 		return "silent for over " + strconv.Itoa(rule.Threshold) + " minutes"
 	case store.ConditionSecurityUpdates:
 		return "with " + strconv.Itoa(rule.Threshold) + "+ security updates pending"
+	case store.ConditionSecurityUpdatesAge:
+		return "with security updates pending for over " + strconv.Itoa(rule.Threshold) + " days"
 	default:
 		return "awaiting a reboot for over " + strconv.Itoa(rule.Threshold) + " days"
 	}
@@ -427,6 +483,8 @@ func recoveryPhrase(rule store.AlertRule) string {
 		return "are heartbeating again"
 	case store.ConditionSecurityUpdates:
 		return "are back under " + strconv.Itoa(rule.Threshold) + " security updates"
+	case store.ConditionSecurityUpdatesAge:
+		return "have no security updates pending"
 	default:
 		return "no longer need a reboot"
 	}
@@ -439,6 +497,8 @@ func recoverySummary(rule store.AlertRule, host store.Host) string {
 		return host.Hostname + ": heartbeating again"
 	case store.ConditionSecurityUpdates:
 		return host.Hostname + ": security backlog back under " + strconv.Itoa(rule.Threshold)
+	case store.ConditionSecurityUpdatesAge:
+		return host.Hostname + ": security backlog cleared"
 	default:
 		return host.Hostname + ": no longer needs a reboot"
 	}
@@ -541,13 +601,8 @@ func (s *Server) recordDelivery(scoped store.Scoped, ruleID, failure string) {
 // noisiest case — a restart-looping unit — is event-shaped: each loop is a fresh transition, and a
 // rule that mailed every flap would train its recipients to filter the folder.
 func (s *Server) routeEventMail(ctx context.Context, scoped store.Scoped, ev notify.Event) {
-	var condition store.AlertCondition
-	switch notify.Kind(ev.Kind) {
-	case notify.KindServiceFailed:
-		condition = store.ConditionUnitFailed
-	case notify.KindJobFailed, notify.KindJobExpired:
-		condition = store.ConditionJobFailed
-	default:
+	condition, firing, routed := routedCondition(notify.Kind(ev.Kind))
+	if !routed {
 		return
 	}
 
@@ -567,7 +622,79 @@ func (s *Server) routeEventMail(ctx context.Context, scoped store.Scoped, ev not
 		slog.Warn("could not read the alert states to route an event", "kind", ev.Kind, "error", err)
 		return
 	}
+	if !firing {
+		s.routeRecoveryToRules(ctx, scoped, ev, condition, rules)
+		return
+	}
 	s.routeToRules(ctx, scoped, ev, condition, rules, states)
+}
+
+// routedCondition maps an event kind to the condition that routes it, and whether it is a firing.
+//
+// The recovery half is the reason this is a function rather than a switch inside one caller. A rule
+// that fires must also un-fire, or operators learn to ignore it — and for the two event-routed
+// conditions there is no evaluator pass to notice the condition stopped holding. The recovery event
+// is the only thing that knows, so it has to route too.
+func routedCondition(kind notify.Kind) (store.AlertCondition, bool, bool) {
+	switch kind {
+	case notify.KindServiceFailed:
+		return store.ConditionUnitFailed, true, true
+	case notify.KindServiceRecovered:
+		return store.ConditionUnitFailed, false, true
+	case notify.KindJobFailed, notify.KindJobExpired:
+		return store.ConditionJobFailed, true, true
+	default:
+		return "", false, false
+	}
+}
+
+// eventSubject narrows an event's alert key below the host.
+//
+// A unit_failed rule is about a unit on a host, so its cooldown and its firing state are per unit:
+// nginx failing must not silence postgresql failing five minutes later. Everything else is about the
+// machine, and keeps the empty subject every row held before this dimension existed.
+func eventSubject(ev notify.Event) string {
+	unit, _ := ev.Detail["unit"].(string)
+	return unit
+}
+
+// routeRecoveryToRules un-fires the rules a recovery event resolves, and mails the ones that fired.
+//
+// The release is the compare-and-set, exactly as the claim is on the firing side: only a key that was
+// actually firing produces a recovery, so a recovery for something nobody was told about sends
+// nothing, and two control planes send one recovery between them rather than one each.
+//
+// There is no cooldown check here on purpose. A recovery is the end of a story whose beginning was
+// already told, and suppressing it would leave the rule showing a firing that has resolved — which is
+// the state operators learn to ignore alerts over.
+func (s *Server) routeRecoveryToRules(ctx context.Context, scoped store.Scoped, ev notify.Event,
+	condition store.AlertCondition, rules []store.AlertRule) {
+
+	key := store.AlertKey{HostID: ev.HostID, Subject: eventSubject(ev)}
+	deadline := time.Now().Add(mailRoutingBudget)
+
+	for _, rule := range rules {
+		if !rule.Enabled || rule.Condition != condition || len(rule.EmailTo) == 0 {
+			continue
+		}
+		if ctx.Err() != nil || time.Until(deadline) < perRuleMailBudget {
+			slog.Warn("the control plane ran out of time to mail an alert recovery",
+				"kind", ev.Kind, "rule", rule.ID)
+			return
+		}
+		key.RuleID = rule.ID
+
+		releaseCtx, releaseDone := context.WithTimeout(ctx, outboundStoreTimeout)
+		won, err := scoped.ReleaseAlertFiring(releaseCtx, key)
+		releaseDone()
+		switch {
+		case err != nil:
+			slog.Warn("could not release an event-routed firing; not mailing the recovery",
+				"rule", rule.ID, "error", err)
+		case won:
+			s.mailRule(ctx, scoped, rule, ev)
+		}
+	}
 }
 
 // readBounded runs one store read under outboundStoreTimeout.
@@ -610,7 +737,8 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 	condition store.AlertCondition, rules []store.AlertRule, states []store.AlertState) {
 
 	now := time.Now().UTC()
-	due := dueRules(rules, states, condition, ev.HostID, now)
+	key := store.AlertKey{HostID: ev.HostID, Subject: eventSubject(ev)}
+	due := dueRules(rules, states, condition, key, now)
 	deadline := time.Now().Add(mailRoutingBudget)
 
 	for i, rule := range due {
@@ -634,7 +762,8 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		// noise the cooldown exists to stop. The claim is one statement in the database, so it also
 		// holds across control-plane processes, where nothing in this one could.
 		claimCtx, claimDone := context.WithTimeout(ctx, outboundStoreTimeout)
-		won, err := scoped.ClaimAlertNotification(claimCtx, rule.ID, ev.HostID, now, ruleCooldown(rule))
+		key.RuleID = rule.ID
+		won, err := scoped.ClaimAlertNotification(claimCtx, key, now, ruleCooldown(rule))
 		claimDone()
 		switch {
 		case err != nil:
@@ -698,7 +827,7 @@ func ruleCooldown(rule store.AlertRule) time.Duration {
 // Separated from the loop that mails them so that "which rules should have been mailed" is answerable
 // as a list, which is what lets the skipped ones be recorded rather than only counted.
 func dueRules(rules []store.AlertRule, states []store.AlertState, condition store.AlertCondition,
-	hostID string, now time.Time) []store.AlertRule {
+	key store.AlertKey, now time.Time) []store.AlertRule {
 
 	var due []store.AlertRule
 	for _, rule := range rules {
@@ -707,7 +836,7 @@ func dueRules(rules []store.AlertRule, states []store.AlertState, condition stor
 		}
 		var last time.Time
 		for _, st := range states {
-			if st.RuleID == rule.ID && st.HostID == hostID {
+			if st.AlertKey == (store.AlertKey{RuleID: rule.ID, HostID: key.HostID, Subject: key.Subject}) {
 				last = st.LastNotified
 			}
 		}

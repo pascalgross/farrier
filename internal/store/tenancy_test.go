@@ -118,7 +118,8 @@ func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 			t.Fatalf("creating a rule for %s: %v", tenant.scoped.Tenant(), err)
 		}
 		if err := tenant.scoped.UpsertAlertState(ctx, AlertState{
-			RuleID: sharedRuleID, HostID: tenant.hostID, Firing: true, Since: time.Now().UTC(),
+			AlertKey: AlertKey{RuleID: sharedRuleID, HostID: tenant.hostID},
+			Firing:   true, Since: time.Now().UTC(),
 		}); err != nil {
 			t.Fatalf("recording a state for %s: %v", tenant.scoped.Tenant(), err)
 		}
@@ -715,17 +716,20 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// The claim is a write keyed on a rule, so naming beta's must fail rather than
 				// silently create a state row under alpha's tenant that beta's rule now owns — and
 				// must leave whatever beta had alone.
-				if _, err := alpha.ClaimAlertNotification(ctx, betaOnlyRuleID, alphaHostID,
+				if _, err := alpha.ClaimAlertNotification(ctx,
+					AlertKey{RuleID: betaOnlyRuleID, HostID: alphaHostID},
 					deliveryStamp, time.Hour); err == nil {
 					t.Fatal("alpha claimed a notification against a rule belonging to beta")
 				}
 				// And alpha's own claim on the colliding id must be alpha's alone: beta must still be
 				// able to claim the same pair, because their states are different rows.
-				if won, err := alpha.ClaimAlertNotification(ctx, sharedRuleID, alphaHostID,
+				if won, err := alpha.ClaimAlertNotification(ctx,
+					AlertKey{RuleID: sharedRuleID, HostID: alphaHostID},
 					deliveryStamp, time.Hour); err != nil || !won {
 					t.Fatalf("alpha claiming its own rule: won=%v err=%v", won, err)
 				}
-				if won, err := beta.ClaimAlertNotification(ctx, sharedRuleID, betaHostID,
+				if won, err := beta.ClaimAlertNotification(ctx,
+					AlertKey{RuleID: sharedRuleID, HostID: betaHostID},
 					deliveryStamp, time.Hour); err != nil || !won {
 					t.Fatalf("alpha's claim blocked beta's: won=%v err=%v", won, err)
 				}
@@ -737,13 +741,15 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// intermittently, depending on which ran first — the exact kind of flake that gets a
 				// real isolation failure dismissed as noise.
 				if err := beta.UpsertAlertState(ctx, AlertState{
-					RuleID: betaOnlyRuleID, HostID: betaHostID, Firing: true,
-					Since: deliveryStamp, LastNotified: deliveryStamp,
+					AlertKey:     AlertKey{RuleID: betaOnlyRuleID, HostID: betaHostID},
+					Firing:       true,
+					Since:        deliveryStamp,
+					LastNotified: deliveryStamp,
 				}); err != nil {
 					t.Fatalf("beta setting up a firing pair: %v", err)
 				}
-				if released, err := alpha.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
-					released {
+				if released, err := alpha.ReleaseAlertFiring(ctx,
+					AlertKey{RuleID: betaOnlyRuleID, HostID: betaHostID}); err != nil || released {
 					t.Fatalf("alpha released a firing that belongs to beta: released=%v err=%v",
 						released, err)
 				}
@@ -764,8 +770,8 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// Beta releases its own, which asserts the positive case and leaves the fixture as it
 				// was found. The probes share one pair of tenants and run in map order, so a probe
 				// that leaves a row behind is a probe that breaks whichever one happens to run next.
-				if released, err := beta.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
-					!released {
+				if released, err := beta.ReleaseAlertFiring(ctx,
+					AlertKey{RuleID: betaOnlyRuleID, HostID: betaHostID}); err != nil || !released {
 					t.Fatalf("beta releasing its own firing: released=%v err=%v", released, err)
 				}
 			},
@@ -773,7 +779,7 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// Naming a rule only beta holds must be refused — the composite foreign key again —
 				// and must leave beta's state alone.
 				err := alpha.UpsertAlertState(ctx, AlertState{
-					RuleID: betaOnlyRuleID, HostID: alphaHostID, Firing: true,
+					AlertKey: AlertKey{RuleID: betaOnlyRuleID, HostID: alphaHostID}, Firing: true,
 				})
 				if err == nil {
 					t.Fatal("alpha recorded state against a rule belonging to beta")

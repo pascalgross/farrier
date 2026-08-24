@@ -395,3 +395,70 @@ func TestGuaranteeRootHelpersTakeNoPolicyPath(t *testing.T) {
 		})
 	}
 }
+
+// alertingFiles are the source files that make up the alerting path.
+//
+// Named rather than discovered, because the property below is about these files and a pattern that
+// swept the package would either miss a file added later or catch the job API next door. A new file on
+// this path belongs in this list, and adding one is the moment to ask whether it should be.
+var alertingFiles = []string{
+	"internal/server/alerts.go",
+	"internal/server/alertsapi.go",
+}
+
+// jobMakingCalls are the store operations that put work on a host, by method name.
+//
+// The names are the complete set from store.Store: CreateJob queues work and ApproveJob releases work
+// somebody else queued. Either one, reached from the alerting path, would turn a control plane that
+// asks into one that acts on a schedule of its own.
+var jobMakingCalls = map[string]string{
+	"CreateJob":  "queues work on a host",
+	"ApproveJob": "releases work queued for a host",
+}
+
+// TestGuaranteeAnAlertRuleCannotProduceAJob is the line docs/SECURITY.md §8.3 draws, as a check.
+//
+// A rule produces a notification. A rule never produces a job. "Auto-remediate: apply security updates
+// when more than five are pending" is the obvious next request and it is a different feature with a
+// different threat model: it does not break the guarantee — the host's own policy still bounds it, and
+// anything destructive still needs an offline signature from a key in that host's own trusted-signers
+// — but it converts the control plane from something that asks into something that acts on a schedule
+// of its own. That deserves its own argument, and until it has had one this is a compile-time-visible
+// property rather than a sentence in three documents.
+//
+// It is an assertion about source rather than about behaviour because behaviour cannot show the
+// absence of a path. A test that queued no job would pass equally well against a build that queued one
+// under a condition the test did not construct.
+func TestGuaranteeAnAlertRuleCannotProduceAJob(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	for _, rel := range alertingFiles {
+		path := filepath.Join(root, rel)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s does not exist: %v.\nIf the alerting path has moved, move this list with it.",
+				rel, err)
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", rel, err)
+		}
+		// Any mention of the name, not only a call of it. A method value assigned and invoked three
+		// lines later is the same path with an extra step, and the check that only looked at call
+		// expressions missed exactly that when it was tried against a deliberate mutation.
+		ast.Inspect(f, func(node ast.Node) bool {
+			sel, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if what, forbidden := jobMakingCalls[sel.Sel.Name]; forbidden {
+				pos := fset.Position(sel.Pos())
+				t.Errorf("%s:%d: the alerting path reaches %s, which %s.\n"+
+					"A rule produces a notification and never a job — see docs/SECURITY.md §8.3. "+
+					"Auto-remediation is a separate feature with its own argument.",
+					rel, pos.Line, sel.Sel.Name, what)
+			}
+			return true
+		})
+	}
+}

@@ -40,7 +40,7 @@ func TestOnlyOneClaimantMayNotifyPerCooldown(t *testing.T) {
 				defer wg.Done()
 				<-start
 				results[i], errs[i] = tenant.ClaimAlertNotification(
-					ctx, "01JRULE", "01JHOST", now, time.Hour)
+					ctx, AlertKey{RuleID: "01JRULE", HostID: "01JHOST"}, now, time.Hour)
 			}()
 		}
 		close(start)
@@ -61,14 +61,14 @@ func TestOnlyOneClaimantMayNotifyPerCooldown(t *testing.T) {
 
 		// Inside the cooldown, nobody else gets it.
 		if again, err := tenant.ClaimAlertNotification(
-			ctx, "01JRULE", "01JHOST", now.Add(time.Minute), time.Hour); err != nil || again {
+			ctx, AlertKey{RuleID: "01JRULE", HostID: "01JHOST"}, now.Add(time.Minute), time.Hour); err != nil || again {
 			t.Fatalf("a claim inside the cooldown: won=%v err=%v", again, err)
 		}
 
 		// Past it, the next caller does — a claim that never released would be a rule that notified
 		// once and then went quiet for ever, which is worse than notifying twice.
 		if later, err := tenant.ClaimAlertNotification(
-			ctx, "01JRULE", "01JHOST", now.Add(2*time.Hour), time.Hour); err != nil || !later {
+			ctx, AlertKey{RuleID: "01JRULE", HostID: "01JHOST"}, now.Add(2*time.Hour), time.Hour); err != nil || !later {
 			t.Fatalf("a claim past the cooldown: won=%v err=%v", later, err)
 		}
 

@@ -38,11 +38,8 @@ type stateKey struct {
 	// tenant owns the state.
 	tenant TenantID
 
-	// rule is the rule half of the pair.
-	rule string
-
-	// host is the host half, empty for a digest row.
-	host string
+	// key is what the state is about, matching the composite primary key in PostgreSQL.
+	key AlertKey
 }
 
 // RecordEvent appends one event to the tenant's inbox, evicting past MaxEventsPerTenant.
@@ -254,14 +251,14 @@ func (s *scopedMemory) DeleteAlertRule(_ context.Context, id string) error {
 	}
 	delete(s.store.rules, key)
 	for sk := range s.store.states {
-		if sk.tenant == s.tenant && sk.rule == id {
+		if sk.tenant == s.tenant && sk.key.RuleID == id {
 			delete(s.store.states, sk)
 		}
 	}
 	return nil
 }
 
-// ListAlertStates returns the evaluator's memory for every (rule, host) pair.
+// ListAlertStates returns the evaluator's memory for every key it holds one for.
 func (s *scopedMemory) ListAlertStates(_ context.Context) ([]AlertState, error) {
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
@@ -276,12 +273,15 @@ func (s *scopedMemory) ListAlertStates(_ context.Context) ([]AlertState, error) 
 		if out[i].RuleID != out[j].RuleID {
 			return out[i].RuleID < out[j].RuleID
 		}
-		return out[i].HostID < out[j].HostID
+		if out[i].HostID != out[j].HostID {
+			return out[i].HostID < out[j].HostID
+		}
+		return out[i].Subject < out[j].Subject
 	})
 	return out, nil
 }
 
-// UpsertAlertState records one (rule, host) pair's state.
+// UpsertAlertState records one key's state.
 //
 // A state naming a rule this tenant does not hold is refused, matching the schema's composite foreign
 // key from alert_states to alert_rules.
@@ -292,26 +292,27 @@ func (s *scopedMemory) UpsertAlertState(_ context.Context, st AlertState) error 
 	if _, exists := s.store.rules[ruleKey{tenant: s.tenant, id: st.RuleID}]; !exists {
 		return errUnknownTenant(s.tenant)
 	}
-	s.store.states[stateKey{tenant: s.tenant, rule: st.RuleID, host: st.HostID}] = st
+	s.store.states[stateKey{tenant: s.tenant, key: st.AlertKey}] = st
 	return nil
 }
 
-// ReleaseAlertFiring clears one (rule, host) pair's firing flag, atomically.
+// ReleaseAlertFiring clears one key's firing flag, atomically, and keeps its cooldown.
 //
 // The store's mutex stands in for the WHERE clause the SQL uses, so both implementations answer "was
-// it me who cleared it" the same way.
-func (s *scopedMemory) ReleaseAlertFiring(_ context.Context, ruleID, hostID string) (bool, error) {
+// it me who cleared it" the same way — including that LastNotified survives, which is what makes the
+// cooldown reachable for a condition that oscillates.
+func (s *scopedMemory) ReleaseAlertFiring(_ context.Context, key AlertKey) (bool, error) {
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 
-	key := stateKey{tenant: s.tenant, rule: ruleID, host: hostID}
-	held, exists := s.store.states[key]
+	mapKey := stateKey{tenant: s.tenant, key: key}
+	held, exists := s.store.states[mapKey]
 	if !exists || !held.Firing {
 		return false, nil
 	}
 	held.Firing = false
-	held.Since, held.LastNotified = time.Time{}, time.Time{}
-	s.store.states[key] = held
+	held.Since = time.Time{}
+	s.store.states[mapKey] = held
 	return true, nil
 }
 
@@ -320,27 +321,27 @@ func (s *scopedMemory) ReleaseAlertFiring(_ context.Context, ruleID, hostID stri
 // The store's own mutex is what makes it atomic here, matching what one SQL statement does in
 // PostgreSQL. The equivalence matters: this implementation exists so tests exercise the same
 // behaviour, and a version that read and then wrote would pass every test the real race fails.
-func (s *scopedMemory) ClaimAlertNotification(_ context.Context, ruleID, hostID string,
+func (s *scopedMemory) ClaimAlertNotification(_ context.Context, key AlertKey,
 	at time.Time, cooldown time.Duration) (bool, error) {
 
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 
-	if _, exists := s.store.rules[ruleKey{tenant: s.tenant, id: ruleID}]; !exists {
+	if _, exists := s.store.rules[ruleKey{tenant: s.tenant, id: key.RuleID}]; !exists {
 		return false, errUnknownTenant(s.tenant)
 	}
-	key := stateKey{tenant: s.tenant, rule: ruleID, host: hostID}
-	held, exists := s.store.states[key]
+	mapKey := stateKey{tenant: s.tenant, key: key}
+	held, exists := s.store.states[mapKey]
 	if exists && !held.LastNotified.IsZero() && held.LastNotified.After(at.Add(-cooldown)) {
 		return false, nil
 	}
 
-	held.RuleID, held.HostID = ruleID, hostID
+	held.AlertKey = key
 	held.Firing = true
 	if held.Since.IsZero() {
 		held.Since = at
 	}
 	held.LastNotified = at
-	s.store.states[key] = held
+	s.store.states[mapKey] = held
 	return true, nil
 }
