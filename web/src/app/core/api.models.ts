@@ -741,6 +741,40 @@ export interface StoredTemplateVersion {
   warnings: string[];
 }
 
+/**
+ * One stored revision as the version listing renders it, without its body.
+ *
+ * No body, because the listing is about the shape of a template's history rather than its contents:
+ * bodies are sealed, potentially large, and the one a caller actually wants is fetched by naming its
+ * version — which is also the request that is marked non-cacheable, because that is the one carrying
+ * something worth keeping out of a cache.
+ */
+export interface TemplateRevision {
+  /** This revision's number. */
+  version: number;
+
+  /** Whether it carries an offline signature, and so may be issued to an enrolling host. */
+  signed: boolean;
+
+  /** The key that signed it, absent for an unsigned revision. */
+  signerKeyId?: string;
+
+  /** When it was stored. */
+  createdAt: string;
+
+  /** Which operator stored it. */
+  createdBy: string;
+}
+
+/** The response of `GET /api/v1/templates/{name}/versions`. */
+export interface TemplateVersionsResponse {
+  /** The template these revisions belong to. */
+  name: string;
+
+  /** Every stored revision, newest first. */
+  versions: TemplateRevision[];
+}
+
 /** The body of `POST /api/v1/templates`. */
 export interface CreateTemplateRequest {
   /** The template's name; an existing name stores the next version of it. */

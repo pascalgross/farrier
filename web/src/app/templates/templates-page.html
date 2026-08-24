@@ -139,6 +139,49 @@
           </mat-card-content>
         </mat-card>
 
+        @if (revisions().length > 1) {
+          <mat-card class="mb-4">
+            <mat-card-header>
+              <mat-card-title>Versions</mat-card-title>
+              <mat-card-subtitle>
+                Every save is a new version and nothing is ever edited in place, because a host's
+                bootstrap record names a version and has to resolve to the bytes that actually ran.
+              </mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content class="!pt-4 flex flex-col gap-1">
+              @for (revision of revisions(); track revision.version) {
+                <div class="flex flex-wrap items-center gap-3 py-1">
+                  <span class="farrier-numeric text-sm w-12">v{{ revision.version }}</span>
+
+                  <span class="min-w-0 flex-1 text-xs opacity-70 farrier-numeric">
+                    {{ stored(revision) }} · {{ revision.createdBy || 'unknown' }}
+                  </span>
+
+                  @if (revision.signed) {
+                    <span class="text-xs text-farrier-ok"
+                          [matTooltip]="'Signed offline by ' + (revision.signerKeyId || 'an unnamed key') + ', so an enrolling agent may be handed it.'">
+                      signed
+                    </span>
+                  } @else {
+                    <span class="text-xs opacity-70"
+                          [matTooltip]="'Renderable and pasteable. An enrolling agent will refuse it.'">
+                      unsigned
+                    </span>
+                  }
+
+                  @if (revision.version === record.version) {
+                    <span class="text-xs opacity-70 w-16 text-right">open</span>
+                  } @else {
+                    <button mat-button class="!min-w-16"
+                            (click)="open(record.name, revision.version)">Open</button>
+                  }
+                </div>
+              }
+            </mat-card-content>
+          </mat-card>
+        }
+
         <mat-card>
           <mat-card-header>
             <mat-card-title>Render</mat-card-title>

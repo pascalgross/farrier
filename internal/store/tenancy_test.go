@@ -532,6 +532,31 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatalf("alpha read a template only beta has: %v", err)
 				}
 			},
+			"ListTemplateVersions": func(t *testing.T) {
+				// A name both tenants hold must enumerate only the caller's own revisions, and one
+				// only beta holds must be indistinguishable from a name nobody holds. The second half
+				// is the one that matters: an operator who could learn that another tenant has a
+				// template called "standard-server" has learned something about their fleet.
+				revisions, err := alpha.ListTemplateVersions(ctx, sharedTemplateName)
+				if err != nil {
+					t.Fatalf("alpha cannot list its own template's versions: %v", err)
+				}
+				// Whose revisions, not how many. The probes share one pair of tenants and run in map
+				// order, so the CreateTemplateVersion probe may already have added a second revision —
+				// asserting a count here would pass or fail depending on which ran first, which is the
+				// flake that gets a real isolation failure dismissed as noise.
+				if len(revisions) == 0 {
+					t.Fatal("alpha sees none of its own revisions")
+				}
+				for _, rev := range revisions {
+					if rev.CreatedBy != "test:"+string(alpha.Tenant()) {
+						t.Fatalf("alpha sees a revision authored by %q, which is not its own", rev.CreatedBy)
+					}
+				}
+				if _, err := alpha.ListTemplateVersions(ctx, betaOnlyTemplateName); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha enumerated a template only beta has: %v", err)
+				}
+			},
 			"RecordEvent": func(t *testing.T) {
 				// An event recorded by alpha must not surface in beta's inbox, whatever id it carries.
 				if err := alpha.RecordEvent(ctx, Event{

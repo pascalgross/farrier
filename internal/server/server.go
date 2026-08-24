@@ -244,6 +244,8 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
 	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
 	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))
+	s.route(http.MethodGet, "/api/v1/templates/{name}/versions",
+		s.requireOperator(s.handleListTemplateVersions))
 	s.route(http.MethodPost, "/api/v1/templates/{name}/render", s.requireOperator(s.handleRenderTemplate))
 	s.route(http.MethodGet, "/api/v1/events", s.requireOperator(s.handleListEvents))
 	s.route(http.MethodGet, "/api/v1/events/stream", s.requireOperator(s.handleEventStream))

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/provision"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -278,7 +280,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 		ttl = time.Duration(req.TTLSeconds) * time.Second
 	}
 
-	if !checkBootstrapIsIssuable(w, r, who, req.Bootstrap) {
+	if !s.checkBootstrapIsIssuable(w, r, who, req.Bootstrap) {
 		return
 	}
 
@@ -379,7 +381,9 @@ func (s *Server) handleCatalogue(w http.ResponseWriter, _ *http.Request, _ opera
 //
 // Shared by the two places that mint a token, and shared deliberately: the render endpoint mints one
 // too, and a check that lived in only one of them would be a check the other silently skipped.
-func checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request, who operator, name string) bool {
+func (s *Server) checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request,
+	who operator, name string) bool {
+
 	if name == "" {
 		return true
 	}
@@ -399,5 +403,41 @@ func checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request, who operat
 				"Sign it with `farrier sign-template` and store the signed version first.")
 		return false
 	}
+
+	// And it must substitute nothing. A Tier 2 template is handed to a host verbatim — the signature
+	// covers those exact bytes, so there is nothing that could render it on the way — and a body with
+	// a placeholder in it would reach cloud-init with the braces still there and write a literal
+	// "{{hostname}}" into the machine's configuration. That is a Tier 1 template stored under a Tier 2
+	// name, and it is a mistake worth catching here, at a keyboard, rather than on the first host
+	// enrolled with it.
+	body, err := s.templateBody(record)
+	if err != nil {
+		slog.Error("could not open a template to check it for placeholders", "error", err)
+		writeError(w, http.StatusInternalServerError, "sealed",
+			"the stored template cannot be decrypted; the control plane's template key does not match "+
+				"this database. See docs/INSTALL.md on backing the key up beside the CA.")
+		return false
+	}
+	if placeholders := provision.Placeholders(body); len(placeholders) > 0 {
+		writeError(w, http.StatusConflict, "unrendered_template",
+			"the latest version of "+name+" substitutes "+strings.Join(placeholders, ", ")+
+				", and a bootstrap template is handed to a host verbatim — the offline signature covers "+
+				"those exact bytes, so nothing renders it on the way. Store a version with the values "+
+				"already in it, or use this template through the render endpoint instead.")
+		return false
+	}
 	return true
+}
+
+// templateBody decrypts one stored template version.
+//
+// Its own function because two callers now need the plaintext for reasons that have nothing to do with
+// showing it to anybody, and both want the same one failure to be recognisable: a database restored
+// without the sealing key beside the CA.
+func (s *Server) templateBody(record store.TemplateVersion) (string, error) {
+	body, err := s.cfg.TemplateKey.Open(record.BodySealed)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }

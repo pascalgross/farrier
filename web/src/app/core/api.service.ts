@@ -19,6 +19,7 @@ import {
   ServiceHistoryResponse,
   StoredTemplateVersion,
   TemplateVersion,
+  TemplateVersionsResponse,
   TemplatesResponse,
   Whoami,
 } from './api.models';
@@ -212,6 +213,20 @@ export class ApiService {
     const query = version ? `?version=${version}` : '';
     return this.http.get<TemplateVersion>(
       `/api/v1/templates/${encodeURIComponent(name)}${query}`,
+      { headers: this.headers() },
+    );
+  }
+
+  /**
+   * Fetches every stored revision of one template, newest first.
+   *
+   * Separate from reading a version because the two differ in what they carry: this one is a history
+   * with no bodies in it, which is what lets a page show that version 3 exists and who stored it
+   * without pulling three sealed documents a reader did not ask for.
+   */
+  templateVersions(name: string): Observable<TemplateVersionsResponse> {
+    return this.http.get<TemplateVersionsResponse>(
+      `/api/v1/templates/${encodeURIComponent(name)}/versions`,
       { headers: this.headers() },
     );
   }

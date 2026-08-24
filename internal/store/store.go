@@ -450,6 +450,31 @@ type TemplateSummary struct {
 	Signed bool
 }
 
+// TemplateRevision is one stored version of a template, without its body.
+//
+// It exists because "every save is a new immutable version" is a property an operator has to be able to
+// *see*: a host's bootstrap record names a version, and a version nobody can enumerate is one nobody
+// can resolve back to what ran. The body is deliberately absent — it is sealed, it is potentially
+// large, and a listing that carried every revision's body would decrypt a template's whole history to
+// answer "which versions are there".
+type TemplateRevision struct {
+	// Version is this revision's number, starting at 1.
+	Version int
+
+	// CreatedAt is when it was stored.
+	CreatedAt time.Time
+
+	// CreatedBy is who stored it.
+	CreatedBy string
+
+	// Signed reports whether this revision carries an offline signature, which is what decides whether
+	// an enrolling host can be issued it at all.
+	Signed bool
+
+	// SignerKeyID names the key that signed it, empty when unsigned.
+	SignerKeyID string
+}
+
 // Online reports whether the host has been heard from recently enough to be considered up.
 //
 // The threshold is generous relative to the heartbeat interval because a host that missed one beat is
@@ -974,6 +999,16 @@ type Scoped interface {
 
 	// ListTemplates returns one summary per template name, newest latest-version first.
 	ListTemplates(ctx context.Context) ([]TemplateSummary, error)
+
+	// ListTemplateVersions returns every stored revision of one template, newest first.
+	//
+	// Bodies are not included: this answers "what revisions exist and who made them", which is the
+	// question an operator asks when a host's bootstrap record names version 3 and the current one is
+	// 7. A caller that wants a body names a version and asks for it.
+	//
+	// An unknown name returns ErrNotFound rather than an empty list, because "this template has no
+	// versions" is not a state that can exist — a template comes into being by having one.
+	ListTemplateVersions(ctx context.Context, name string) ([]TemplateRevision, error)
 
 	// GetTemplateVersion returns one version of a template, or ErrNotFound.
 	//

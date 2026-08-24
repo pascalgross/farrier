@@ -573,3 +573,69 @@ func TestARenderRefusesAnUnsignedBootstrap(t *testing.T) {
 		t.Fatalf("the refusal does not name the way out: %s", raw)
 	}
 }
+
+// TestABootstrapTemplateWithAPlaceholderIsRefusedAtMintTime asserts the check that keeps a Tier 1
+// template from being handed to a host as a Tier 2 one.
+//
+// A bootstrap template is delivered verbatim — the offline signature covers those exact bytes, so
+// nothing renders it on the way — and a body that still substitutes {{hostname}} would reach cloud-init
+// with the braces in it and write a literal "{{hostname}}" into the machine's configuration. The
+// failure is silent at every point that could catch it later: the signature verifies, cloud-init
+// accepts the document, and the machine comes up wrong. So it is caught here, while an operator is at a
+// keyboard, and on both paths that mint a token naming a bootstrap.
+func TestABootstrapTemplateWithAPlaceholderIsRefusedAtMintTime(t *testing.T) {
+	h := newHarness(t)
+
+	// Signed, so the refusal under test is the placeholder one and not the unsigned-template check
+	// that runs before it.
+	if _, err := h.scoped().CreateTemplateVersion(context.Background(), store.TemplateVersion{
+		Name: "half-rendered", BodySealed: sealForHarness(t, h, templateBody),
+		Signature: "c2lnbmF0dXJl", SignerKeyID: "ops-1", SignerAlgorithm: "ed25519",
+		CreatedAt: time.Now().UTC(), CreatedBy: "test",
+	}); err != nil {
+		t.Fatalf("storing the template: %v", err)
+	}
+
+	status, raw := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/tokens", map[string]any{
+		"label": "web", "group": "web-prod", "bootstrap": "half-rendered",
+	})
+	if status != http.StatusConflict || !strings.Contains(string(raw), "unrendered_template") {
+		t.Fatalf("a template with placeholders was issued as a bootstrap: %d %s", status, raw)
+	}
+	if !strings.Contains(string(raw), "hostname") {
+		t.Fatalf("the refusal did not name the placeholder that caused it: %s", raw)
+	}
+	if h.countTokens(t) != 0 {
+		t.Fatalf("the refusal minted a token anyway")
+	}
+
+	// The render endpoint mints tokens too, and its token block names a bootstrap the same way. A
+	// check that lived in only one of the two would be a check the other silently skipped.
+	h.saveTemplate(t, h.adminToken, map[string]any{"name": "userdata", "body": templateBody})
+	status, raw = h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/templates/userdata/render",
+		map[string]any{
+			"params": map[string]string{"hostname": "web-01"},
+			"token":  map[string]any{"group": "web-prod", "bootstrap": "half-rendered"},
+		})
+	if status != http.StatusConflict || !strings.Contains(string(raw), "unrendered_template") {
+		t.Fatalf("the render path issued it: %d %s", status, raw)
+	}
+	if h.countTokens(t) != 0 {
+		t.Fatalf("the render path minted a token before refusing")
+	}
+
+	// And a bootstrap template that substitutes nothing is issuable, which is what makes the refusal
+	// above a check rather than a wall.
+	if _, err := h.scoped().CreateTemplateVersion(context.Background(), store.TemplateVersion{
+		Name: "complete", BodySealed: sealForHarness(t, h, "#cloud-config\nhostname: fixed\n"),
+		Signature: "c2lnbmF0dXJl", SignerKeyID: "ops-1", SignerAlgorithm: "ed25519",
+		CreatedAt: time.Now().UTC(), CreatedBy: "test",
+	}); err != nil {
+		t.Fatalf("storing the complete template: %v", err)
+	}
+	if status, raw := h.adminJSON(t, h.adminToken, http.MethodPost, "/api/v1/tokens", map[string]any{
+		"label": "web", "group": "web-prod", "bootstrap": "complete",
+	}); status != http.StatusCreated {
+		t.Fatalf("a fully-substituted bootstrap template was refused: %d %s", status, raw)
+	}
+}
