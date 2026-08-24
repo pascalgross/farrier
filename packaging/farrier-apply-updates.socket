@@ -3,7 +3,7 @@
 # This replaces the sudoers entry phase 0 shipped. NoNewPrivileges=yes and sudo(8) are mutually
 # exclusive — execve drops the setuid bit when the no-new-privileges bit is set — and systemd implies
 # that bit from eight directives farrier-agent.service sets, so making sudo work would have meant
-# dropping most of the agent's sandbox. See ../docs/SECURITY.md section 5 and ../internal/privsep.
+# dropping most of the agent's sandbox. See ../docs/SECURITY.md section 6 and ../internal/privsep.
 #
 # The authorisation is the socket's ownership, and then the helper's own reading of SO_PEERCRED, and
 # then the root-owned policy file. Three independent checks, in that order, none of which trusts

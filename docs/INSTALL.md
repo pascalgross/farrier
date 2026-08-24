@@ -50,6 +50,12 @@ Back up `ca.key` **separately from the database**. An attacker with both can imp
 control plane; an attacker with the database alone cannot. Neither lets them run code on a host: an
 agent authorises a job by its class and its signature, not by who asked.
 
+Back up `template.key` beside it, from the same directory, and treat it as part of the backup rather
+than as part of the database. It encrypts provisioning template bodies at rest — which is why a database
+dump is not a set of provisioning scripts — and a restore without it leaves every stored template
+permanently unopenable. The control plane says exactly that when it happens, which is the difference
+between an operator fixing their restore and filing a bug about templates being corrupt.
+
 ### Mail, for alerts that reach somebody who is not looking
 
 Optional, and off until you configure it. Alerting rules are per fleet and editable in the interface;
@@ -196,7 +202,8 @@ Straight after installation, before you change anything:
 | Applies *every* update because the control plane asked | **no** — `packages.applyAll` needs a signature from a key you place on the host |
 | Applies updates because an administrator ran the helper on the host | only security updates, and only what the policy below allows |
 | Restarts a service, or reboots | **no**, from anyone, until you change the two files below |
-| Reports which of its units are in the failed state | **yes**, for every unit, until `[services] watched` narrows it |
+| Reports which of its units are in the failed state | **yes**, for every unit. `[services] watched` narrows which *changes* become events, not what is reported |
+| Reports the containers running on it | **no**, until `[containers] report = true` |
 
 The two files are the whole of it:
 
@@ -207,11 +214,29 @@ edit with `farrier-agent policy check` before restarting anything: a file that d
 host refuse all privileged work rather than fall back to a default, which is deliberate and is a
 miserable way to discover a typo.
 
-One key in it is the exception to everything the paragraph above says. `[services] watched` decides
-which unit-state changes become events, and its empty default means *every* unit rather than none:
-permitting an action and reporting a fact are different questions, and a fresh host should surface a
-failed unit rather than hide it. Narrowing it quietens a noisy machine; widening it grants nothing,
-because it bounds what the control plane is told, never what may be done.
+Two keys in it are the exception to everything the paragraph above says, because they bound what this
+host *says* rather than what may be done to it. Neither is a permission, and neither involves a
+signature.
+
+`[services] watched` decides which unit-state changes become events, and its empty default means
+*every* unit rather than none: permitting an action and reporting a fact are different questions, and a
+fresh host should surface a failed unit rather than hide it. Narrowing it quietens a noisy machine;
+widening it grants nothing.
+
+`[containers] report` is the other way round: it ships `false`, and a host reports nothing about the
+containers on it until somebody writes `true`. A container list describes what a business runs, which is
+a different disclosure from a package count. Turning it on reports each container's id, its main
+process's *name* — never its command line, which is where credentials end up — when it started, its
+resource use, and four things `docker ps` will not tell you: whether it is privileged, whether its
+seccomp filter is off, whether it runs as root, and whether the Docker socket is bind-mounted into it.
+It cannot report image names, exit codes, restart counts or health, because those live behind the
+socket that `farrier` is deliberately not in the group for.
+
+Two practical notes. The resource figures change on every collection, so a host that opts in sends a
+full report on every heartbeat rather than the digest it would otherwise send. And **upgrade the agent
+before you add the key**: the policy parser refuses a file it does not understand and falls closed, so
+writing `[containers]` into a host still running an older agent turns that host's update permission off
+until the agent catches up.
 
 **`/etc/farrier/trusted-signers`** — root-owned, a dpkg conffile, and **empty**. Every destructive
 operation needs a signature from a key listed here, and the control plane holds none of them. Generate
@@ -221,6 +246,48 @@ one on your own machine:
 farrier key generate --out ~/.config/farrier/signing.key --id ops-laptop
 # prints the line to paste into /etc/farrier/trusted-signers on the hosts that key may act on
 ```
+
+### Keys that are not files
+
+A key file on a laptop is a real improvement over a shared credential and it is still a file: it can be
+copied, and nobody would know. `--key` takes a reference rather than a path, so the same command signs
+with a hardware token or a cloud key store, and `farrier key show --in <reference>` prints the
+`trusted-signers` line for any of them.
+
+```bash
+# A PKCS#11 token — YubiKey PIV, Nitrokey, SoftHSM. The URI is RFC 7512, which is what
+# OpenSSL, GnuTLS and p11-kit already speak, so an existing one can be pasted.
+farrier key show --in "pkcs11:token=ops;object=ops-yubikey-1?module-path=/usr/lib/opensc-pkcs11.so"
+
+# A cloud key store. The #fragment is the identity the audit log records and every host lists —
+# a resource name is not one, and it is required rather than derived.
+farrier key show --in "awskms:arn:aws:kms:eu-central-1:123456789012:key/abcd-1234#ops-kms-1"
+farrier key show --in "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1#ops-kms-1"
+farrier key show --in "azurekms:ops.vault.azure.net/keys/farrier-signing/9885aa55#ops-kms-1"
+```
+
+A PIN is prompted for, or read from a file with `pin-source=/path`. It is never a URI attribute and
+never a flag: a secret on a command line is readable from the process list by every user on the machine.
+
+Cloud credentials come from the environment, then the provider's own well-known file, then the instance
+metadata service — which is the order that answers promptly on a laptop, where the metadata address
+does not refuse a connection but black-holes it. The flows that are not implemented, because they are
+most of what a vendor SDK weighs, have one escape hatch each:
+
+```bash
+eval "$(aws configure export-credentials --profile ops --format env)"                    # SSO, assume-role, federation
+export FARRIER_KMS_BEARER_TOKEN="$(gcloud auth print-access-token)"                       # workload identity
+export FARRIER_KMS_BEARER_TOKEN="$(az account get-access-token   --resource https://vault.azure.net --query accessToken -o tsv)"                         # certificate auth, federation
+```
+
+**Where a cloud key lives matters more than which cloud it is in.** A KMS key the control plane's own
+identity can call `Sign` on is a key the control plane holds, whatever the console says about custody —
+see [`SECURITY.md` §9](SECURITY.md#9-what-farrier-does-not-defend-against). Put it in an account the
+control plane has no role in, and check it the way that catches the mistake: assume the control plane's
+identity and confirm that signing is denied.
+
+Note that Azure Key Vault has no EdDSA algorithm at all, so a Key Vault key must be P-256 and its
+`trusted-signers` line will read `ecdsa-p256`. AWS KMS and Cloud KMS can do either.
 
 A package upgrade never replaces either file. There is a test in `testfleet/` that asserts it, and for
 `trusted-signers` that is a security test rather than a convenience one.

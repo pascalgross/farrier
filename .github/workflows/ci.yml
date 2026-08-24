@@ -93,6 +93,12 @@ jobs:
             'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
             | grep -qx f
 
+      - name: A PKCS#11 module the signing-backend tests can drive
+        # libsofthsm2 rather than softhsm2: the tests build their own token through the module's own
+        # entry points, so softhsm2-util is not needed. Not optional — a skipped backend test is
+        # indistinguishable from a passing one in a summary, and the step below checks it actually ran.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsofthsm2
+
       - name: gofmt
         run: make fmt-check
 
@@ -124,6 +130,16 @@ jobs:
             grep -q -- "$name" /tmp/store.log \
               || { echo "the PostgreSQL store tests skipped: $name did not run" >&2; exit 1; }
           done
+
+      - name: The PKCS#11 backend, against a real module and in the build that ships
+        # `make test` above runs with cgo, because -race requires it. The released binary is built
+        # CGO_ENABLED=0 and reaches the module through purego's own dlopen, which nothing else here
+        # exercises — so this target runs both, and the grep is because a skipped test reads as a
+        # passing one.
+        run: |
+          make test-pkcs11 | tee /tmp/pkcs11.log
+          grep -q -- '--- PASS: TestSignAndVerifyRoundTrip' /tmp/pkcs11.log \
+            || { echo "the PKCS#11 backend tests skipped: no module was found" >&2; exit 1; }
 
       - name: go mod tidy leaves no diff
         run: |

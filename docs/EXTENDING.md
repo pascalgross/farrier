@@ -64,9 +64,31 @@ is a different and much longer conversation.
 
 Add a file under `internal/collect/collector` with a `Register` call in its `init`, and nothing else in
 the codebase learns about it. Output appears under the collector's name in the facts document's `extra`
-object. Farrier ships one, `network`, which is also what justifies `AF_NETLINK` in the systemd unit's
-`RestrictAddressFamilies`: `net.Interfaces` uses a netlink socket on Linux and returns nothing without
-it, silently.
+object. Farrier ships two.
+
+`network` is also what justifies `AF_NETLINK` in the systemd unit's `RestrictAddressFamilies`:
+`net.Interfaces` uses a netlink socket on Linux and returns nothing without it, silently.
+
+`containers` reports Docker container state from `/proc` and the cgroup tree, and it is the one that
+shows what the optional half of this seam is for:
+
+```go
+// PolicyGated is the optional half of the Collector seam, for a section a host may refuse to send.
+type PolicyGated interface {
+    PermittedBy(p policy.Policy) bool
+}
+```
+
+Implement it when a section is a disclosure a host might reasonably decline, and `Gather` will ask
+before collecting. Most facts are not: a unit list and a package count say nothing a hostname does not.
+Container state is, which is why `[containers] report` ships `false`. A refused section is **absent**
+rather than empty, and the host's policy travels in the same heartbeat, so a client can say "this host
+does not report containers" rather than "this host has none".
+
+The policy is asked of, not read by, the collector. A collector that called `policy.Load` itself would
+be reading that file a second time on its own schedule, with no guarantee of agreeing with the policy
+the rest of the agent is enforcing at that moment — and a fact reported under a permission that was
+withdrawn two minutes ago is a permission that was not withdrawn.
 
 Keep the output bounded — see [`PROTOCOL.md` §4.5](PROTOCOL.md#45-bounds) — and stable. The name becomes
 a key in a document that is digested, stored and compared, so renaming one makes every host in a fleet
@@ -81,14 +103,42 @@ type Signer interface {
     KeyID() string
     Algorithm() Algorithm
     Public() crypto.PublicKey
+    Backend() string
     Sign(ctx context.Context, payload []byte) ([]byte, error)
+    Close() error
 }
 ```
 
-Implemented today: `file` — a passphrase-protected key file, scrypt over the passphrase and NaCl
-secretbox over a PKCS#8 key. Specified and not yet written: `sshagent` (including FIDO2 `ed25519-sk`),
-`pkcs11`, `gpgagent`, `kms`. Deliberately no vendor is hard-coded — `pkcs11` will cover YubiKey PIV,
-Nitrokey and SoftHSM alike, and `kms` will cover AWS, GCP and Azure.
+Implemented today:
+
+| Backend | What holds the key |
+| --- | --- |
+| `file` | A passphrase-protected key file: scrypt over the passphrase, NaCl secretbox over a PKCS#8 key |
+| `pkcs11` | Any PKCS#11 module — YubiKey PIV, Nitrokey and SoftHSM through one implementation |
+| `kms` | AWS KMS, Google Cloud KMS or Azure Key Vault, over their REST APIs and no vendor SDK |
+
+Specified and not yet written: `sshagent` (including FIDO2 `ed25519-sk`) and `gpgagent`. Deliberately
+no vendor is hard-coded: a PKCS#11 key is named with an RFC 7512 URI, which is what every other tool
+that talks to a token already speaks, and each cloud gets a scheme rather than a flag.
+
+A backend registers itself with `internal/signing/backend` from its `init`, and `farrier` blank-imports
+the ones it ships — the shape `database/sql` uses. `--key` takes a reference, and a reference selects a
+backend if and only if it begins with a registered scheme and a colon; everything else is a path, so
+`--key ~/.config/farrier/ops.key` keeps meaning what it always did. The parser touches no filesystem:
+a rule that depended on what happened to exist on disk would mean different things on two machines.
+
+The registry lives one directory below `internal/signing` so that the agent and the control plane, which
+import the verifier, link no backend at all — and after `pkcs11`, which loads a shared library an
+operator names, that is asserted rather than reviewed for. See
+`TestGuaranteeNoManagedHostBinaryLoadsASigningBackend`. It is not the plugin loader this document
+refuses below: that refusal is about the agent, and this is the operator's own tool.
+
+**A backend verifies its own signature before returning it.** Every remote key store gets one encoding
+detail differently — a PKCS#11 token returns ECDSA as a raw `r‖s` pair, Azure returns it base64url and
+raw, AWS needs the whole payload rather than a digest for Ed25519 — and each mistake produces a
+well-formed signature that no host accepts, reported days later as a trust anchor that has stopped
+working. `signing.SelfCheck` turns the whole class into an error at the terminal of the person who ran
+the command.
 
 **This is the seam that is safest to leave open, and it is worth understanding why: the verifier never
 changes.** The agent only ever sees a public key and a signature over a canonical payload. It cannot
@@ -96,8 +146,14 @@ learn — and does not care — which backend produced the signature. Adding a b
 client-side and cannot widen the agent's attack surface by even one branch.
 
 Two algorithms exist on the wire: `ed25519` (the default) and `ecdsa-p256`. ECDSA is present because
-YubiKey PIV before firmware 5.7.0 and several cloud KMS offerings cannot do Ed25519 at all. Carrying
-one algorithm tag now is much cheaper than rewriting every host's `trusted-signers` later.
+YubiKey PIV before firmware 5.7.0 and several cloud key stores cannot do Ed25519 at all. Carrying one
+algorithm tag now is much cheaper than rewriting every host's `trusted-signers` later, and it is not
+hypothetical: **Azure Key Vault has no EdDSA algorithm and no `OKP` key type**, so `ecdsa-p256` is the
+only thing a Key Vault key can be. AWS KMS and Cloud KMS can do both, and AWS's Ed25519 has a limit
+worth knowing about — pure Ed25519 needs `MessageType: RAW`, which caps a payload at 4096 bytes.
+
+A backend reports what a key can do rather than assuming: the algorithm comes from the key itself, and
+one this build cannot carry fails when the key is opened, with a message naming what it actually is.
 
 Whatever the backend, the audit log and the UI always record **which** signer authorised a job:
 `ops-laptop (file)` must read differently from `ops-yubikey-1 (PKCS#11)`.
