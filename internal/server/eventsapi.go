@@ -120,7 +120,11 @@ const outboundStoreTimeout = 10 * time.Second
 // Without it, a fleet flapping against a sink that is down converts every event into a goroutine, and
 // the pile-up outlasts the incident that caused it. Past the cap a pass is refused with a log line —
 // which is the correct loss, because the event is already in the inbox and the inbox is the delivery
-// that was promised. A pass is bounded by its sinks' own budgets, so the cap bounds the whole thing.
+// that was promised.
+//
+// The arithmetic behind the number: a pass is at most one deliveryBudget for the webhook plus one
+// mailRoutingBudget for the rules, so four minutes against sinks that are black-holing, and this many
+// of those is a bounded amount of memory rather than an open-ended one. The drain cancels them all.
 const maxOutboundInFlight = 64
 
 // emit records an event durably, shows it to open tabs, and delivers it outside best-effort.
@@ -135,8 +139,9 @@ const maxOutboundInFlight = 64
 // emit is called from request handlers an agent is waiting on, and a sink that has gone away costs
 // its full timeout — three retries against a dead relay would otherwise add a minute to a heartbeat,
 // which is a control plane made slow by somebody else's mail server. The detachment is bounded and
-// drained: each pass carries outboundPassBudget, no more than maxOutboundInFlight run at once, and
-// ListenAndServe waits for the outstanding ones so a shutdown does not abandon an alert mid-SMTP.
+// drained: every sink and every store read inside a pass carries its own deadline, no more than
+// maxOutboundInFlight passes run at once, and ListenAndServe waits for the outstanding ones so a
+// shutdown does not abandon an alert mid-SMTP.
 //
 // The tenant is a parameter and not a convenience. An event goes to the endpoint and the tabs of its
 // own tenant, and to nowhere else, and it carries its tenant so that one which somehow arrived in the

@@ -511,28 +511,54 @@ func (s *Server) routeEventMail(ctx context.Context, scoped store.Scoped, ev not
 		return
 	}
 
-	// Each read is bounded on its own. The pass around them deliberately is not — a ceiling above the
-	// sinks would let a black-holed webhook eat the mail behind it — so an unreachable database has
-	// to be stopped here or not at all.
-	readCtx, readDone := context.WithTimeout(ctx, outboundStoreTimeout)
-	rules, err := scoped.ListAlertRules(readCtx)
-	if err == nil {
-		var states []store.AlertState
-		states, err = scoped.ListAlertStates(readCtx)
-		readDone()
-		s.routeToRules(ctx, scoped, ev, condition, rules, states)
+	// Each read is bounded on its own, because the pass around them deliberately is not: a ceiling
+	// above the webhook would let a black-holed one eat the mail behind it. An unreachable database
+	// therefore has to be stopped here or not at all.
+	rules, err := readBounded(ctx, scoped.ListAlertRules)
+	if err != nil {
+		slog.Warn("could not read the alert rules to route an event", "kind", ev.Kind, "error", err)
 		return
 	}
-	readDone()
-	slog.Warn("could not read the alert rules to route an event", "kind", ev.Kind, "error", err)
+	states, err := readBounded(ctx, scoped.ListAlertStates)
+	if err != nil {
+		// Returning rather than routing with an empty list, which is the whole reason this is its own
+		// statement: `states` is the cooldown's memory, and treating an unreadable one as "nobody has
+		// been notified" would mail every recipient on every flap of a restart-looping unit.
+		slog.Warn("could not read the alert states to route an event", "kind", ev.Kind, "error", err)
+		return
+	}
+	s.routeToRules(ctx, scoped, ev, condition, rules, states)
 }
+
+// readBounded runs one store read under outboundStoreTimeout.
+//
+// A tiny helper because the alternative is the same four lines around every read on this path, and
+// the version of those four lines that shares one context between two reads is a bug that already
+// happened here once: the second read inherits whatever the first left of the budget.
+func readBounded[T any](ctx context.Context, read func(context.Context) ([]T, error)) ([]T, error) {
+	readCtx, done := context.WithTimeout(ctx, outboundStoreTimeout)
+	defer done()
+	return read(readCtx)
+}
+
+// mailRoutingBudget bounds the whole mail phase of one pass.
+//
+// The webhook keeps its own budget and is unaffected by this, which is the separation that matters:
+// two deliveries with nothing to do with each other must not be able to starve one another. Rules
+// routing the same event kind are not independent in that way — they are one queue against one relay
+// — so a ceiling over them is what keeps a pass finite when somebody has written twenty of them and
+// the relay is black-holing. Rules past the ceiling are skipped with a log line naming the count.
+const mailRoutingBudget = 3 * deliveryBudget
 
 // routeToRules mails each rule that routes this event kind and is past its cooldown.
 func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notify.Event,
 	condition store.AlertCondition, rules []store.AlertRule, states []store.AlertState) {
 
 	now := time.Now().UTC()
+	mailCtx, mailDone := context.WithTimeout(ctx, mailRoutingBudget)
+	defer mailDone()
 
+	skipped := 0
 	for _, rule := range rules {
 		if !rule.Enabled || rule.Condition != condition || len(rule.EmailTo) == 0 {
 			continue
@@ -550,7 +576,15 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		if !last.IsZero() && now.Sub(last) < cooldown {
 			continue
 		}
-		s.mailRule(ctx, scoped, rule, ev)
+		if mailCtx.Err() != nil {
+			// Out of budget, or the process is stopping. Counted rather than attempted: a delivery
+			// started on a dead context fails instantly and stamps a cooldown that would suppress
+			// the real attempt for hours.
+			skipped++
+			continue
+		}
+
+		s.mailRule(mailCtx, scoped, rule, ev)
 
 		stampCtx, stampDone := context.WithTimeout(ctx, outboundStoreTimeout)
 		err := scoped.UpsertAlertState(stampCtx, store.AlertState{
@@ -560,5 +594,10 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		if err != nil {
 			slog.Warn("could not persist an event-routing cooldown", "rule", rule.ID, "error", err)
 		}
+	}
+
+	if skipped > 0 {
+		slog.Warn("some alert rules were not mailed for this event",
+			"kind", ev.Kind, "skipped", skipped, "reason", mailCtx.Err())
 	}
 }

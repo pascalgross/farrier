@@ -423,12 +423,12 @@ const outboundDrainGrace = 15 * time.Second
 
 // drainOutbound waits for the detached deliveries, then cancels the ones that are still going.
 //
-// The second wait is bounded by the work itself rather than by another timer: cancelling the group
-// makes the webhook return at once and makes the retry loop stop between attempts, an SMTP
-// conversation already in progress finishes inside the deadline it set on its own connection, and the
-// delivery record that follows carries its own short deadline. That record deliberately survives the
-// cancellation — the delivery a stopping control plane abandoned is exactly the one whose absence
-// somebody would otherwise trust — which is a few seconds of shutdown bought with an honest answer.
+// The second wait is bounded by the work itself rather than by another timer. Cancelling the group
+// makes the webhook return at once, makes the retry loop stop between attempts, and makes the rule
+// loop stop starting mail; an SMTP conversation already in progress finishes inside the deadline it
+// set on its own connection. What is left after that is one delivery record, which deliberately
+// survives the cancellation on a deadline of its own — the delivery a stopping control plane
+// abandoned is exactly the one whose absence somebody would otherwise trust.
 func (s *Server) drainOutbound() {
 	// Closed to new work first, and under the same lock detach takes. A WaitGroup whose counter goes
 	// from zero back up while somebody waits on it is a documented misuse, and the evaluator's tick
