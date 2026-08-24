@@ -58,6 +58,13 @@ returns every fleet's rows with nothing looking wrong. `postgres/initdb/10-farri
 ordinary role that owns its own database; `farrier-server` checks its own privileges at startup and
 refuses to serve on either kind. See [`../docs/SECURITY.md`](../docs/SECURITY.md#5-tenants).
 
+**The database password is not in the connection URL.** It is passed as `PGPASSWORD`, which libpq and
+pgx read, because a URL is a parser and a password is arbitrary text: `/`, `#` and `?` make the URL fail
+to parse, and `%` parses as an escape and silently means something else. The init script sets the
+password through psql variables, where every character is legal — so without this the two halves
+disagree, and the symptom is a control plane that cannot connect using the password the database
+accepted. A password inside an explicit `FARRIER_DATABASE_URL` still wins, as libpq specifies.
+
 **The CA directory is a volume, and it is not the database.** `farrier-state` holds three things: the
 CA that issues agent certificates, the key that signs routine jobs, and the key that encrypts
 provisioning template bodies at rest. None of them is in PostgreSQL, which is what makes a database dump

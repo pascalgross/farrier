@@ -82,11 +82,20 @@ services:
         # container: service_started would race initdb and fail on the first attempt every time.
         condition: service_healthy
     environment:
-      # sslmode=disable is honest about what this is: a connection over the project's own bridge
-      # network, which does not leave the host. Point FARRIER_DATABASE_URL at a database on another
-      # machine and this is the first thing to change — to verify-full, with a root certificate.
+      # The default points at the postgres service beside it, and an explicit FARRIER_DATABASE_URL in
+      # .env replaces it — which is what makes the external-database case a setting rather than an edit
+      # to this file. sslmode=disable is honest about the default: a connection over the project's own
+      # bridge network, which does not leave the host. A database on another machine is the first thing
+      # to change it for — to verify-full, with a root certificate.
       FARRIER_DATABASE_URL: >-
-        postgres://${FARRIER_DB_USER:-farrier}:${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}@postgres:5432/${FARRIER_DB_NAME:-farrier}?sslmode=disable
+        ${FARRIER_DATABASE_URL:-postgres://${FARRIER_DB_USER:-farrier}@postgres:5432/${FARRIER_DB_NAME:-farrier}?sslmode=disable}
+      # The password travels beside the URL rather than inside it, and that is not a style choice. A
+      # password containing / # or ? makes the URL fail to parse — the server then cannot start against
+      # a password PostgreSQL itself accepted, because the init script sets it through psql variables
+      # where every character is legal. % is worse: it parses, and silently means something else.
+      # libpq's PGPASSWORD has no such syntax, so any password the database accepts works here.
+      # A password inside an explicit FARRIER_DATABASE_URL still wins over this, as libpq specifies.
+      PGPASSWORD: ${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}
       # Through the environment rather than a flag, because argv is world-readable in ps — the same
       # reasoning the server applies to the SMTP password.
       FARRIER_ADMIN_TOKEN: ${FARRIER_ADMIN_TOKEN:?set FARRIER_ADMIN_TOKEN in .env}
