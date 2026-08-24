@@ -205,6 +205,11 @@ func inspect(ctx context.Context, ref string, prompt backend.PassphraseFunc) (si
 // the first ops. Where the reference has not narrowed and more than one token answers, the refusal
 // names the serials, because the remedy is to paste one of them back into the reference.
 //
+// slot-id= still selects a slot outright rather than searching, because that is what makes it the
+// escape hatch for a token this cannot otherwise name. It is now checked against whatever token= or
+// serial= stands beside it, so that a stale slot number is caught by the attribute written to catch it
+// rather than quietly overruling it.
+//
 // So every slot is read before anything is returned, rather than stopping at the first match. That
 // costs a C_GetTokenInfo per slot and buys an answer that does not depend on the order the module
 // enumerated its readers in — which is the property being bought, since a second token labelled the
@@ -225,9 +230,13 @@ func findSlot(mod *module, parsed uri) (ckULong, error) {
 
 	if parsed.slotID >= 0 {
 		for _, slot := range slots {
-			if slot == ckULong(parsed.slotID) {
-				return slot, nil
+			if slot != ckULong(parsed.slotID) {
+				continue
 			}
+			if err := confirmSlotHoldsTheTokenNamed(mod, slot, parsed); err != nil {
+				return 0, err
+			}
+			return slot, nil
 		}
 		return 0, fmt.Errorf("pkcs11: slot %d holds no token; the slots with one are %v",
 			parsed.slotID, slots)
@@ -270,6 +279,37 @@ func findSlot(mod *module, parsed uri) (ckULong, error) {
 			"a key id you did not choose", len(matched), renderTokens(matchedTokens))
 	}
 	return matched[0], nil
+}
+
+// confirmSlotHoldsTheTokenNamed checks a slot-id= against the token attributes written beside it.
+//
+// slot-id= selects a slot outright and goes on doing so: it is the escape hatch for a token whose label
+// is unhelpful and whose serial is blank, and making it search instead would take that away. What it
+// must not do is silently overrule the attributes it was written beside. Slot numbering is not stable
+// across a replug on every module — which is the reason a reference pins a slot and a serial together
+// in the first place, the serial being the half that notices when the number has gone stale. Honouring
+// the number and ignoring the serial resolves to whatever is in that slot now, and if that token
+// happens to hold a key with the same label, `farrier sign` signs with a key the operator did not name
+// and says nothing.
+//
+// So this asserts rather than searches, and asserts only what the reference actually said. A reference
+// that gives nothing but slot-id= reads no token information at all, which is what keeps slot-id=
+// working on a module whose C_GetTokenInfo is itself the unhelpful part.
+func confirmSlotHoldsTheTokenNamed(mod *module, slot ckULong, parsed uri) error {
+	if !parsed.namesAToken() {
+		return nil
+	}
+	identity, err := mod.tokenInfo(slot)
+	if err != nil {
+		return err
+	}
+	if parsed.matches(identity) {
+		return nil
+	}
+	return fmt.Errorf("pkcs11: slot %d holds %s, which is not the token this reference names — it %s. "+
+		"Slot numbering is not stable across a replug on every module, so the number is the half of "+
+		"this reference most likely to have gone stale: drop slot-id= and let the label and serial find "+
+		"the token", slot, identity, describeTokenMatch(parsed))
 }
 
 // serialWouldDisambiguate reports whether the tokens a reference matched differ in the one field that

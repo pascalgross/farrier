@@ -323,3 +323,108 @@ func TestThePINPromptNamesTheTokenTheReferenceNamed(t *testing.T) {
 		}
 	}
 }
+
+// unreadableTokens builds a module that lists slots and will not say what is in them.
+//
+// It exists for the one assertion that slot-id= alone reads no token information: a module whose
+// C_GetTokenInfo always fails is the only way to prove a call was not made, and such a module is not
+// hypothetical — a slot whose token was pulled between the two calls answers exactly this way.
+func unreadableTokens(slots ...ckULong) *module {
+	return &module{
+		getSlotList: func(_ uint8, out, count unsafe.Pointer) ckReturn {
+			*(*ckULong)(count) = ckULong(len(slots))
+			if out != nil {
+				copy(unsafe.Slice((*ckULong)(out), len(slots)), slots)
+			}
+			return ckrOK
+		},
+		getTokenInfo: func(_ ckULong, _ unsafe.Pointer) ckReturn { return ckrSlotIDInvalid },
+	}
+}
+
+// TestSlotIDIsCheckedAgainstTheAttributesBesideIt is a P1 from the review on this pull request.
+//
+// slot-id= is checked before the label and now before the serial, and it selects a slot outright. That
+// is deliberate and stays. What was wrong is that it also silently overruled the attributes written
+// beside it: a reference carrying both slot-id= and serial= honoured the number and ignored the serial,
+// so a slot number that had gone stale — and slot numbering is not stable across a replug on every
+// module — resolved to whatever token is in that slot now. If that token holds a key with the same
+// label, findOne finds it and `farrier sign` signs with a key the operator did not name.
+//
+// That is the failure the whole of #35 is about, reached by the one route #35 did not close, and it got
+// worse rather than better when serial= started meaning something: the message telling an operator to
+// add slot-id= is one this backend now prints itself.
+func TestSlotIDIsCheckedAgainstTheAttributesBesideIt(t *testing.T) {
+	ring := tokenRing(
+		tokenIdentity{label: "ops", serial: "0001"},
+		tokenIdentity{label: "ops", serial: "0002"},
+		tokenIdentity{label: "spare", serial: "0003"},
+	)
+
+	for _, c := range []struct {
+		// ref is the token half of the reference.
+		ref string
+
+		// want is the slot it must resolve to, or zero when it must be refused.
+		want ckULong
+
+		// wants are the fragments a refusal has to carry.
+		wants []string
+	}{
+		// The number and the attributes agree, which is the ordinary case and must not have become
+		// slower or stricter.
+		{ref: "slot-id=11;serial=0002", want: 11},
+		{ref: "slot-id=11;token=ops", want: 11},
+		{ref: "slot-id=11;token=ops;serial=0002", want: 11},
+		// The number has gone stale and the serial is what notices.
+		{ref: "slot-id=10;serial=0002", wants: []string{
+			`slot 10 holds "ops" (serial 0001)`, "has serial 0002", "slot-id="}},
+		{ref: "slot-id=12;token=ops;serial=0002", wants: []string{
+			`slot 12 holds "spare" (serial 0003)`, `is labelled "ops" with serial 0002`}},
+		// A label alone still catches a number pointing at a different token.
+		{ref: "slot-id=12;token=ops", wants: []string{`slot 12 holds "spare" (serial 0003)`}},
+	} {
+		got, err := slotFor(t, ring, c.ref)
+		if len(c.wants) == 0 {
+			if err != nil {
+				t.Errorf("%s: %v", c.ref, err)
+			} else if got != c.want {
+				t.Errorf("%s resolved to slot %d, expected %d", c.ref, got, c.want)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s resolved to slot %d; the slot number overruled the attribute written to "+
+				"check it", c.ref, got)
+			continue
+		}
+		for _, want := range c.wants {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the refusal does not carry %q: %v", c.ref, want, err)
+			}
+		}
+	}
+}
+
+// TestSlotIDAloneAsksTheTokenNothing keeps the check above from narrowing the escape hatch.
+//
+// slot-id= exists for the token this backend cannot otherwise name, and a module that will not report
+// on its tokens is one of the reasons somebody reaches for it. A check that read CK_TOKEN_INFO even
+// when the reference said nothing to check it against would turn the escape hatch into another way to
+// fail, which is the opposite of what it is for.
+func TestSlotIDAloneAsksTheTokenNothing(t *testing.T) {
+	silent := unreadableTokens(10, 11)
+
+	got, err := slotFor(t, silent, "slot-id=11")
+	if err != nil {
+		t.Fatalf("slot-id= alone consulted a token that will not answer: %v", err)
+	}
+	if got != 11 {
+		t.Errorf("slot-id=11 resolved to slot %d", got)
+	}
+
+	// And a reference that does say something to check keeps failing loudly rather than assuming.
+	if _, err := slotFor(t, silent, "slot-id=11;serial=0002"); err == nil {
+		t.Error("a serial was treated as confirmed by a token that would not report its own")
+	}
+}
