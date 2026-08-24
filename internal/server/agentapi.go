@@ -84,6 +84,17 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The bootstrap template is resolved before the certificate is issued and before the token is
+	// consumed, for the same reason the CSR is checked before consumption: a refusal here must leave
+	// the token usable, so the operator can fix what was named and retry — or retry without
+	// --bootstrap — rather than being told their token is spent. Silence is not an acceptable answer
+	// to a bootstrap request: either the template comes back signed, or the enrolment fails with a
+	// message naming why, and the agent refuses to continue either way.
+	bootstrap, ok := s.resolveBootstrap(w, r, tenant, HashToken(req.Token), req.RequestedBootstrap)
+	if !ok {
+		return // resolveBootstrap has written the refusal.
+	}
+
 	hostID, err := NewID()
 	if err != nil {
 		slog.Error("could not generate a host id", "error", err)
@@ -154,13 +165,12 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		Summary: req.Hostname + " enrolled into group " + token.Group,
 	})
 
-	// This build issues no bootstrap templates: Tier 1 provisioning renders cloud-init for a human or for
-	// Terraform and never delivers it to a host, and Tier 2 arrives in phase 3 with every guardrail in
-	// docs/SECURITY.md §7. A request for one is refused rather than ignored, because an agent that
-	// asked for a template and silently received none would proceed as though it had been applied.
-	if req.RequestedBootstrap != "" {
-		slog.Warn("a bootstrap template was requested and this build issues none",
-			"host", hostID, "template", req.RequestedBootstrap)
+	if bootstrap != nil {
+		// The name and version, and never the body: the body reaches the journal on the host, printed
+		// by the agent to the operator authorising it, which is where it belongs.
+		slog.Info("bootstrap template issued",
+			"host", hostID, "tenant", tenantID, "template", bootstrap.Name,
+			"template_version", bootstrap.Version, "signer", bootstrap.SignerKeyID)
 	}
 
 	writeJSON(w, http.StatusOK, protocol.EnrollResponse{
@@ -170,7 +180,88 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		CABundle:             string(s.cfg.Authority.CertificatePEM()),
 		ServerTime:           now.UTC(),
 		NextHeartbeatSeconds: s.cfg.HeartbeatSeconds,
+		Bootstrap:            bootstrap,
 	})
+}
+
+// resolveBootstrap turns a requested template name into the signed template the response will carry.
+//
+// It returns (nil, true) when nothing was requested, (template, true) on success, and (nil, false)
+// after writing a refusal — and a refusal is the only alternative to success, because an agent that
+// asked for a template and silently received none must not proceed as though one had been applied.
+//
+// Two properties here carry the second paragraph of the guarantee:
+//
+// The token decides. A token names the one template it may request, at mint time, by an authenticated
+// operator. A request naming anything else is refused before anything is consumed, so possession of a
+// leaked token is not the authority to choose what runs on the machine being enrolled.
+//
+// The signature is not this control plane's to make. The stored signature was produced offline by
+// `farrier sign-template`, with a key this process does not hold, and it is handed over verbatim. An
+// unsigned template is a refusal rather than an invitation to sign: a control plane that could sign a
+// bootstrap template could run operator-authored configuration on a host at enrolment, which is
+// precisely the hole the guarantee's second paragraph is scoped to keep narrow.
+// TestGuaranteeTheControlPlaneCannotSignABootstrapTemplate asserts both directions of that.
+func (s *Server) resolveBootstrap(w http.ResponseWriter, r *http.Request, tenant store.Scoped,
+	tokenHash, requested string) (*protocol.Bootstrap, bool) {
+
+	if requested == "" {
+		return nil, true
+	}
+
+	token, err := tenant.GetEnrollmentToken(r.Context(), tokenHash)
+	if err != nil {
+		// The token resolved to a tenant a moment ago, so this is a race with its expiry or another
+		// consumer rather than a guess; the answer is the same one either way.
+		writeError(w, http.StatusUnauthorized, "token_unusable", "the enrolment token cannot be used")
+		return nil, false
+	}
+	if token.Bootstrap != requested {
+		// One message whether the token names a different template or none: what to fix is the token,
+		// and naming the template it does carry would tell a token thief what this fleet provisions.
+		writeError(w, http.StatusForbidden, "bootstrap_not_authorised",
+			"this enrolment token does not authorise the bootstrap template "+requested+
+				"; mint a token that names it")
+		return nil, false
+	}
+
+	record, err := tenant.GetTemplateVersion(r.Context(), requested, 0)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusConflict, "no_such_template",
+			"the template "+requested+" does not exist in this fleet; nothing was applied and the "+
+				"enrolment was refused rather than continuing as though it had been")
+		return nil, false
+	}
+	if err != nil {
+		slog.Error("could not read a bootstrap template", "error", err, "template", requested)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+		return nil, false
+	}
+	if !record.Signed() {
+		writeError(w, http.StatusConflict, "unsigned_template",
+			"the latest version of "+requested+" carries no offline signature, and this control plane "+
+				"cannot produce one: a bootstrap template is signed by a key in the host's own "+
+				"trusted-signers, which this control plane does not hold. Sign it with "+
+				"`farrier sign-template` and store the signed version.")
+		return nil, false
+	}
+
+	body, err := s.cfg.TemplateKey.Open(record.BodySealed)
+	if err != nil {
+		slog.Error("could not decrypt a stored template; the sealing key does not match the database",
+			"template", record.Name, "version", record.Version, "error", err)
+		writeError(w, http.StatusInternalServerError, "sealed",
+			"the stored template cannot be decrypted on this control plane")
+		return nil, false
+	}
+
+	return &protocol.Bootstrap{
+		Name:        record.Name,
+		Version:     record.Version,
+		Body:        string(body),
+		Signature:   record.Signature,
+		SignerKeyID: record.SignerKeyID,
+	}, true
 }
 
 // handleHeartbeat records a host's state and decides what to ask for next.

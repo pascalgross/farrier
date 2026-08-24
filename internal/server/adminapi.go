@@ -214,6 +214,9 @@ type tokenView struct {
 
 	// Usable reports whether it can still be redeemed.
 	Usable bool `json:"usable"`
+
+	// Bootstrap names the provisioning template this token may request at enrolment, empty for none.
+	Bootstrap string `json:"bootstrap,omitempty"`
 }
 
 // handleListTokens returns enrolment tokens, newest first, without their secrets.
@@ -236,6 +239,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, who op
 			Consumed:       !t.ConsumedAt.IsZero(),
 			ConsumedByHost: t.ConsumedByHost,
 			Usable:         t.Usable(now),
+			Bootstrap:      t.Bootstrap,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": views})
@@ -256,6 +260,13 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 
 		// TTLSeconds overrides the server's default lifetime.
 		TTLSeconds int `json:"ttlSeconds"`
+
+		// Bootstrap names the provisioning template this token may request at enrolment.
+		//
+		// Optional, and empty means this token authorises no bootstrap at all: the template a host
+		// applies is decided when the token is minted, by an authenticated operator, not chosen later
+		// by whoever holds the token.
+		Bootstrap string `json:"bootstrap"`
 	}
 	if err := decodeJSON(w, r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
@@ -265,6 +276,29 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 	ttl := s.cfg.TokenTTL
 	if req.TTLSeconds > 0 {
 		ttl = time.Duration(req.TTLSeconds) * time.Second
+	}
+
+	if req.Bootstrap != "" {
+		// The template must exist now, and its latest version must be signed. Checking at mint time is
+		// operator protection rather than security — enrolment checks again — but a token that names a
+		// template no enrolment can be issued would fail a machine in a datacentre instead of a person
+		// at a keyboard, which is the expensive place to find out.
+		record, err := who.Store.GetTemplateVersion(r.Context(), req.Bootstrap, 0)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "not_found",
+				"no template named "+req.Bootstrap+" exists in this fleet")
+			return
+		case err != nil:
+			slog.Error("could not read a template for a token", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+			return
+		case !record.Signed():
+			writeError(w, http.StatusConflict, "unsigned_template",
+				"the latest version of "+req.Bootstrap+" is not signed, so no enrolment could be "+
+					"issued it. Sign it with `farrier sign-template` and store the signed version first.")
+			return
+		}
 	}
 
 	token, hash, err := NewEnrollmentToken()
@@ -279,6 +313,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 		Hash:      hash,
 		Label:     req.Label,
 		Group:     req.Group,
+		Bootstrap: req.Bootstrap,
 		CreatedAt: now,
 		ExpiresAt: now.Add(ttl),
 	}
@@ -289,13 +324,15 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 	}
 
 	slog.Info("enrolment token created",
-		"label", req.Label, "group", req.Group, "tenant", who.Store.Tenant(), "operator", who.Principal(),
+		"label", req.Label, "group", req.Group, "bootstrap", req.Bootstrap,
+		"tenant", who.Store.Tenant(), "operator", who.Principal(),
 		"expires", record.ExpiresAt.Format(time.RFC3339))
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"token":     token,
 		"label":     req.Label,
 		"group":     req.Group,
+		"bootstrap": req.Bootstrap,
 		"expiresAt": record.ExpiresAt,
 		"note": "This token is shown once and cannot be recovered: only its hash is stored, " +
 			"so a database dump does not let its holder enrol hosts.",

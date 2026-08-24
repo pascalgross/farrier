@@ -133,6 +133,82 @@ type Host struct {
 	Revoked bool
 }
 
+// TemplateVersion is one immutable version of a provisioning template.
+//
+// A version, not a document: the row is written once and never updated, because Tier 2 records "this
+// host was bootstrapped with standard-server v3" and that record is worthless if the row it names can
+// be edited afterwards. Superseding a template means creating the next version, and every version
+// stays readable for as long as a host's bootstrap record can name it.
+type TemplateVersion struct {
+	// Name is the identifier an operator types, shared by every version of one template.
+	Name string
+
+	// Version numbers this revision, starting at 1. Assigned by the store, never by the caller.
+	Version int
+
+	// BodySealed is the cloud-init user-data, encrypted at rest by internal/seal.
+	//
+	// The store holds ciphertext and only ciphertext, so that a database dump does not yield the
+	// enrolment tokens and break-glass credentials operators put into template bodies. The key lives
+	// beside the CA, outside the database, which is what makes the encryption mean something against
+	// the backup-shaped threat docs/SECURITY.md §7 names.
+	BodySealed []byte
+
+	// Signature is a detached signature over the canonical {name, body} payload, base64, empty for an
+	// unsigned version.
+	//
+	// It is produced offline by `farrier sign-template`, with a key this control plane does not hold,
+	// and is stored and handed over verbatim. An unsigned version can be rendered for Terraform; only a
+	// signed one can be issued to an enrolling host, because the agent verifies it against the host's
+	// own trusted-signers and a control plane cannot make that check pass.
+	Signature string
+
+	// SignerKeyID names the key that signed it, empty for an unsigned version.
+	SignerKeyID string
+
+	// SignerAlgorithm is "ed25519" or "ecdsa-p256", empty for an unsigned version.
+	SignerAlgorithm string
+
+	// CreatedAt is when this version was stored.
+	CreatedAt time.Time
+
+	// CreatedBy is the operator who stored it, for the audit trail.
+	CreatedBy string
+}
+
+// Signed reports whether this version carries an offline signature.
+//
+// It is a method rather than three comparisons at each site so that "signed" means the same thing on
+// the enrolment path, in the listing and in the UI — the site that checked only Signature would treat
+// a version with a signature and no named key as issuable, and the record on the host would then name
+// nobody.
+func (t TemplateVersion) Signed() bool {
+	return t.Signature != "" && t.SignerKeyID != "" && t.SignerAlgorithm != ""
+}
+
+// TemplateSummary is one template name as a listing renders it.
+//
+// A summary rather than the version rows, because the listing is read on every load of the templates
+// page and the bodies are both sealed and potentially large; a client that wants a body names a
+// version and asks for it.
+type TemplateSummary struct {
+	// Name is the template's identifier.
+	Name string
+
+	// LatestVersion is the highest version stored under this name.
+	LatestVersion int
+
+	// CreatedAt is when the latest version was stored.
+	CreatedAt time.Time
+
+	// CreatedBy is who stored the latest version.
+	CreatedBy string
+
+	// Signed reports whether the latest version carries an offline signature, which is what decides
+	// whether an enrolling host can be issued this template at all.
+	Signed bool
+}
+
 // Online reports whether the host has been heard from recently enough to be considered up.
 //
 // The threshold is generous relative to the heartbeat interval because a host that missed one beat is
@@ -535,6 +611,15 @@ type Scoped interface {
 	// ListEnrollmentTokens returns this tenant's tokens for the UI, newest first.
 	ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken, error)
 
+	// GetEnrollmentToken returns one token by hash without consuming it, or ErrTokenUnusable.
+	//
+	// It exists for the one read enrolment must make between resolving a token and redeeming it:
+	// whether the token authorises the bootstrap template the agent asked for. That check has to come
+	// before consumption — a refusal that burnt the token would leave the operator retrying with a
+	// credential that now really is unusable, which reads exactly like the token having been stolen.
+	// Unknown, expired and consumed are one error here for the same reason they are everywhere else.
+	GetEnrollmentToken(ctx context.Context, hash string) (EnrollmentToken, error)
+
 	// CreateEnrolledHost records a newly enrolled host and its first certificate together.
 	//
 	// The two are one operation because half of it is worse than neither. A host row without its
@@ -633,6 +718,24 @@ type Scoped interface {
 	// another host's job, and because recording is idempotent the forged result would then suppress the
 	// real one when it arrived.
 	RecordResult(ctx context.Context, hostID string, r protocol.ResultRequest) error
+
+	// CreateTemplateVersion stores the next version of a template and returns the number it was given.
+	//
+	// The version is assigned here, atomically against concurrent writers, rather than chosen by the
+	// caller: two operators saving at once must produce v3 and v4, never two rows both claiming v3 and
+	// never a lost update. There is deliberately no method that updates a stored body — a version is
+	// immutable because the Tier 2 bootstrap record on a host names one, and a record that resolves to
+	// bytes that can change afterwards is not a record.
+	CreateTemplateVersion(ctx context.Context, t TemplateVersion) (int, error)
+
+	// ListTemplates returns one summary per template name, newest latest-version first.
+	ListTemplates(ctx context.Context) ([]TemplateSummary, error)
+
+	// GetTemplateVersion returns one version of a template, or ErrNotFound.
+	//
+	// Version 0 means the latest, which is what enrolment issues and what the editor opens; a positive
+	// version names one exactly, which is what a bootstrap record on a host resolves against.
+	GetTemplateVersion(ctx context.Context, name string, version int) (TemplateVersion, error)
 }
 
 // Compile-time proof that both implementations satisfy the interface.

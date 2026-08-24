@@ -27,6 +27,14 @@ const sharedMachineID = "sha256:one-physical-machine"
 // and stay globally unique, which is why the two tenants below have different ones.
 const sharedJobID = "01JSHAREDJOB"
 
+// sharedTemplateName is the template name both tenants choose.
+//
+// Same reasoning as the job id: a template name is typed by an operator, and "standard-server" is
+// exactly what two unrelated customers call their standard server. A leak here would hand one
+// customer's provisioning secrets — enrolment tokens, break-glass credentials — to the other, which is
+// why the probes check whose bytes came back rather than whether any did.
+const sharedTemplateName = "standard-server"
+
 // twoTenants builds two populated tenants against one store, for the isolation tests.
 //
 // They collide everywhere the schema allows a collision — the same job id, the same machine-id hash —
@@ -76,6 +84,18 @@ func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 		}); err != nil {
 			t.Fatalf("creating a job for %s: %v", tenant.scoped.Tenant(), err)
 		}
+
+		// The same template name in both tenants, with each tenant's identity in the sealed bytes and
+		// the author, so that a listing or a lookup that leaked would return something recognisably not
+		// the caller's own.
+		if _, err := tenant.scoped.CreateTemplateVersion(ctx, TemplateVersion{
+			Name:       sharedTemplateName,
+			BodySealed: []byte("sealed-for-" + string(tenant.scoped.Tenant())),
+			CreatedAt:  time.Now().UTC(),
+			CreatedBy:  "test:" + string(tenant.scoped.Tenant()),
+		}); err != nil {
+			t.Fatalf("creating a template for %s: %v", tenant.scoped.Tenant(), err)
+		}
 	}
 	return alpha, beta
 }
@@ -103,6 +123,9 @@ const (
 	// that state. Claiming it in the fixture rather than relying on the ClaimJobs probe having run
 	// first is what makes the probe hold in every map order instead of about half of them.
 	betaClaimedJobID = "01JBETACLAIMEDJOB"
+
+	// betaOnlyTemplateName is a template only beta stores, for the lookup that must find nothing.
+	betaOnlyTemplateName = "beta-private"
 )
 
 // TestGuaranteeOneTenantCannotSeeAnother is the isolation boundary, asserted rather than assumed.
@@ -398,6 +421,75 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatal("alpha issued a certificate against a host belonging to beta")
 				}
 			},
+			"GetEnrollmentToken": func(t *testing.T) {
+				// A token issued by beta must be unusable from alpha — the same one answer unknown,
+				// expired and consumed get, so holding another fleet's token teaches nothing.
+				if _, err := alpha.GetEnrollmentToken(ctx, "hash-"+string(beta.Tenant())); !errors.Is(err, ErrTokenUnusable) {
+					t.Fatalf("alpha read a token issued to beta: %v", err)
+				}
+				token, err := alpha.GetEnrollmentToken(ctx, "hash-"+string(alpha.Tenant()))
+				if err != nil {
+					t.Fatalf("alpha cannot read its own token: %v", err)
+				}
+				if token.Label != string(alpha.Tenant())+"-token" {
+					t.Fatalf("alpha's token lookup returned %+v", token)
+				}
+			},
+			"CreateTemplateVersion": func(t *testing.T) {
+				// Both tenants hold sharedTemplateName at v1. A new version created by alpha must
+				// continue alpha's own numbering and must not supersede what beta's latest resolves to.
+				version, err := alpha.CreateTemplateVersion(ctx, TemplateVersion{
+					Name:       sharedTemplateName,
+					BodySealed: []byte("sealed-for-" + string(alpha.Tenant()) + "-v2"),
+					CreatedAt:  time.Now().UTC(),
+					CreatedBy:  "test:" + string(alpha.Tenant()),
+				})
+				if err != nil {
+					t.Fatalf("alpha creating a second version: %v", err)
+				}
+				if version < 2 {
+					t.Fatalf("alpha's second version was numbered %d", version)
+				}
+				latest, err := beta.GetTemplateVersion(ctx, sharedTemplateName, 0)
+				if err != nil {
+					t.Fatalf("reading beta's latest: %v", err)
+				}
+				if latest.CreatedBy != "test:"+string(beta.Tenant()) {
+					t.Fatalf("beta's latest template was created by %q", latest.CreatedBy)
+				}
+			},
+			"ListTemplates": func(t *testing.T) {
+				templates, err := alpha.ListTemplates(ctx)
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				var mine bool
+				for _, tpl := range templates {
+					if tpl.CreatedBy == "test:"+string(beta.Tenant()) {
+						t.Errorf("alpha's template listing contains beta's %q", tpl.Name)
+					}
+					if tpl.Name == sharedTemplateName {
+						mine = true
+					}
+				}
+				if !mine {
+					t.Fatalf("alpha's own template is missing from its listing: %+v", templates)
+				}
+			},
+			"GetTemplateVersion": func(t *testing.T) {
+				// The colliding name must resolve to the caller's own bytes.
+				tpl, err := alpha.GetTemplateVersion(ctx, sharedTemplateName, 1)
+				if err != nil {
+					t.Fatalf("alpha cannot read its own template: %v", err)
+				}
+				if string(tpl.BodySealed) != "sealed-for-"+string(alpha.Tenant()) {
+					t.Fatalf("alpha read template bytes %q, which are not its own", tpl.BodySealed)
+				}
+				// And a name only beta holds is nothing rather than beta's.
+				if _, err := alpha.GetTemplateVersion(ctx, betaOnlyTemplateName, 0); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha read a template only beta has: %v", err)
+				}
+			},
 		}
 
 		// A second job that exists only in beta, for the write probes above to aim at. Beta's host is
@@ -407,6 +499,16 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 			Job: jobFor(betaJobID, "facts.collect"), HostID: betaHostID, CreatedBy: "test:beta",
 		}); err != nil {
 			t.Fatalf("creating beta's private job: %v", err)
+		}
+
+		// A template only beta stores, for the GetTemplateVersion probe's negative half.
+		if _, err := beta.CreateTemplateVersion(ctx, TemplateVersion{
+			Name:       betaOnlyTemplateName,
+			BodySealed: []byte("sealed-only-for-beta"),
+			CreatedAt:  time.Now().UTC(),
+			CreatedBy:  "test:beta",
+		}); err != nil {
+			t.Fatalf("creating beta's private template: %v", err)
 		}
 
 		// And a claimed job on a host only beta has, for the RecordResult probe. Claimed here, before
@@ -545,7 +647,8 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 		}
 	}
 
-	for _, table := range []string{"hosts", "jobs", "certificates", "enrollment_tokens", "job_results"} {
+	for _, table := range []string{"hosts", "jobs", "certificates", "enrollment_tokens", "job_results",
+		"templates"} {
 		t.Run(table, func(t *testing.T) {
 			// No tenant set at all. Fail closed: current_setting(…, true) is NULL when unset, and
 			// `tenant_id = NULL` is NULL rather than true, so the policy admits nothing.
@@ -672,6 +775,9 @@ func TestGuaranteeDeletingATenantLeavesNothingBehind(t *testing.T) {
 		if tokens, err := alpha.ListEnrollmentTokens(ctx); err != nil || len(tokens) != 0 {
 			t.Errorf("a deleted tenant lists %d token(s): %v", len(tokens), err)
 		}
+		if _, err := alpha.GetTemplateVersion(ctx, sharedTemplateName, 0); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a deleted tenant's template is still readable: %v", err)
+		}
 
 		// The certificate is the one that would still authenticate. An agent presents it on every
 		// request, and a row that survived its tenant would let a deleted customer's machine keep
@@ -684,6 +790,9 @@ func TestGuaranteeDeletingATenantLeavesNothingBehind(t *testing.T) {
 		// too enthusiastic rather than too timid.
 		if _, err := beta.GetHost(ctx, betaHostID); err != nil {
 			t.Errorf("deleting alpha removed beta's host: %v", err)
+		}
+		if _, err := beta.GetTemplateVersion(ctx, sharedTemplateName, 0); err != nil {
+			t.Errorf("deleting alpha removed beta's template: %v", err)
 		}
 		if _, err := beta.GetJob(ctx, sharedJobID); err != nil {
 			t.Errorf("deleting alpha removed beta's job: %v", err)

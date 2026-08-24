@@ -35,6 +35,7 @@ import (
 	"github.com/pascalgross/farrier/internal/ca"
 	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/seal"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -72,6 +73,14 @@ type Config struct {
 	// substitute for the destructive tier's authority and cannot be used as one — the agent verifies
 	// the two against different anchors and will not accept this key for a destructive intent.
 	OnlineKey *onlinekey.Key
+
+	// TemplateKey seals provisioning template bodies at rest, and is required.
+	//
+	// Required rather than optional, unlike OnlineKey, because its absence would not disable a feature
+	// — it would ship the same feature storing plaintext, and docs/SECURITY.md §7 promises encrypted
+	// bodies unconditionally. `farrier-server serve` generates one beside the CA on first start, so
+	// requiring it costs an operator nothing.
+	TemplateKey *seal.Key
 
 	// HeartbeatSeconds is the pacing handed to agents.
 	//
@@ -128,6 +137,10 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Auth == nil {
 		return nil, errors.New("server: an authentication provider is required")
 	}
+	if cfg.TemplateKey == nil {
+		return nil, errors.New("server: a template sealing key is required; " +
+			"seal.Ensure generates one beside the CA")
+	}
 	if cfg.HeartbeatSeconds == 0 {
 		cfg.HeartbeatSeconds = protocol.DefaultHeartbeatSeconds
 	}
@@ -182,6 +195,10 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
 	s.route(http.MethodPost, "/api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
 	s.route(http.MethodGet, "/api/v1/whoami", s.requireOperator(s.handleWhoami))
+	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
+	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
+	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))
+	s.route(http.MethodPost, "/api/v1/templates/{name}/render", s.requireOperator(s.handleRenderTemplate))
 
 	// Tenant administration, for whoever runs the installation rather than a fleet in it. These are the
 	// only routes a platform credential can reach, and the only routes an operator credential cannot.

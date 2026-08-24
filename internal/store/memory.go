@@ -134,6 +134,9 @@ type Memory struct {
 	// host id it is keyed on is 128 bits of randomness. The work itself is behind the claim, which is
 	// scoped.
 	waiters map[string][]chan struct{}
+
+	// templates are provisioning template versions by tenant, name and version, immutable once written.
+	templates map[templateKey]TemplateVersion
 }
 
 // NewMemory returns an in-memory store holding the default tenant and nothing else.
@@ -153,13 +156,14 @@ func NewMemory() *Memory {
 				ApprovalMode: ApprovalNone,
 			},
 		},
-		tokens:  map[string]tokenRow{},
-		hosts:   map[string]hostRow{},
-		certs:   map[string]Certificate{},
-		jobs:    map[queueKey][]protocol.Job{},
-		records: map[jobKey]JobRecord{},
-		results: map[jobKey]protocol.ResultRequest{},
-		waiters: map[string][]chan struct{}{},
+		tokens:    map[string]tokenRow{},
+		hosts:     map[string]hostRow{},
+		certs:     map[string]Certificate{},
+		jobs:      map[queueKey][]protocol.Job{},
+		records:   map[jobKey]JobRecord{},
+		results:   map[jobKey]protocol.ResultRequest{},
+		waiters:   map[string][]chan struct{}{},
+		templates: map[templateKey]TemplateVersion{},
 	}
 }
 
@@ -345,6 +349,11 @@ func (m *Memory) DeleteTenant(_ context.Context, id TenantID) error {
 	for key := range m.results {
 		if key.tenant == id {
 			delete(m.results, key)
+		}
+	}
+	for key := range m.templates {
+		if key.tenant == id {
+			delete(m.templates, key)
 		}
 	}
 	return nil

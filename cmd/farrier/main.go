@@ -45,6 +45,7 @@ usage:
   farrier key generate  create a signing key and print its trusted-signers line
   farrier key show      print the trusted-signers line for an existing key
   farrier sign          render a job request offline and sign it
+  farrier sign-template sign a provisioning template for the Tier 2 bootstrap
   farrier catalogue     print the intent catalogue this build knows
   farrier version       print the version
 
@@ -74,6 +75,8 @@ func main() {
 		}
 	case "sign":
 		os.Exit(signCommand(args[1:]))
+	case "sign-template":
+		os.Exit(signTemplateCommand(args[1:]))
 	case "version":
 		fmt.Println("farrier " + buildinfo.String())
 	default:
