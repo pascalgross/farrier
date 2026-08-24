@@ -547,7 +547,11 @@ func readBounded[T any](ctx context.Context, read func(context.Context) ([]T, er
 // two deliveries with nothing to do with each other must not be able to starve one another. Rules
 // routing the same event kind are not independent in that way — they are one queue against one relay
 // — so a ceiling over them is what keeps a pass finite when somebody has written twenty of them and
-// the relay is black-holing. Rules past the ceiling are skipped with a log line naming the count.
+// the relay is black-holing.
+//
+// It is a wall-clock deadline rather than a context, and that is deliberate: the per-rule work
+// includes a cooldown stamp and a delivery record, which must not be truncated halfway, so the loop
+// checks how much is left rather than handing a shrinking context to the next rule.
 const mailRoutingBudget = 3 * deliveryBudget
 
 // routeToRules mails each rule that routes this event kind and is past its cooldown.
@@ -555,36 +559,27 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 	condition store.AlertCondition, rules []store.AlertRule, states []store.AlertState) {
 
 	now := time.Now().UTC()
-	mailCtx, mailDone := context.WithTimeout(ctx, mailRoutingBudget)
-	defer mailDone()
+	due := dueRules(rules, states, condition, ev.HostID, now)
+	deadline := time.Now().Add(mailRoutingBudget)
 
-	skipped := 0
-	for _, rule := range rules {
-		if !rule.Enabled || rule.Condition != condition || len(rule.EmailTo) == 0 {
-			continue
-		}
-		cooldown := time.Duration(rule.CooldownSeconds) * time.Second
-		if cooldown <= 0 {
-			cooldown = DefaultAlertCooldownSeconds * time.Second
-		}
-		var last time.Time
-		for _, st := range states {
-			if st.RuleID == rule.ID && st.HostID == ev.HostID {
-				last = st.LastNotified
+	for i, rule := range due {
+		// Enough budget for a *whole* attempt, or none at all. A rule mailed on the last four seconds
+		// of the ceiling fails for want of time and then has its four-hour cooldown stamped, which
+		// suppresses the real attempt — the outcome this guard exists to prevent, and the one a bare
+		// "is the context dead yet" check walks straight into.
+		if ctx.Err() != nil || time.Until(deadline) < deliveryBudget {
+			reason := "the control plane ran out of time to mail this event; " +
+				"the relay or the database is not keeping up"
+			if ctx.Err() != nil {
+				reason = "the control plane stopped before mailing this event"
 			}
-		}
-		if !last.IsZero() && now.Sub(last) < cooldown {
-			continue
-		}
-		if mailCtx.Err() != nil {
-			// Out of budget, or the process is stopping. Counted rather than attempted: a delivery
-			// started on a dead context fails instantly and stamps a cooldown that would suppress
-			// the real attempt for hours.
-			skipped++
-			continue
+			slog.Warn("some alert rules were not mailed for this event",
+				"kind", ev.Kind, "skipped", len(due)-i, "reason", reason)
+			s.recordSkipped(scoped, due[i:], reason)
+			return
 		}
 
-		s.mailRule(mailCtx, scoped, rule, ev)
+		s.mailRule(ctx, scoped, rule, ev)
 
 		stampCtx, stampDone := context.WithTimeout(ctx, outboundStoreTimeout)
 		err := scoped.UpsertAlertState(stampCtx, store.AlertState{
@@ -595,9 +590,60 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 			slog.Warn("could not persist an event-routing cooldown", "rule", rule.ID, "error", err)
 		}
 	}
+}
 
-	if skipped > 0 {
-		slog.Warn("some alert rules were not mailed for this event",
-			"kind", ev.Kind, "skipped", skipped, "reason", mailCtx.Err())
+// dueRules picks the rules that route this event kind, name recipients, and are past their cooldown.
+//
+// Separated from the loop that mails them so that "which rules should have been mailed" is answerable
+// as a list — which is what lets the skipped ones be recorded rather than only counted.
+func dueRules(rules []store.AlertRule, states []store.AlertState, condition store.AlertCondition,
+	hostID string, now time.Time) []store.AlertRule {
+
+	var due []store.AlertRule
+	for _, rule := range rules {
+		if !rule.Enabled || rule.Condition != condition || len(rule.EmailTo) == 0 {
+			continue
+		}
+		cooldown := time.Duration(rule.CooldownSeconds) * time.Second
+		if cooldown <= 0 {
+			cooldown = DefaultAlertCooldownSeconds * time.Second
+		}
+		var last time.Time
+		for _, st := range states {
+			if st.RuleID == rule.ID && st.HostID == hostID {
+				last = st.LastNotified
+			}
+		}
+		if !last.IsZero() && now.Sub(last) < cooldown {
+			continue
+		}
+		due = append(due, rule)
+	}
+	return due
+}
+
+// recordSkipped stamps every rule that was never attempted with why.
+//
+// It matters most for the event-routed conditions, which is where it is used: a failed job fires once
+// and nothing re-triggers it, so a rule skipped here would otherwise go on displaying its last
+// successful delivery — "no mail arrived" and "no mail was sent" indistinguishable again.
+//
+// One budget for the whole set rather than one each, because the reason for skipping is usually a
+// database that is not answering, and a ten-second write per rule would turn a slow pass into a stuck
+// one. What does not fit is logged as a count.
+func (s *Server) recordSkipped(scoped store.Scoped, rules []store.AlertRule, reason string) {
+	ctx, done := context.WithTimeout(context.WithoutCancel(s.outboundCtx), deliveryRecordTimeout)
+	defer done()
+
+	now := time.Now().UTC()
+	for i, rule := range rules {
+		if ctx.Err() != nil {
+			slog.Warn("could not record why some alert rules were not mailed",
+				"unrecorded", len(rules)-i, "error", ctx.Err())
+			return
+		}
+		if err := scoped.RecordAlertDelivery(ctx, rule.ID, now, reason); err != nil {
+			slog.Warn("could not record a skipped alert delivery", "rule", rule.ID, "error", err)
+		}
 	}
 }
