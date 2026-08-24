@@ -142,6 +142,13 @@ type Server struct {
 	// shutdown drains them rather than abandoning an alert mail mid-conversation.
 	outbound sync.WaitGroup
 
+	// background counts the long-lived goroutines the server owns — today, the alert evaluator.
+	//
+	// Separate from outbound and waited on first: the evaluator *produces* detached deliveries, so
+	// closing the outbound set before its last pass finished would refuse exactly the notifications
+	// a stopping control plane most needs to have sent.
+	background sync.WaitGroup
+
 	// outboundMu guards draining and inFlight, and serialises them against outbound.Add.
 	outboundMu sync.Mutex
 
@@ -402,13 +409,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		// A deliberate stop: the handlers are still finishing, and some of them are still detaching
 		// deliveries. Wait for that to be over before deciding what is outstanding.
 		<-shutdownDone
-		s.drainOutbound()
+		s.drainOutbound(ctx)
 		return nil
 	}
 
 	// Any other error means the listener never ran or died under us, so nothing is waiting on
 	// Shutdown to return. Drain anyway: the evaluator may have detached work already.
-	s.drainOutbound()
+	s.drainOutbound(ctx)
 	return err
 }
 
@@ -431,10 +438,21 @@ const outboundDrainGrace = 15 * time.Second
 // of its own, deliberately surviving the cancellation: the delivery a stopping control plane abandoned
 // is exactly the one whose absence somebody would otherwise trust. Half a minute past the grace, in
 // the worst case, bought with an honest answer.
-func (s *Server) drainOutbound() {
-	// Closed to new work first, and under the same lock detach takes. A WaitGroup whose counter goes
-	// from zero back up while somebody waits on it is a documented misuse, and the evaluator's tick
-	// can still be mid-pass when this runs.
+func (s *Server) drainOutbound(ctx context.Context) {
+	// The evaluator first: it is a producer, and closing the outbound set while it is still mid-pass
+	// would refuse the very notifications this drain exists to let finish. It returns on the same
+	// cancelled context the listener stopped on, and every store call in a pass is bounded, so this
+	// wait is short.
+	//
+	// Only when that context is actually done, though. A listener that failed to *start* — a port
+	// already bound — leaves the evaluator legitimately ticking, and waiting for it there would hang
+	// the process on the one error it most needs to report and exit on.
+	if ctx.Err() != nil {
+		s.background.Wait()
+	}
+
+	// Then closed to new work, under the same lock detach takes. A WaitGroup whose counter goes from
+	// zero back up while somebody waits on it is a documented misuse.
 	s.outboundMu.Lock()
 	s.draining = true
 	s.outboundMu.Unlock()

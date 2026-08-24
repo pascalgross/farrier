@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,6 +127,15 @@ func (r alertRuleRequest) resolve(base resolvedRule) resolvedRule {
 	return base
 }
 
+// maxAlertThreshold bounds a rule's threshold, because the units it is read in multiply.
+//
+// reboot_required reads it as days and multiplies by 24 hours, and a time.Duration is nanoseconds in
+// an int64: past about 106,751 days the product wraps negative and the rule fires immediately for
+// every host — a threshold set absurdly high turning into no threshold at all, which is the worst
+// direction for a mistake like this to fail in. A hundred thousand is under the wrap in every unit
+// this field is read in, and is 274 years of anything.
+const maxAlertThreshold = 100_000
+
 // validateAlertRule checks the resolved fields create and update share.
 //
 // The resolved fields rather than the request's, because a PATCH that changes only the cooldown must
@@ -136,8 +146,16 @@ func validateAlertRule(rule resolvedRule, condition store.AlertCondition) string
 		return "an evaluated condition needs a positive threshold: minutes for host_silent, a count " +
 			"for security_updates, days for reboot_required"
 	}
+	if rule.Threshold > maxAlertThreshold {
+		return "threshold cannot exceed " + strconv.Itoa(maxAlertThreshold) +
+			"; a larger one overflows the duration it is read as and fires on every host instead of none"
+	}
 	if rule.CooldownSeconds < 0 {
 		return "cooldownSeconds cannot be negative"
+	}
+	if rule.CooldownSeconds > maxAlertThreshold*int(time.Hour/time.Second) {
+		// Same reasoning in the other field: cooldownSeconds becomes a Duration too.
+		return "cooldownSeconds is implausibly large"
 	}
 	for _, address := range rule.EmailTo {
 		// Light-touch on purpose: real address validation is the relay's job, and a regex that

@@ -40,6 +40,13 @@ const AlertEvaluationInterval = time.Minute
 // same store and the notifications leave through the same sinks — a fourth deployable unit would buy
 // nothing but a Compose file entry, which is the shape of cost this project refuses.
 func (s *Server) RunAlertEvaluator(ctx context.Context) {
+	// Tracked, so a shutdown does not abandon a pass halfway. Without this the evaluator is a
+	// goroutine nothing waits for: SIGTERM lands mid-pass, the process exits, and the delivery record
+	// that would have explained the dropped alert goes with it — the silence that record exists to
+	// prevent, arriving through the one path that never notices.
+	s.background.Add(1)
+	defer s.background.Done()
+
 	ticker := time.NewTicker(AlertEvaluationInterval)
 	defer ticker.Stop()
 	for {
@@ -565,7 +572,7 @@ const perRuleMailBudget = deliveryBudget + deliveryRecordTimeout + outboundStore
 // checks how much is left rather than handing a shrinking context to the next rule.
 const mailRoutingBudget = 3 * perRuleMailBudget
 
-// routeToRules mails each rule that routes this event kind and is past its cooldown.
+// routeToRules mails each rule that routes this event kind and wins its cooldown claim.
 func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notify.Event,
 	condition store.AlertCondition, rules []store.AlertRule, states []store.AlertState) {
 
@@ -578,7 +585,7 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		// of the ceiling fails for want of time and then has its four-hour cooldown stamped, which
 		// suppresses the real attempt — the outcome this guard exists to prevent, and the one a bare
 		// "is the context dead yet" check walks straight into. The reserve is the whole per-rule cost
-		// and not just the relay's share, because the record and the stamp are inside the ceiling too.
+		// and not just the relay's share, because the record and the claim are inside the ceiling too.
 		if ctx.Err() != nil || time.Until(deadline) < perRuleMailBudget {
 			reason := "the control plane ran out of time to mail this event; " +
 				"the relay or the database is not keeping up"
@@ -591,23 +598,45 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 			return
 		}
 
-		s.mailRule(ctx, scoped, rule, ev)
-
-		stampCtx, stampDone := context.WithTimeout(ctx, outboundStoreTimeout)
-		err := scoped.UpsertAlertState(stampCtx, store.AlertState{
-			RuleID: rule.ID, HostID: ev.HostID, Firing: true, Since: now, LastNotified: now,
-		})
-		stampDone()
-		if err != nil {
-			slog.Warn("could not persist an event-routing cooldown", "rule", rule.ID, "error", err)
+		// Claimed *before* mailing, and atomically. dueRules read the cooldown, which is a check
+		// without a write; every event is delivered by its own goroutine, so two units failing on one
+		// heartbeat both read "nothing recent" and both mail — which is exactly the restart-loop
+		// noise the cooldown exists to stop. The claim is one statement in the database, so it also
+		// holds across control-plane processes, where nothing in this one could.
+		claimCtx, claimDone := context.WithTimeout(ctx, outboundStoreTimeout)
+		won, err := scoped.ClaimAlertNotification(claimCtx, rule.ID, ev.HostID, now, ruleCooldown(rule))
+		claimDone()
+		switch {
+		case err != nil:
+			slog.Warn("could not claim an event-routing cooldown; not mailing",
+				"rule", rule.ID, "error", err)
+			continue
+		case !won:
+			// Somebody else has it: another goroutine in this process, or another control plane.
+			// Not an error and not worth a record — the mail is going out, just not from here.
+			continue
 		}
+
+		s.mailRule(ctx, scoped, rule, ev)
 	}
 }
 
-// dueRules picks the rules that route this event kind, name recipients, and are past their cooldown.
+// ruleCooldown is a rule's re-notification bound, with the server's default for a rule that names none.
+func ruleCooldown(rule store.AlertRule) time.Duration {
+	if rule.CooldownSeconds > 0 {
+		return time.Duration(rule.CooldownSeconds) * time.Second
+	}
+	return DefaultAlertCooldownSeconds * time.Second
+}
+
+// dueRules picks the rules that route this event kind, name recipients, and look past their cooldown.
+//
+// "Look past" is exact: this is a filter over state already read, so it is a cheap way to skip the
+// rules that obviously have nothing to do — and never the decision. The decision is the atomic claim
+// in the caller, which is what two concurrent deliveries actually race on.
 //
 // Separated from the loop that mails them so that "which rules should have been mailed" is answerable
-// as a list — which is what lets the skipped ones be recorded rather than only counted.
+// as a list, which is what lets the skipped ones be recorded rather than only counted.
 func dueRules(rules []store.AlertRule, states []store.AlertState, condition store.AlertCondition,
 	hostID string, now time.Time) []store.AlertRule {
 
@@ -616,17 +645,13 @@ func dueRules(rules []store.AlertRule, states []store.AlertState, condition stor
 		if !rule.Enabled || rule.Condition != condition || len(rule.EmailTo) == 0 {
 			continue
 		}
-		cooldown := time.Duration(rule.CooldownSeconds) * time.Second
-		if cooldown <= 0 {
-			cooldown = DefaultAlertCooldownSeconds * time.Second
-		}
 		var last time.Time
 		for _, st := range states {
 			if st.RuleID == rule.ID && st.HostID == hostID {
 				last = st.LastNotified
 			}
 		}
-		if !last.IsZero() && now.Sub(last) < cooldown {
+		if !last.IsZero() && now.Sub(last) < ruleCooldown(rule) {
 			continue
 		}
 		due = append(due, rule)

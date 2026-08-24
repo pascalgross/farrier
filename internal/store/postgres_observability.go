@@ -331,6 +331,43 @@ func (s *scopedPostgres) UpsertAlertState(ctx context.Context, st AlertState) er
 	})
 }
 
+// ClaimAlertNotification takes the right to notify for one (rule, host) pair, atomically.
+//
+// One statement, and every part of it is load-bearing. The INSERT ... ON CONFLICT ... DO UPDATE with a
+// WHERE on the conflict target is PostgreSQL's compare-and-set: the row is written only when the held
+// last_notified is null or older than the cooldown, and RETURNING tells the caller whether that
+// happened. A losing caller gets no row and sends nothing.
+//
+// A read followed by a write would not do. Event-routed alerts run one detached goroutine per event,
+// so two units failing on the same heartbeat race here; and a hosted installation runs more than one
+// control plane, where a mutex would not help at all.
+func (s *scopedPostgres) ClaimAlertNotification(ctx context.Context, ruleID, hostID string,
+	at time.Time, cooldown time.Duration) (bool, error) {
+
+	claimed := false
+	err := s.withTenant(ctx, "claiming an alert notification", func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			INSERT INTO alert_states (tenant_id, rule_id, host_id, firing, since, last_notified)
+			VALUES ($1, $2, $3, true, $4, $4)
+			ON CONFLICT (tenant_id, rule_id, host_id) DO UPDATE
+			   SET firing = true, last_notified = $4,
+			       since = COALESCE(alert_states.since, $4)
+			 WHERE alert_states.last_notified IS NULL
+			    OR alert_states.last_notified <= $5
+			RETURNING rule_id`, string(s.tenant), ruleID, hostID, at, at.Add(-cooldown))
+		if err != nil {
+			return wrap(err, "claiming an alert notification")
+		}
+		defer rows.Close()
+		claimed = rows.Next()
+		return wrap(rows.Err(), "claiming an alert notification")
+	})
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
 // zeroAsEpoch maps a zero time onto the epoch sentinel the SQL above turns into NULL.
 //
 // The dance exists because a Go zero time is year 1, which PostgreSQL stores happily and then returns

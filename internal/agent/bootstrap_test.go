@@ -159,3 +159,28 @@ func TestApplyBootstrapFailureLeavesTheRecordStanding(t *testing.T) {
 		t.Fatal("a failed application left the interlock open")
 	}
 }
+
+// TestAnUnreadableRecordRefusesRatherThanReapplying keeps the apply-once interlock from failing open.
+//
+// The interlock is a file that is *there*, so the only reading of "I could not read it" that is safe
+// is "I do not know". Treating it as "no template has been applied" re-applies one — on a host that
+// may already have been provisioned, from a control plane an attacker may own — which is the single
+// thing docs/SECURITY.md §7 guardrail 4 exists to prevent.
+//
+// A directory where the record should be is the fixture, because it produces a read error on every
+// platform and under every user, including the root that runs the real agent — a mode-000 file does
+// not.
+func TestAnUnreadableRecordRefusesRatherThanReapplying(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(stateDir, BootstrapRecordFile), 0o755); err != nil {
+		t.Fatalf("creating the unreadable record: %v", err)
+	}
+
+	_, err := verifyBootstrap(stateDir, testBootstrap)
+	if err == nil {
+		t.Fatal("an unreadable bootstrap record was treated as no record at all")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("the refusal does not say the question is unanswered: %v", err)
+	}
+}

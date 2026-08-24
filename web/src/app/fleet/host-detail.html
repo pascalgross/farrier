@@ -179,8 +179,10 @@
             failed and recovered between two beats is not in this list. It is a stated property of
             reporting on the heartbeat rather than a gap somebody should hunt for during an incident.
           </p>
+        } @else if (historyError()) {
+          <p class="m-0 text-sm text-farrier-warn">{{ historyError() }}</p>
         } @else {
-          <p class="m-0 text-sm opacity-60">The unit history could not be read.</p>
+          <p class="m-0 text-sm opacity-60">Reading the unit history…</p>
         }
       </mat-card-content>
     </mat-card>

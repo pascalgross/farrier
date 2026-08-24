@@ -63,6 +63,16 @@ export class HostDetail {
   protected readonly loading = computed(() => this.host() === null && !this.error());
 
   /**
+   * Why the unit history could not be read, empty while it is loading or once it has.
+   *
+   * Its own signal rather than reading a null `transitions` as failure, which is the same fix the
+   * `host` signal already carries: null means "no answer yet", and the in-flight window is most of a
+   * page load — so conflating the two renders "could not be read" every single time, on a card that
+   * is about to fill in.
+   */
+  protected readonly historyError = signal('');
+
+  /**
    * This host's recorded unit-state changes, newest first.
    *
    * Its own request rather than a field on the host, because it is the one part of this page that is
@@ -71,12 +81,18 @@ export class HostDetail {
    */
   protected readonly transitions = toSignal(
     toObservable(this.id).pipe(
-      switchMap((id) =>
-        this.api.serviceHistory(id).pipe(
+      switchMap((id) => {
+        // Cleared as the request goes out, so switching hosts does not carry the previous host's
+        // failure onto the next one's page.
+        this.historyError.set('');
+        return this.api.serviceHistory(id).pipe(
           startWith(null),
-          catchError(() => of(null)),
-        ),
-      ),
+          catchError(() => {
+            this.historyError.set('The unit history could not be read.');
+            return of(null);
+          }),
+        );
+      }),
     ),
     { initialValue: null },
   );

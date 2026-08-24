@@ -978,6 +978,20 @@ type Scoped interface {
 	// ListAlertStates returns the evaluator's memory for every (rule, host) pair.
 	ListAlertStates(ctx context.Context) ([]AlertState, error)
 
+	// ClaimAlertNotification takes the right to notify for one (rule, host) pair, atomically.
+	//
+	// It reports whether this caller won: true means the cooldown had elapsed (or nothing had ever
+	// notified) and last_notified is now `at`, false means somebody else has it and this caller must
+	// not send.
+	//
+	// It exists because reading the cooldown and then writing it are two statements, and event-routed
+	// alerts run one detached goroutine per event: two units failing on the same heartbeat both read
+	// "no recent notification" and both mail, which is precisely the flapping-unit noise the cooldown
+	// exists to stop. One statement in the database is the only version of this that holds — across
+	// goroutines and across control-plane processes alike.
+	ClaimAlertNotification(ctx context.Context, ruleID, hostID string, at time.Time,
+		cooldown time.Duration) (bool, error)
+
 	// UpsertAlertState records one (rule, host) pair's state, keyed on the pair.
 	UpsertAlertState(ctx context.Context, s AlertState) error
 }

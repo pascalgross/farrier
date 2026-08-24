@@ -711,6 +711,25 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatalf("alpha's own state is missing: %+v", states)
 				}
 			},
+			"ClaimAlertNotification": func(t *testing.T) {
+				// The claim is a write keyed on a rule, so naming beta's must fail rather than
+				// silently create a state row under alpha's tenant that beta's rule now owns — and
+				// must leave whatever beta had alone.
+				if _, err := alpha.ClaimAlertNotification(ctx, betaOnlyRuleID, alphaHostID,
+					deliveryStamp, time.Hour); err == nil {
+					t.Fatal("alpha claimed a notification against a rule belonging to beta")
+				}
+				// And alpha's own claim on the colliding id must be alpha's alone: beta must still be
+				// able to claim the same pair, because their states are different rows.
+				if won, err := alpha.ClaimAlertNotification(ctx, sharedRuleID, alphaHostID,
+					deliveryStamp, time.Hour); err != nil || !won {
+					t.Fatalf("alpha claiming its own rule: won=%v err=%v", won, err)
+				}
+				if won, err := beta.ClaimAlertNotification(ctx, sharedRuleID, betaHostID,
+					deliveryStamp, time.Hour); err != nil || !won {
+					t.Fatalf("alpha's claim blocked beta's: won=%v err=%v", won, err)
+				}
+			},
 			"UpsertAlertState": func(t *testing.T) {
 				// Naming a rule only beta holds must be refused — the composite foreign key again —
 				// and must leave beta's state alone.

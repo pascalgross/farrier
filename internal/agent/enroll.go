@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -283,7 +284,9 @@ func installLocalFile(source, destination string) error {
 // template it was meant to have.
 func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.PublicKey, error) {
 	recordPath := filepath.Join(stateDir, BootstrapRecordFile)
-	if raw, err := os.ReadFile(recordPath); err == nil {
+	raw, err := os.ReadFile(recordPath)
+	switch {
+	case err == nil:
 		// Named in the refusal where the record is readable. "A template was already applied" sends an
 		// operator looking through a file; "standard-server was applied on the 4th" usually ends the
 		// question.
@@ -295,6 +298,16 @@ func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.Pub
 		}
 		return signing.PublicKey{}, fmt.Errorf("agent: a bootstrap template has already been applied on "+
 			"this host (see %s); templates are applied at most once", recordPath)
+
+	case !errors.Is(err, fs.ErrNotExist):
+		// The interlock is a file that is *there*, and anything other than "there is no such file"
+		// leaves that question unanswered — a permission error, an I/O error, a directory where the
+		// record should be. Treating an unreadable record as an absent one would apply a template a
+		// second time, which is the one thing this function exists to prevent, so an unreadable one
+		// refuses. An operator who has genuinely lost the file can see why and decide.
+		return signing.PublicKey{}, fmt.Errorf("agent: cannot read the bootstrap record at %s, so "+
+			"whether a template has already been applied here is unknown; refusing rather than "+
+			"risking a second application: %w", recordPath, err)
 	}
 
 	signers, err := signing.LoadTrustedSigners()

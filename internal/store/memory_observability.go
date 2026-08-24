@@ -295,3 +295,33 @@ func (s *scopedMemory) UpsertAlertState(_ context.Context, st AlertState) error 
 	s.store.states[stateKey{tenant: s.tenant, rule: st.RuleID, host: st.HostID}] = st
 	return nil
 }
+
+// ClaimAlertNotification takes the right to notify for one (rule, host) pair, atomically.
+//
+// The store's own mutex is what makes it atomic here, matching what one SQL statement does in
+// PostgreSQL. The equivalence matters: this implementation exists so tests exercise the same
+// behaviour, and a version that read and then wrote would pass every test the real race fails.
+func (s *scopedMemory) ClaimAlertNotification(_ context.Context, ruleID, hostID string,
+	at time.Time, cooldown time.Duration) (bool, error) {
+
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+
+	if _, exists := s.store.rules[ruleKey{tenant: s.tenant, id: ruleID}]; !exists {
+		return false, errUnknownTenant(s.tenant)
+	}
+	key := stateKey{tenant: s.tenant, rule: ruleID, host: hostID}
+	held, exists := s.store.states[key]
+	if exists && !held.LastNotified.IsZero() && held.LastNotified.After(at.Add(-cooldown)) {
+		return false, nil
+	}
+
+	held.RuleID, held.HostID = ruleID, hostID
+	held.Firing = true
+	if held.Since.IsZero() {
+		held.Since = at
+	}
+	held.LastNotified = at
+	s.store.states[key] = held
+	return true, nil
+}

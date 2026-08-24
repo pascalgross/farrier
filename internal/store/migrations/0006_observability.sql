@@ -74,12 +74,6 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     enabled             boolean     NOT NULL DEFAULT true,
     created_at          timestamptz NOT NULL DEFAULT now(),
     created_by          text        NOT NULL DEFAULT '',
-    -- The outcome of the most recent mail attempt. An alert that was the only thing between a fleet
-    -- and an outage must not fail into a log line nobody reads: the event itself is in the inbox
-    -- either way, and this is the record of the delivery that did not happen, on the row an operator
-    -- is already looking at.
-    last_delivery_at    timestamptz,
-    last_delivery_error text        NOT NULL DEFAULT '',
     PRIMARY KEY (tenant_id, id)
 );
 
