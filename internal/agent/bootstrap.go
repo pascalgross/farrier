@@ -2,8 +2,9 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -95,9 +96,9 @@ func applyBootstrap(ctx context.Context, opts EnrollOptions, b protocol.Bootstra
 		AppliedAt:       time.Now().UTC(),
 	}
 	recordPath := filepath.Join(opts.StateDir, BootstrapRecordFile)
-	encoded, err := json.MarshalIndent(record, "", "  ")
+	encoded, err := jsonRecord(record)
 	if err != nil {
-		return fmt.Errorf("agent: encoding the bootstrap record: %w", err)
+		return err
 	}
 	// WriteFileAtomic syncs the file and its directory: a rename is not durable until the directory
 	// entry is, and an interlock that a power cut could un-write is not an interlock.
@@ -112,6 +113,12 @@ func applyBootstrap(ctx context.Context, opts EnrollOptions, b protocol.Bootstra
 	if seedDir == "" {
 		seedDir = CloudInitSeedDir
 	}
+	// Removed once the stages have read it, whether they succeeded or not. A NoCloud seed left in
+	// place is not inert: cloud-init matches that datasource on every subsequent boot, ahead of the
+	// one the machine actually has, so a permanent seed would quietly change where the host gets its
+	// configuration from for the rest of its life. Nothing is lost by removing it — the body is in the
+	// record, verbatim and permanently — and the record, not the seed, is the interlock.
+	defer removeSeed(seedDir)
 	if err := writeSeed(seedDir, hostID, b.Body); err != nil {
 		return fmt.Errorf("%w\nThe record at %s stands: nothing has executed, and this host will not "+
 			"accept another bootstrap", err, recordPath)
@@ -138,12 +145,30 @@ func applyBootstrap(ctx context.Context, opts EnrollOptions, b protocol.Bootstra
 // application once-per-enrolment from cloud-init's own point of view: per-instance modules run when
 // the instance-id changes, and no later boot changes it back.
 func writeSeed(seedDir, hostID, body string) error {
+	// The second check on this value, and the one that is local to the reason it matters: the id is
+	// about to become the value of a key in a YAML document cloud-init parses, so an id carrying a
+	// newline would be adding keys to that document rather than filling in one. Enroll rejects such a
+	// response before it gets here; this refuses again next to the concatenation, because a caller
+	// that stopped checking would otherwise reintroduce the hole silently.
+	if !protocol.ValidHostID(hostID) {
+		return fmt.Errorf("agent: refusing to write a cloud-init seed for the host id %q, which is "+
+			"not %s", hostID, protocol.HostIDShape)
+	}
 	// 0700, not 0755. The only reader is cloud-init, which is root, and what is in here is the
 	// rendered user-data — a credential everywhere else in Farrier, and no different for sitting in a
 	// seed directory. A mode that let every local account list it would be the one place that
 	// treatment lapsed.
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return fmt.Errorf("agent: creating %s: %w", seedDir, err)
+	}
+	// MkdirAll leaves an existing directory's mode alone, and this one may well exist: cloud-init's
+	// own package creates /var/lib/cloud. Without this the comment above would be true only of hosts
+	// where Farrier happened to create it first.
+	//nolint:gosec // G302 wants 0600 or less, which is a rule about files: a directory with no
+	// execute bit cannot be traversed, so cloud-init could not read the seed it is being handed. 0700
+	// is the tightest mode that works, and the only account that needs it is root.
+	if err := os.Chmod(seedDir, 0o700); err != nil {
+		return fmt.Errorf("agent: tightening %s: %w", seedDir, err)
 	}
 	// 0600: rendered user-data is treated as a credential everywhere else in Farrier, and the seed
 	// copy is no different. Anything that needs it — cloud-init — is root.
@@ -154,6 +179,34 @@ func writeSeed(seedDir, hostID, body string) error {
 	return WriteFileAtomic(filepath.Join(seedDir, "meta-data"), []byte(meta), 0o600)
 }
 
+// cloudInitStages are the argument vectors Farrier may hand cloud-init, in boot order.
+//
+// A package-level list rather than a literal inside the loop, so that what this program can ask
+// cloud-init to do is one readable thing a reviewer and a test can both look at. Every element is a
+// stage name or a mode flag; nothing here is derived from a template, a parameter or a response, and
+// runCloudInit takes only a context precisely so that no body is in scope to be appended to one.
+var cloudInitStages = [][]string{
+	{"init", "--local"},
+	{"init"},
+	{"modules", "--mode=config"},
+	{"modules", "--mode=final"},
+}
+
+// removeSeed deletes the NoCloud seed once cloud-init has consumed it.
+//
+// Best effort, and a warning rather than an error: by the time this runs the template has already been
+// applied, and failing an enrolment that succeeded because a temporary file could not be deleted would
+// be the wrong trade. What is left behind if it fails is a datasource that outranks the machine's real
+// one, which is worth a line in the journal.
+func removeSeed(seedDir string) {
+	for _, name := range []string{"user-data", "meta-data"} {
+		if err := os.Remove(filepath.Join(seedDir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("could not remove the cloud-init seed; it will outrank this host's real "+
+				"datasource on the next boot", "path", filepath.Join(seedDir, name), "error", err)
+		}
+	}
+}
+
 // runCloudInit drives cloud-init through its four stages against the seeded user-data.
 //
 // The stages are the ones cloud-init itself runs at boot, in boot order, each with an argument vector
@@ -162,12 +215,7 @@ func writeSeed(seedDir, hostID, body string) error {
 // that was never configured — the operator sees cloud-init's own output either way, because it is
 // relayed to the terminal below.
 func runCloudInit(ctx context.Context) error {
-	for _, args := range [][]string{
-		{"init", "--local"},
-		{"init"},
-		{"modules", "--mode=config"},
-		{"modules", "--mode=final"},
-	} {
+	for _, args := range cloudInitStages {
 		res, err := run.CommandWith(ctx, run.Options{Timeout: cloudInitStageTimeout}, run.CloudInit, args...)
 		if res != nil {
 			// cloud-init's own output goes to the operator running the enrolment: they are being
