@@ -91,10 +91,14 @@ func (s *SMTP) Deliver(ctx context.Context, ev Event) error {
 		err  error
 	)
 	if s.cfg.Port == 465 {
-		conn, err = tls.DialWithDialer(&dialer, "tcp", addr, &tls.Config{
-			ServerName: s.cfg.Host,
-			MinVersion: tls.VersionTLS12,
-		})
+		// tls.Dialer rather than tls.DialWithDialer, so the handshake honours the caller's context
+		// too: the deadline on the dialer bounds a relay that is slow, and only cancellation stops
+		// one that has accepted the connection and gone quiet during a shutdown.
+		tlsDialer := tls.Dialer{
+			NetDialer: &dialer,
+			Config:    &tls.Config{ServerName: s.cfg.Host, MinVersion: tls.VersionTLS12},
+		}
+		conn, err = tlsDialer.DialContext(ctx, "tcp", addr)
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}

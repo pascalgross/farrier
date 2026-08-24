@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -352,8 +352,9 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request, who o
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, ": connected\n\n")
-	flusher.Flush()
+	if !writeFrame(w, flusher, ": connected\n\n") {
+		return
+	}
 
 	events, release := s.events.subscribe(who.Store.Tenant())
 	defer release()
@@ -368,16 +369,34 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request, who o
 		case <-heartbeat.C:
 			// A comment line, not an event: it keeps NAT tables and proxies convinced the connection
 			// is alive without every client having to filter a fake event kind.
-			fmt.Fprint(w, ": heartbeat\n\n")
-			flusher.Flush()
+			if !writeFrame(w, flusher, ": heartbeat\n\n") {
+				return
+			}
 		case view := <-events:
 			encoded, err := json.Marshal(view)
 			if err != nil {
 				slog.Error("could not encode an event for the stream", "error", err)
 				continue
 			}
-			fmt.Fprintf(w, "data: %s\n\n", encoded)
-			flusher.Flush()
+			if !writeFrame(w, flusher, "data: "+string(encoded)+"\n\n") {
+				return
+			}
 		}
 	}
+}
+
+// writeFrame writes one server-sent-events frame and reports whether the client is still there.
+//
+// The return value is what makes it worth a function. A write to a browser that navigated away fails
+// long before the request context is cancelled — the cancellation depends on the TCP connection
+// actually closing, which behind a proxy can take minutes — so a handler that ignored the error would
+// hold a subscription and a goroutine for a tab nobody has open. Ending the handler releases both.
+func writeFrame(w http.ResponseWriter, flusher http.Flusher, frame string) bool {
+	if _, err := io.WriteString(w, frame); err != nil {
+		// Debug and not warn: a reader going away mid-stream is how this endpoint ends normally.
+		slog.Debug("an event stream reader went away", "error", err)
+		return false
+	}
+	flusher.Flush()
+	return true
 }

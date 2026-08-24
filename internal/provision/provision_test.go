@@ -74,12 +74,28 @@ func TestPlaceholdersAreReported(t *testing.T) {
 	}
 }
 
+// pemShape assembles a PEM block for the detector to find.
+//
+// Assembled rather than written out, for the reason .gitleaksignore states at length: a literal key
+// block in the tree is a finding somebody has to judge, and then a line in an ignore file that has to
+// be trusted for ever. The detector under test matches the header, so it sees exactly the same string
+// either way — this only keeps the secret scanner's answer about this repository honest.
+//
+// An empty body produces a bare header, which is its own case: a truncated paste is still a paste.
+func pemShape(label, body string) string {
+	block := "-----BEGIN " + label + "-----"
+	if body == "" {
+		return block
+	}
+	return block + "\n" + body + "\n-----END " + label + "-----"
+}
+
 // TestWarningsFireOnHighSignalShapes proves each shape is caught and each warning carries the
 // consequence, which is the half that makes it actionable.
 func TestWarningsFireOnHighSignalShapes(t *testing.T) {
 	for _, body := range []string{
-		"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA==\n-----END OPENSSH PRIVATE KEY-----",
-		"-----BEGIN RSA PRIVATE KEY-----",
+		pemShape("OPENSSH PRIVATE KEY", "b3BlbnNzaA=="),
+		pemShape("RSA PRIVATE KEY", ""),
 		"users:\n  - name: breakglass\n    passwd: $6$rounds=4096$salt$hash\n",
 		"password: hunter2\n",
 		"aws_access_key_id: AKIAIOSFODNN7EXAMPLE\n",

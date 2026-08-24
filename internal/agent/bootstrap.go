@@ -138,9 +138,11 @@ func applyBootstrap(ctx context.Context, opts EnrollOptions, b protocol.Bootstra
 // application once-per-enrolment from cloud-init's own point of view: per-instance modules run when
 // the instance-id changes, and no later boot changes it back.
 func writeSeed(seedDir, hostID, body string) error {
-	// 0755 like the parent seed tree: cloud-init runs as root and reads it regardless, and the
-	// user-data lands 0600 below.
-	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+	// 0700, not 0755. The only reader is cloud-init, which is root, and what is in here is the
+	// rendered user-data — a credential everywhere else in Farrier, and no different for sitting in a
+	// seed directory. A mode that let every local account list it would be the one place that
+	// treatment lapsed.
+	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return fmt.Errorf("agent: creating %s: %w", seedDir, err)
 	}
 	// 0600: rendered user-data is treated as a credential everywhere else in Farrier, and the seed
@@ -170,8 +172,13 @@ func runCloudInit(ctx context.Context) error {
 		if res != nil {
 			// cloud-init's own output goes to the operator running the enrolment: they are being
 			// asked to trust what just ran, and a silent success is less trustworthy than a noisy one.
-			os.Stdout.Write(res.Stdout)
-			os.Stderr.Write(res.Stderr)
+			//
+			// The write errors are dropped deliberately, which is rare enough here to say why: the
+			// only way they fail is a closed terminal, cloud-init has already run by this point, and
+			// abandoning a bootstrap because its transcript could not be printed would turn a
+			// cosmetic problem into a half-provisioned machine.
+			_, _ = os.Stdout.Write(res.Stdout)
+			_, _ = os.Stderr.Write(res.Stderr)
 		}
 		if err != nil {
 			if res != nil && res.ExitCode == 2 {
