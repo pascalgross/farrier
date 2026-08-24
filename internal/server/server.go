@@ -447,8 +447,15 @@ func (s *Server) drainOutbound(ctx context.Context) {
 	// Only when that context is actually done, though. A listener that failed to *start* — a port
 	// already bound — leaves the evaluator legitimately ticking, and waiting for it there would hang
 	// the process on the one error it most needs to report and exit on.
-	if ctx.Err() != nil {
-		s.background.Wait()
+	//
+	// Bounded like the wait below it, and for a sharper reason than symmetry: the calls in a pass
+	// that survive cancellation are the *reporting* ones — the inbox write, the delivery record —
+	// and against a database that hangs rather than refuses, an unbounded wait here would spend the
+	// supervisor's whole patience before the grace below had even started, and the process would be
+	// killed still holding the records this drain exists to preserve.
+	if ctx.Err() != nil && !waitBounded(&s.background, outboundDrainGrace) {
+		slog.Warn("the alert evaluator did not finish its pass in time; closing deliveries anyway",
+			"waited", outboundDrainGrace)
 	}
 
 	// Then closed to new work, under the same lock detach takes. A WaitGroup whose counter goes from
@@ -457,22 +464,32 @@ func (s *Server) drainOutbound(ctx context.Context) {
 	s.draining = true
 	s.outboundMu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		s.outbound.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
+	if waitBounded(&s.outbound, outboundDrainGrace) {
 		return
-	case <-time.After(outboundDrainGrace):
 	}
 
 	slog.Warn("event deliveries are still running at shutdown; cancelling them",
 		"waited", outboundDrainGrace)
 	s.outboundStop()
-	<-done
+	s.outbound.Wait()
+}
+
+// waitBounded waits for a group and reports whether it finished within the grace.
+//
+// A WaitGroup has no deadline of its own, and every wait in a shutdown path needs one: the difference
+// between a process that exits late with a log line and one the supervisor kills is exactly this.
+func waitBounded(wg *sync.WaitGroup, grace time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(grace):
+		return false
+	}
 }
 
 // agentContextKey is the type of the context key carrying an authenticated host.

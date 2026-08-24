@@ -608,8 +608,14 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		claimDone()
 		switch {
 		case err != nil:
+			// Recorded rather than only logged, for the same reason every other unattempted delivery
+			// is: the mail did not go out, nothing will retry it, and a rule still displaying its
+			// last successful delivery is the ambiguity this whole field exists to remove.
 			slog.Warn("could not claim an event-routing cooldown; not mailing",
 				"rule", rule.ID, "error", err)
+			s.recordSkipped(scoped, due[i:i+1],
+				"the control plane could not reach its database to claim this notification, so the "+
+					"mail was not sent: "+err.Error())
 			continue
 		case !won:
 			// Somebody else has it: another goroutine in this process, or another control plane.
