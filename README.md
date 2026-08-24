@@ -8,10 +8,13 @@ By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
 
 > [!IMPORTANT]
-> Farrier is in **phase 1, and phase 1 is complete**. All ten catalogue members have an executor: the
-> four read-only operations, the one routine operation, and all five destructive ones — apply every
-> update, start, stop or restart a unit, and reboot. They enforce the host's own policy as root, over a
-> socket rather than through `sudo`.
+> Farrier has **shipped phases 1, 2 and 3, and there is no phase 4** — the sequence ended where it was
+> always going to end, at the tier that is never built.
+>
+> **Phase 1 — the intent catalogue.** All ten catalogue members have an executor: the four read-only
+> operations, the one routine operation, and all five destructive ones — apply every update, start,
+> stop or restart a unit, and reboot. They enforce the host's own policy as root, over a socket rather
+> than through `sudo`.
 >
 > The control plane issues them and `farrier sign` authorises the destructive ones. That command never
 > contacts the server: it renders what you are about to authorise from the same canonical payload it
@@ -26,26 +29,26 @@ Documentation: [farrier.tools](https://farrier.tools).
 > destructive job, because that needs a key the control plane does not hold and a browser is the last
 > place it should ever be.
 >
-> What is not built is numbered, so that "phase 3" means the same thing everywhere it appears —
-> including in the refusal an operator reads when `--bootstrap` declines to apply a template:
+> The two provisioning phases stay numbered, because a tier boundary is what each of them crossed:
 >
-> - **Phase 2 — Tier 1 provisioning** ([#9](https://github.com/pascalgross/farrier/issues/9)):
->   cloud-init templates stored, versioned and rendered by Farrier, and handed to *you* — Terraform,
->   Proxmox, MAAS, a cloud provider's user-data field. Farrier is never in the delivery path. It comes
->   before Tier 2 by dependency: phase 3 applies a *named* template, so storage must exist before
->   anything can name one.
-> - **Phase 3 — Tier 2 provisioning** ([#10](https://github.com/pascalgross/farrier/issues/10)):
->   `farrier enroll --bootstrap NAME` applies one named template, exactly once, at enrolment, behind
->   every guardrail [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception)
->   lists — and cloud-init does the applying.
+> - **Phase 2 — Tier 1 provisioning** ([#9](https://github.com/pascalgross/farrier/issues/9)), shipped:
+>   cloud-init templates stored, versioned, encrypted at rest and rendered by Farrier, and handed to
+>   *you* — Terraform, Proxmox, MAAS, a cloud provider's user-data field. Farrier is never in the
+>   delivery path. It came before Tier 2 by dependency: phase 3 applies a *named* template, so storage
+>   had to exist before anything could name one.
+> - **Phase 3 — Tier 2 provisioning** ([#10](https://github.com/pascalgross/farrier/issues/10)),
+>   shipped: `farrier enroll --bootstrap NAME` applies one named template, exactly once, at enrolment,
+>   behind every guardrail [`docs/SECURITY.md` §7](docs/SECURITY.md#7-provisioning-and-the-enrolment-time-exception)
+>   lists — and cloud-init does the applying. It is the enrolment-time exception the second paragraph
+>   of the guarantee names, which is why that paragraph is never omitted.
 > - **Never** — Tier 3, pushing configuration to a host that is already enrolled: that is the line
 >   between fleet management without a remote shell and a remote shell with extra steps. See the
 >   guarantee below.
 >
-> Observability ([#14](https://github.com/pascalgross/farrier/issues/14)) and the hardware-backed
-> signing backends ([#11](https://github.com/pascalgross/farrier/issues/11)) are deliberately not
-> phases: they attach to no tier boundary, so they land when they are ready rather than holding a
-> place in this sequence.
+> Observability ([#14](https://github.com/pascalgross/farrier/issues/14)) and the signing backends that
+> keep a key off a laptop ([#11](https://github.com/pascalgross/farrier/issues/11)) have landed too, and
+> were deliberately never phases: they attach to no tier boundary, so they arrived when they were ready
+> rather than holding a place in this sequence.
 
 ---
 
