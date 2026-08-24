@@ -122,9 +122,10 @@ const outboundStoreTimeout = 10 * time.Second
 // which is the correct loss, because the event is already in the inbox and the inbox is the delivery
 // that was promised.
 //
-// The arithmetic behind the number: a pass is at most one deliveryBudget for the webhook plus one
-// mailRoutingBudget for the rules, so four minutes against sinks that are black-holing, and this many
-// of those is a bounded amount of memory rather than an open-ended one. The drain cancels them all.
+// The arithmetic behind the number: a pass is at most one deliveryBudget for the webhook, plus
+// mailRoutingBudget for the rules, plus the store reads and one final delivery record around them —
+// under six minutes against sinks and a database that are both black-holing. This many of those is a
+// bounded amount of memory rather than an open-ended one, and the drain cancels them all.
 const maxOutboundInFlight = 64
 
 // emit records an event durably, shows it to open tabs, and delivers it outside best-effort.

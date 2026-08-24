@@ -541,6 +541,13 @@ func readBounded[T any](ctx context.Context, read func(context.Context) ([]T, er
 	return read(readCtx)
 }
 
+// perRuleMailBudget is the worst case for mailing one rule: the relay, the record, the cooldown stamp.
+//
+// Written as the sum rather than as a round number so that changing any of the three keeps the reserve
+// below honest. A reserve that counted only the relay would let a rule start with sixty seconds left,
+// take seventy-three, and overrun the ceiling by the difference every time.
+const perRuleMailBudget = deliveryBudget + deliveryRecordTimeout + outboundStoreTimeout
+
 // mailRoutingBudget bounds the whole mail phase of one pass.
 //
 // The webhook keeps its own budget and is unaffected by this, which is the separation that matters:
@@ -549,10 +556,14 @@ func readBounded[T any](ctx context.Context, read func(context.Context) ([]T, er
 // — so a ceiling over them is what keeps a pass finite when somebody has written twenty of them and
 // the relay is black-holing.
 //
+// Three rules' worth, because that is how many an event kind reaching more than a couple of distinct
+// recipient lists ever plausibly needs, and because a number expressed as a multiple of the per-rule
+// cost stays true when the per-rule cost changes.
+//
 // It is a wall-clock deadline rather than a context, and that is deliberate: the per-rule work
 // includes a cooldown stamp and a delivery record, which must not be truncated halfway, so the loop
 // checks how much is left rather than handing a shrinking context to the next rule.
-const mailRoutingBudget = 3 * deliveryBudget
+const mailRoutingBudget = 3 * perRuleMailBudget
 
 // routeToRules mails each rule that routes this event kind and is past its cooldown.
 func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notify.Event,
@@ -566,8 +577,9 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		// Enough budget for a *whole* attempt, or none at all. A rule mailed on the last four seconds
 		// of the ceiling fails for want of time and then has its four-hour cooldown stamped, which
 		// suppresses the real attempt — the outcome this guard exists to prevent, and the one a bare
-		// "is the context dead yet" check walks straight into.
-		if ctx.Err() != nil || time.Until(deadline) < deliveryBudget {
+		// "is the context dead yet" check walks straight into. The reserve is the whole per-rule cost
+		// and not just the relay's share, because the record and the stamp are inside the ceiling too.
+		if ctx.Err() != nil || time.Until(deadline) < perRuleMailBudget {
 			reason := "the control plane ran out of time to mail this event; " +
 				"the relay or the database is not keeping up"
 			if ctx.Err() != nil {
