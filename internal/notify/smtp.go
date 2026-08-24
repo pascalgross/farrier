@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
 	"sort"
@@ -157,7 +158,11 @@ func renderMail(from string, to []string, ev Event) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
-	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeader(ev.Summary))
+	// Q-encoded rather than written raw: a summary is built from hostnames and helper output, both of
+	// which are routinely non-ASCII, and a header with a raw high byte in it is one some relays reject
+	// and others mangle. mime encodes only when it has to, so an ASCII subject stays readable in a
+	// tcpdump.
+	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", sanitizeHeader(ev.Summary)))
 	fmt.Fprintf(&b, "Date: %s\r\n", ev.At.Format(time.RFC1123Z))
 	b.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n")
 

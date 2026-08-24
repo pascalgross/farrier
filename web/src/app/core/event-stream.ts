@@ -73,6 +73,16 @@ export class EventStream {
   /** Set once start() has run, so a second call from a second component does not open a second stream. */
   private started = false;
 
+  /**
+   * Which connect loop is the current one.
+   *
+   * Incremented by every start() and stop(). A loop compares it on each pass and returns when it no
+   * longer matches, which is what keeps sign-out-and-back-in from leaving two streams running: the
+   * old loop is asleep in its backoff when the new one starts, and a bare `started` flag would be
+   * true again by the time it woke.
+   */
+  private generation = 0;
+
   /** The events, newest first. */
   readonly events = this.feed.asReadonly();
 
@@ -109,12 +119,15 @@ export class EventStream {
       return;
     }
     this.started = true;
-    void this.connect();
+    this.generation += 1;
+    void this.connect(this.generation);
   }
 
   /** Disconnects and forgets everything, for sign-out. */
   stop(): void {
     this.started = false;
+    this.generation += 1;
+    this.failures = 0;
     this.controller?.abort();
     this.controller = null;
     this.live.set(false);
@@ -188,11 +201,11 @@ export class EventStream {
    * replaces it. Each pass re-reads the inbox first, so the gap the disconnection opened is closed
    * before the new stream starts adding to it.
    */
-  private async connect(): Promise<void> {
-    while (this.started && this.tokens.hasToken()) {
+  private async connect(generation: number): Promise<void> {
+    while (this.started && this.generation === generation && this.tokens.hasToken()) {
       this.refresh();
       const clean = await this.readStream();
-      if (!this.started) {
+      if (!this.started || this.generation !== generation) {
         return;
       }
       this.failures = clean ? 0 : this.failures + 1;

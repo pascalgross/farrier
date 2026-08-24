@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/notify"
@@ -548,7 +549,14 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	if len(s) > 200 {
-		s = s[:200] + "…"
+		// Cut on a rune boundary, not a byte one. Helper output is whatever a package's maintainer
+		// scripts printed, which is routinely translated — and half a rune reaches a mail subject
+		// line and a chat message as a replacement character that looks like corruption.
+		cut := 200
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
 	}
 	return s
 }
