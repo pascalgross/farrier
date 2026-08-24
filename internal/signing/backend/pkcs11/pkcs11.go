@@ -197,6 +197,23 @@ func inspect(ctx context.Context, ref string, prompt backend.PassphraseFunc) (si
 // An unqualified reference is accepted only when exactly one token is present. Choosing the first of
 // several would make the same command sign with a different key depending on what else was plugged
 // in, which is not a property a tool that authorises reboots should have.
+//
+// A label is not by itself a qualification. A token label does not have to be unique and in practice is
+// not: two identically provisioned YubiKeys carry the same one, and an operator with a spare has
+// exactly that. RFC 7512 has serial= for this, so a reference may narrow on it — token=ops;serial=1234
+// means "the token labelled ops whose serial is 1234", and finds nothing rather than falling back to
+// the first ops. Where the reference has not narrowed and more than one token answers, the refusal
+// names the serials, because the remedy is to paste one of them back into the reference.
+//
+// So every slot is read before anything is returned, rather than stopping at the first match. That
+// costs a C_GetTokenInfo per slot and buys an answer that does not depend on the order the module
+// enumerated its readers in — which is the property being bought, since a second token labelled the
+// same is exactly what stopping early cannot see. It also means a slot that will not report on its
+// token fails the whole lookup rather than being skipped. That is deliberate: a slot nothing can read
+// is a slot that might hold the second token labelled ops, so skipping it would put "sign with
+// whichever the module enumerated first" back, silently and with no signal at all. Failing closed on
+// an unknown is the stance this file already takes on an ambiguous key and on an unqualified
+// reference.
 func findSlot(mod *module, parsed uri) (ckULong, error) {
 	slots, err := mod.slots()
 	if err != nil {
@@ -216,27 +233,100 @@ func findSlot(mod *module, parsed uri) (ckULong, error) {
 			parsed.slotID, slots)
 	}
 
-	if parsed.token == "" {
+	if !parsed.namesAToken() {
 		if len(slots) == 1 {
 			return slots[0], nil
 		}
 		return 0, fmt.Errorf("pkcs11: %d tokens are present and the reference names none; "+
-			"add token=<label> or slot-id=<n>", len(slots))
+			"add token=<label>, serial=<serial> or slot-id=<n>", len(slots))
 	}
 
-	var labels []string
+	present := make([]tokenIdentity, 0, len(slots))
+	var matched []ckULong
+	var matchedTokens []tokenIdentity
 	for _, slot := range slots {
-		label, labelErr := mod.tokenLabel(slot)
-		if labelErr != nil {
-			return 0, labelErr
+		identity, infoErr := mod.tokenInfo(slot)
+		if infoErr != nil {
+			return 0, infoErr
 		}
-		if label == parsed.token {
-			return slot, nil
+		present = append(present, identity)
+		if parsed.matches(identity) {
+			matched = append(matched, slot)
+			matchedTokens = append(matchedTokens, identity)
 		}
-		labels = append(labels, label)
 	}
-	return 0, fmt.Errorf("pkcs11: no token is labelled %q; the tokens present are %q",
-		parsed.token, labels)
+
+	if len(matched) == 0 {
+		return 0, fmt.Errorf("pkcs11: no token %s; the tokens present are %s",
+			describeTokenMatch(parsed), renderTokens(present))
+	}
+	if len(matched) > 1 && serialWouldDisambiguate(matchedTokens) {
+		// slot-id= is named beside serial= because one of these may report no serial at all: the
+		// condition below asks only that the serials differ, so a token with none is told apart from a
+		// token with one, and an operator who wants the blank one has no serial to type.
+		return 0, fmt.Errorf("pkcs11: %d tokens match this reference and they are not the same token: "+
+			"%s. Add serial=<serial> to say which one you mean, or slot-id=<n> for one that reports no "+
+			"serial; signing with whichever the module enumerated first would produce a signature under "+
+			"a key id you did not choose", len(matched), renderTokens(matchedTokens))
+	}
+	return matched[0], nil
+}
+
+// serialWouldDisambiguate reports whether the tokens a reference matched differ in the one field that
+// could tell them apart.
+//
+// It is the condition for refusing an ambiguous match rather than taking the first, and it is narrower
+// than "more than one matched" on purpose. A module may enumerate one physical token in two slots, and
+// a token may report no serial at all; in both cases every match carries the same serial, serial= has
+// nothing to choose between them, and refusing would leave an operator with a setup that worked
+// yesterday and no attribute that fixes it — slot-id= being the escape hatch it already was. So the
+// refusal is raised only where its own remedy exists.
+func serialWouldDisambiguate(matched []tokenIdentity) bool {
+	// Fewer than two tokens is not an ambiguity, and the guard is here rather than only at the one call
+	// site so that the function cannot be made to panic on matched[1:] by a later caller.
+	if len(matched) < 2 {
+		return false
+	}
+	for _, token := range matched[1:] {
+		if token.serial != matched[0].serial {
+			return true
+		}
+	}
+	return false
+}
+
+// describeTokenMatch renders what a reference asked of a token, for the message that says nothing had
+// it.
+//
+// It reads as a predicate rather than as a list of attributes — `is labelled "ops" with serial 1234`
+// — because the sentence it lands in is what an operator compares against the tokens printed beside it.
+func describeTokenMatch(parsed uri) string {
+	switch {
+	case parsed.token != "" && parsed.serial != "":
+		return fmt.Sprintf("is labelled %q with serial %s", parsed.token, parsed.serial)
+	case parsed.serial != "":
+		return fmt.Sprintf("has serial %s", parsed.serial)
+	default:
+		return fmt.Sprintf("is labelled %q", parsed.token)
+	}
+}
+
+// renderTokens lists tokens for an error message, each with its serial.
+//
+// The serials are here rather than only the labels because this backend now matches on them: an error
+// that listed the labels alone would answer "which tokens are present" and not "which serial should I
+// have typed", and the second is the question an operator has at that moment.
+func renderTokens(tokens []tokenIdentity) string {
+	if len(tokens) == 0 {
+		// Unreachable from findSlot, which returns earlier when no slot holds a token, and handled so
+		// that the sentence this lands in cannot end in nothing if a later caller reaches it.
+		return "none"
+	}
+	rendered := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		rendered = append(rendered, token.String())
+	}
+	return strings.Join(rendered, ", ")
 }
 
 // readPIN takes the token's PIN from a file or from the operator.
@@ -262,6 +352,8 @@ func describeToken(parsed uri) string {
 	switch {
 	case parsed.token != "":
 		return "token " + parsed.token
+	case parsed.serial != "":
+		return "the token with serial " + parsed.serial
 	case parsed.slotID >= 0:
 		return fmt.Sprintf("slot %d", parsed.slotID)
 	default:

@@ -269,6 +269,16 @@ farrier key show --in "azurekms:ops.vault.azure.net/keys/farrier-signing/9885aa5
 A PIN is prompted for, or read from a file with `pin-source=/path`. It is never a URI attribute and
 never a flag: a secret on a command line is readable from the process list by every user on the machine.
 
+A token label does not have to be unique, and two identically provisioned tokens — an operator with a
+spare — carry the same one. `serial=` names one physical token, so `token=ops;serial=d276000124010200`
+means "the token labelled `ops` whose serial is that" and finds nothing rather than falling back to the
+other `ops`. Where the reference has not narrowed and two tokens answer to the label, `farrier` refuses
+and prints the serials it found, rather than signing with whichever the module enumerated first. The
+other token attributes an RFC 7512 URL carries — `model=`, `manufacturer=`, `library-version` and the
+rest of that set — are accepted and ignored, because `p11tool --list-tokens` prints them for every
+token and they name a product line rather than a token. `pin-value` and `module-name` are the two the
+reference refuses outright, for the reasons the error messages give.
+
 Cloud credentials come from the environment, then the provider's own well-known file, then the instance
 metadata service — which is the order that answers promptly on a laptop, where the metadata address
 does not refuse a connection but black-holes it. The flows that are not implemented, because they are

@@ -39,6 +39,22 @@ type Backend struct {
 	Scheme string
 
 	// Open returns a Signer for a reference with its scheme already stripped.
+	//
+	// The context bounds what Open does; it is deliberately not a promise that Open can be interrupted,
+	// and two of the three backends that ship discard it. That is the shape of this interface rather
+	// than an oversight in one implementation. What blocks in the file backend's Open is a passphrase
+	// prompt, and what blocks in the pkcs11 backend's is C_Initialize, C_Login and a PIN prompt: a human
+	// at a keyboard and a synchronous FFI call, neither of which can be interrupted. Making them look
+	// cancellable would mean running the token calls on a goroutine and abandoning them on a timeout,
+	// which leaves a half-initialised module that nothing may then finalise, inside a process that is
+	// about to keep using PKCS#11 — a worse failure than a slow open.
+	//
+	// The parameter stays rather than being dropped, and the reason is the third backend: kms's Open
+	// makes HTTPS requests, which genuinely cancel, so removing it would take a real deadline away from
+	// the one implementation that has one. Where cancellation is promised it is promised explicitly and
+	// tested for — signing.Signer.Sign says the context is honoured because hardware backends block, and
+	// each backend has a test that a cancelled context reaches it. The asymmetry between the two methods
+	// is the design: Sign is where an operator waits on a finger and may change their mind.
 	Open func(ctx context.Context, ref string, prompt PassphraseFunc) (signing.Signer, error)
 
 	// Inspect returns the trusted-signers entry for a key without unlocking or signing.
@@ -48,6 +64,10 @@ type Backend struct {
 	// office. The file backend needs no secret for it and ignores the prompt; a token generally does,
 	// because a good few modules will not read even a public object without a login, and a key show
 	// that worked on one token and returned nothing on another would be worse than one that asks.
+	//
+	// Its context carries exactly the contract Open's does and no more, for the same reasons and in the
+	// same two backends — the pkcs11 implementation of this opens the token and signs nothing, so what
+	// blocks in it is what blocks in Open.
 	Inspect func(ctx context.Context, ref string, prompt PassphraseFunc) (signing.PublicKey, error)
 }
 
