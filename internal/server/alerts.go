@@ -589,7 +589,8 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 		// "is the context dead yet" check walks straight into. The reserve is the whole per-rule cost
 		// and not just the relay's share, because the record and the claim are inside the ceiling too.
 		if ctx.Err() != nil || time.Until(deadline) < perRuleMailBudget {
-			reason := notMailedReason(ctx, "")
+			reason := notMailedReason(ctx, "the control plane ran out of time to mail this event; "+
+				"the relay or the database is not keeping up")
 			slog.Warn("some alert rules were not mailed for this event",
 				"kind", ev.Kind, "skipped", len(due)-i, "reason", reason)
 			s.recordSkipped(scoped, due[i:], reason)
@@ -617,7 +618,9 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 			// the rules after it blame the shutdown is a support ticket about the wrong component.
 			slog.Warn("could not claim an event-routing cooldown; not mailing",
 				"rule", rule.ID, "error", err)
-			s.recordSkipped(scoped, due[i:i+1], notMailedReason(ctx, err.Error()))
+			s.recordSkipped(scoped, due[i:i+1], notMailedReason(ctx,
+				"the control plane could not reach its database to claim this notification, so the "+
+					"mail was not sent: "+err.Error()))
 			continue
 		case !won:
 			// Somebody else has it: another goroutine in this process, or another control plane.
@@ -631,20 +634,20 @@ func (s *Server) routeToRules(ctx context.Context, scoped store.Scoped, ev notif
 
 // notMailedReason explains why a rule was not mailed, in the words an operator needs.
 //
-// A cancelled context means the process is stopping and says so; anything else is the control plane
-// failing to keep up, and names the underlying error where there is one. The distinction is the whole
-// value of the field: "we were shutting down" is nothing to investigate, and "the database would not
-// answer" is.
-func notMailedReason(ctx context.Context, detail string) string {
+// A cancelled context means the process is stopping and says so, whatever the caller thought went
+// wrong: the claim runs on the context the drain cancels, so a healthy database produces a "context
+// canceled" here at exactly the moment the next rule would correctly blame the shutdown, and one rule
+// pointing at the database while the rest point at the shutdown is a support ticket about the wrong
+// component.
+//
+// Otherwise the caller's own sentence stands, because only the caller knows which step failed —
+// running out of the routing budget and being refused by the database are different problems with
+// different fixes, and "something went wrong" is the wording that gets a field ignored.
+func notMailedReason(ctx context.Context, whatFailed string) string {
 	if ctx.Err() != nil {
 		return "the control plane stopped before mailing this event"
 	}
-	reason := "the control plane could not mail this event in time; " +
-		"the relay or the database is not keeping up"
-	if detail != "" {
-		reason += ": " + detail
-	}
-	return reason
+	return whatFailed
 }
 
 // ruleCooldown is a rule's re-notification bound, with the server's default for a rule that names none.
@@ -692,8 +695,9 @@ func dueRules(rules []store.AlertRule, states []store.AlertState, condition stor
 // successful delivery — "no mail arrived" and "no mail was sent" indistinguishable again.
 //
 // One budget for the whole set rather than one each, because the reason for skipping is usually a
-// database that is not answering, and a ten-second write per rule would turn a slow pass into a stuck
-// one. What does not fit is logged as a count.
+// database that is not answering, and a full deliveryRecordTimeout per rule would turn a slow pass
+// into a stuck one — and this runs on the shutdown path, where that time is the supervisor's. What
+// does not fit is logged as a count.
 func (s *Server) recordSkipped(scoped store.Scoped, rules []store.AlertRule, reason string) {
 	ctx, done := context.WithTimeout(context.WithoutCancel(s.outboundCtx), deliveryRecordTimeout)
 	defer done()
