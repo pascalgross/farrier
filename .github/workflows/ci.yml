@@ -336,3 +336,52 @@ jobs:
           sudo apt-get -o APT::Sandbox::User=root update
           sudo apt-get -o APT::Sandbox::User=root install -y --no-install-recommends farrier-agent
           farrier-agent version
+
+  containers:
+    name: Containers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every Compose file parses, including both overlays
+        # A merge error only exists in the combination that produces it, and the Traefik overlay is
+        # where one is expensive: an overlay that failed to remove the published port would leave the
+        # control plane reachable beside the proxy rather than behind it.
+        run: make compose-check
+
+      - name: Build the control plane image
+        run: make image VERSION=0.0.0-ci
+
+      - name: The stack comes up, and a standby streams from it
+        # This is the deployment equivalent of the packaging job below: proving the mechanism rather
+        # than reviewing the YAML. Three things are asserted and each has been wrong in somebody's
+        # deployment: that the server reaches its database at all, that it did so as a role row-level
+        # security applies to — it refuses to start otherwise, so a healthy container *is* that
+        # assertion — and that the replication the primary is configured for actually works.
+        run: |
+          cd deploy
+          cat > .env <<ENV
+          POSTGRES_SUPERUSER_PASSWORD=$(openssl rand -hex 16)
+          FARRIER_DB_PASSWORD=$(openssl rand -hex 16)
+          FARRIER_REPLICATION_PASSWORD=$(openssl rand -hex 16)
+          FARRIER_ADMIN_TOKEN=$(openssl rand -hex 32)
+          FARRIER_IMAGE=farrier-server:0.0.0-ci
+          ENV
+          docker compose -f compose.yaml -f compose.standby.yaml up -d --wait --wait-timeout 600
+
+          curl -fsS --insecure https://127.0.0.1:8443/healthz
+
+          # The role the server connects as must be one the policies apply to. Checked here as well as
+          # by the server's own refusal, because this is the line of the init script that would be
+          # quietly wrong if somebody simplified it into POSTGRES_USER.
+          docker compose -f compose.yaml -f compose.standby.yaml exec -T postgres \
+            psql -U postgres -tAc \
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = 'farrier';" | grep -qx f
+
+          # The standby has a walsender on the primary and is caught up.
+          docker compose -f compose.yaml -f compose.standby.yaml exec -T postgres \
+            psql -U postgres -tAc "SELECT state FROM pg_stat_replication;" | grep -qx streaming
+
+      - name: Stop it, and take the volumes with it
+        if: always()
+        run: cd deploy && docker compose -f compose.yaml -f compose.standby.yaml down -v

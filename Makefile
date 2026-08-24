@@ -183,6 +183,36 @@ deb: build ## Build the farrier-agent .deb
 	  VERSION="$(DEB_VERSION)" ARCH="$(ARCH)" \
 	  nfpm package --packager deb --target "../$(DIST)/packages"
 
+# The control plane's container image, and the Compose stack in deploy/. The agent is packaged as a .deb
+# above and is deliberately not containerised: it manages a host, and a host it managed from inside a
+# container on the control plane would be the control plane.
+IMAGE ?= farrier-server
+IMAGE_TAG ?= $(VERSION)
+
+.PHONY: image
+image: ## Build the farrier-server container image
+	docker build -t $(IMAGE):$(IMAGE_TAG) \
+	  --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) .
+
+# Values for the variables the Compose files require, so that the files can be parsed without a .env.
+# They are visibly fake: this target checks that the stack is well-formed, and starting anything with
+# them would be a control plane whose admin token is the letter x. A real value in the environment wins,
+# because Compose prefers the environment over .env — so this never validates the file it is checking
+# against somebody's actual secrets.
+COMPOSE_CHECK_ENV := POSTGRES_SUPERUSER_PASSWORD=check FARRIER_DB_PASSWORD=check \
+	FARRIER_REPLICATION_PASSWORD=check FARRIER_ADMIN_TOKEN=check \
+	FARRIER_HOSTNAME=farrier.example.invalid
+
+.PHONY: compose-check
+compose-check: ## Parse every Compose file, including the optional overlays
+	# Each overlay separately, because a merge error only shows up in the combination that produces
+	# it — and the Traefik one is where a mistake is expensive: an overlay that failed to remove the
+	# published port would leave the control plane reachable beside the proxy rather than behind it.
+	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml config -q
+	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml -f compose.traefik.yaml config -q
+	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml -f compose.standby.yaml config -q
+	@echo "compose: every file parses"
+
 .PHONY: clean
 clean: ## Remove build output
 	rm -rf $(DIST) coverage.txt

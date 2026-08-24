@@ -1,0 +1,67 @@
+# Optional: put the control plane behind Traefik.
+#
+#   docker compose -f compose.yaml -f compose.traefik.yaml up -d
+#
+# Traefik routes this connection and does not terminate it. That is the whole design of this file, and
+# it is not a preference.
+#
+# The agent protocol authenticates a host with a client certificate, and the server identifies that host
+# by the certificate's fingerprint on every single request — which is also the entire revocation
+# mechanism, since there is no CRL and no OCSP. A proxy that terminated TLS would end the only
+# connection that carries the certificate and start a new one that does not, leaving the server two
+# options: refuse every agent, or believe a header. A header is set by whoever is talking to the server,
+# so believing one would mean anything that can reach the proxy's back end can claim to be any enrolled
+# host. So: a TCP router with TLS passthrough, SNI as the only thing Traefik looks at, and the TLS
+# session running end to end between the agent and farrier-server.
+#
+# What follows from that:
+#
+#   * The certificate a browser sees is the one farrier-server presents, not one Traefik obtained. On a
+#     default installation that is issued by Farrier's own CA and a browser will say so. Mount a real
+#     certificate and pass --tls-cert/--tls-key — the commented block below — or accept the warning on
+#     an installation only you use.
+#   * Traefik needs a TCP-capable entry point on 443 (its defaults are fine) and no certificate resolver
+#     for this router. A certificate resolver on a passthrough router does nothing.
+#   * Every agent reaches the server from Traefik's address. The enrolment limiter is per source address
+#     — twenty attempts, one returning every three seconds — so bringing up more than twenty hosts at
+#     once through the proxy earns 429s with a Retry-After rather than failures. Provisioning a rack at
+#     a time is a reason to enrol against the published port directly; see README.md.
+#
+# The network named `traefik` must already exist and Traefik must be on it:
+#
+#   docker network create traefik
+
+services:
+  farrier-server:
+    # The port is the proxy's now. !override rather than a second list, because Compose merges lists by
+    # appending — without it the published port would still be there, which is the failure mode where a
+    # carefully proxied service is also reachable on 8443 from the internet.
+    ports: !override []
+    networks: [farrier, traefik]
+    labels:
+      traefik.enable: "true"
+      # Named explicitly because this container is on two networks and Traefik would otherwise pick one
+      # of them to dial — and the postgres-facing one is not reachable from Traefik at all.
+      traefik.docker.network: traefik
+
+      traefik.tcp.routers.farrier.rule: HostSNI(`${FARRIER_HOSTNAME:?set FARRIER_HOSTNAME in .env}`)
+      traefik.tcp.routers.farrier.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
+      # The line that keeps client certificates working. Without it Traefik terminates, and every
+      # enrolled agent gets a 401 that nothing on the agent side explains.
+      traefik.tcp.routers.farrier.tls.passthrough: "true"
+      traefik.tcp.services.farrier.loadbalancer.server.port: "8443"
+
+    # A certificate a browser trusts, for the operators. Both files are read at startup by a process
+    # running as uid 65532; an agent is unaffected either way, because it verifies against the CA bundle
+    # it was handed at enrolment rather than against the public web of trust.
+    #
+    # volumes:
+    #   - ${FARRIER_TLS_DIR:-./tls}:/etc/farrier-server/tls:ro
+    # command:
+    #   - serve
+    #   - --tls-cert=/etc/farrier-server/tls/fullchain.pem
+    #   - --tls-key=/etc/farrier-server/tls/privkey.pem
+
+networks:
+  traefik:
+    external: true

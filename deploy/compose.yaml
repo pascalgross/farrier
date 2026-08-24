@@ -1,0 +1,119 @@
+# The control plane, in containers: one PostgreSQL and one farrier-server.
+#
+# It is two services because the product is two things. There is no cache, no queue, no worker and no
+# reverse proxy in here — the UI is embedded in the binary, the job queue is a PostgreSQL table with
+# SELECT … FOR UPDATE SKIP LOCKED under it, and the alert evaluator is a goroutine in the same process.
+# A four-service stack would be describing somebody else's architecture.
+#
+#   cp .env.example .env      # and fill it in; every password below is required
+#   docker compose up -d
+#
+# Traefik is a separate file, because it is optional: compose.traefik.yaml. So is a streaming replica:
+# compose.standby.yaml. See README.md beside this file.
+
+name: farrier
+
+services:
+  postgres:
+    # Pinned to a major version because a standby must run the same one, and because the major version
+    # is the thing an upgrade of this line would silently change — the data directory of PostgreSQL 17
+    # is not readable by 18, and the container would restart-loop with the reason in a log nobody is
+    # watching. Pin the minor, or a digest, on anything you would not enjoy debugging at short notice.
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      # The bootstrap superuser. farrier-server never connects as this role — see the init scripts, and
+      # docs/SECURITY.md §5 for what a superuser connection would silently switch off.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      # Checksums detect a page that came back from the storage layer different from how it went in.
+      # They can only be turned on at initdb time or by taking the cluster offline with pg_checksums,
+      # and the failure they catch — silent corruption, faithfully streamed to every standby — is one
+      # you would otherwise find in a backup.
+      POSTGRES_INITDB_ARGS: --data-checksums
+
+      # Read by the scripts in postgres/initdb, which run once, on an empty data directory.
+      FARRIER_DB_USER: ${FARRIER_DB_USER:-farrier}
+      FARRIER_DB_PASSWORD: ${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}
+      FARRIER_DB_NAME: ${FARRIER_DB_NAME:-farrier}
+      FARRIER_REPLICATION_USER: ${FARRIER_REPLICATION_USER:-replicator}
+      FARRIER_REPLICATION_PASSWORD: ${FARRIER_REPLICATION_PASSWORD:?set FARRIER_REPLICATION_PASSWORD in .env}
+      FARRIER_REPLICATION_HBA: ${FARRIER_REPLICATION_HBA:-samenet}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Read-only: the cluster reads this on every start and reload, and nothing in the container has
+      # any business writing to it.
+      - ./postgres/farrier.conf:/etc/postgresql/farrier.conf:ro
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Over TCP, and that is the whole point of the -h. While the image is initialising, it runs a
+      # temporary server that listens on the unix socket only — so a socket-based check reports healthy
+      # part-way through the scripts in postgres/initdb, and the control plane starts against a database
+      # whose role does not exist yet. Nothing is listening on 127.0.0.1 until initialisation is over
+      # and the real server starts.
+      test:
+        ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${FARRIER_DB_USER:-farrier} -d ${FARRIER_DB_NAME:-farrier}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    # Long enough for a checkpoint on a large cluster. The default ten seconds ends in SIGKILL, which
+    # means crash recovery on the next start — survivable, and pointless to do on every deploy.
+    stop_grace_period: 1m
+    # PostgreSQL puts parallel query and hash-join working memory in shared memory, and Docker's default
+    # 64 MB /dev/shm is where that shows up as "could not resize shared memory segment".
+    shm_size: 256mb
+    networks: [farrier]
+
+  farrier-server:
+    # Built from this repository by default, so that `compose up` works in a clone with no registry
+    # involved. Set FARRIER_IMAGE to a published image and the build stanza is ignored.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${FARRIER_VERSION:-0.0.0-compose}
+    image: ${FARRIER_IMAGE:-farrier-server:local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        # The server creates its own schema on first start, so it has to find a database rather than a
+        # container: service_started would race initdb and fail on the first attempt every time.
+        condition: service_healthy
+    environment:
+      # sslmode=disable is honest about what this is: a connection over the project's own bridge
+      # network, which does not leave the host. Point FARRIER_DATABASE_URL at a database on another
+      # machine and this is the first thing to change — to verify-full, with a root certificate.
+      FARRIER_DATABASE_URL: >-
+        postgres://${FARRIER_DB_USER:-farrier}:${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}@postgres:5432/${FARRIER_DB_NAME:-farrier}?sslmode=disable
+      # Through the environment rather than a flag, because argv is world-readable in ps — the same
+      # reasoning the server applies to the SMTP password.
+      FARRIER_ADMIN_TOKEN: ${FARRIER_ADMIN_TOKEN:?set FARRIER_ADMIN_TOKEN in .env}
+      # Empty means single-fleet, which is the case for almost everybody: without a platform token
+      # there is nothing that can create a second tenant, and the one you have is called "default".
+      FARRIER_PLATFORM_TOKEN: ${FARRIER_PLATFORM_TOKEN:-}
+      FARRIER_TENANT: ${FARRIER_TENANT:-default}
+    volumes:
+      # The CA that issues agent certificates, the key that signs routine jobs, and the key that seals
+      # template bodies. All three live here and none of them is in the database — which is the point:
+      # a database dump is not a set of provisioning scripts, and it does not let its holder impersonate
+      # a host. Back it up separately from the database and restore the two together: a database without
+      # the key beside it leaves every stored template permanently unopenable.
+      - farrier-state:/var/lib/farrier-server
+    ports:
+      # Published so that a fresh clone works with nothing else running. compose.traefik.yaml removes
+      # this and puts the port behind the proxy instead.
+      - "${FARRIER_PUBLISH_ADDR:-0.0.0.0}:${FARRIER_PORT:-8443}:8443"
+    # Fifteen seconds of drain plus room to finish an SMTP conversation. The server stops accepting,
+    # finishes what it is serving, and flushes the webhook and alert deliveries that handlers detached —
+    # a SIGKILL here is an alert somebody would have trusted the absence of.
+    stop_grace_period: 45s
+    networks: [farrier]
+
+volumes:
+  postgres-data:
+  farrier-state:
+
+networks:
+  farrier:

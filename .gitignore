@@ -18,6 +18,7 @@ node_modules/
 *.local.yaml
 /testfleet/.state/
 /.env
+/deploy/.env
 *.pem
 *.key
 !/testfleet/**/*.example.pem
