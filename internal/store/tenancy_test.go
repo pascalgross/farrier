@@ -27,6 +27,14 @@ const sharedMachineID = "sha256:one-physical-machine"
 // and stay globally unique, which is why the two tenants below have different ones.
 const sharedJobID = "01JSHAREDJOB"
 
+// sharedTemplateName is the template name both tenants choose.
+//
+// Same reasoning as the job id: a template name is typed by an operator, and "standard-server" is
+// exactly what two unrelated customers call their standard server. A leak here would hand one
+// customer's provisioning secrets — enrolment tokens, break-glass credentials — to the other, which is
+// why the probes check whose bytes came back rather than whether any did.
+const sharedTemplateName = "standard-server"
+
 // twoTenants builds two populated tenants against one store, for the isolation tests.
 //
 // They collide everywhere the schema allows a collision — the same job id, the same machine-id hash —
@@ -76,6 +84,44 @@ func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 		}); err != nil {
 			t.Fatalf("creating a job for %s: %v", tenant.scoped.Tenant(), err)
 		}
+
+		// The same template name in both tenants, with each tenant's identity in the sealed bytes and
+		// the author, so that a listing or a lookup that leaked would return something recognisably not
+		// the caller's own.
+		if _, err := tenant.scoped.CreateTemplateVersion(ctx, TemplateVersion{
+			Name:       sharedTemplateName,
+			BodySealed: []byte("sealed-for-" + string(tenant.scoped.Tenant())),
+			CreatedAt:  time.Now().UTC(),
+			CreatedBy:  "test:" + string(tenant.scoped.Tenant()),
+		}); err != nil {
+			t.Fatalf("creating a template for %s: %v", tenant.scoped.Tenant(), err)
+		}
+
+		// The observability rows, colliding on every identifier the schema lets collide: the same
+		// event id, the same rule id, each tenant's identity in the summaries and authors so a leak
+		// is recognisable as one.
+		if err := tenant.scoped.RecordEvent(ctx, Event{
+			ID: sharedEventID, Kind: "job.failed", HostID: tenant.hostID,
+			Summary: "event-for-" + string(tenant.scoped.Tenant()), At: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("recording an event for %s: %v", tenant.scoped.Tenant(), err)
+		}
+		if err := tenant.scoped.RecordUnitTransitions(ctx, tenant.hostID, []UnitTransition{
+			{Unit: "nginx.service", From: "active", To: "failed", At: time.Now().UTC()},
+		}); err != nil {
+			t.Fatalf("recording a transition for %s: %v", tenant.scoped.Tenant(), err)
+		}
+		if err := tenant.scoped.CreateAlertRule(ctx, AlertRule{
+			ID: sharedRuleID, Condition: ConditionHostSilent, Threshold: 10, Enabled: true,
+			CreatedAt: time.Now().UTC(), CreatedBy: "test:" + string(tenant.scoped.Tenant()),
+		}); err != nil {
+			t.Fatalf("creating a rule for %s: %v", tenant.scoped.Tenant(), err)
+		}
+		if err := tenant.scoped.UpsertAlertState(ctx, AlertState{
+			RuleID: sharedRuleID, HostID: tenant.hostID, Firing: true, Since: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("recording a state for %s: %v", tenant.scoped.Tenant(), err)
+		}
 	}
 	return alpha, beta
 }
@@ -103,7 +149,25 @@ const (
 	// that state. Claiming it in the fixture rather than relying on the ClaimJobs probe having run
 	// first is what makes the probe hold in every map order instead of about half of them.
 	betaClaimedJobID = "01JBETACLAIMEDJOB"
+
+	// betaOnlyTemplateName is a template only beta stores, for the lookup that must find nothing.
+	betaOnlyTemplateName = "beta-private"
+
+	// sharedEventID is the inbox event id both tenants hold, because the schema permits it.
+	sharedEventID = "01JSHAREDEVENT"
+
+	// sharedRuleID is the alert rule id both tenants hold.
+	sharedRuleID = "01JSHAREDRULE"
+
+	// betaOnlyRuleID is a rule only beta holds, for the delete and upsert probes that must miss.
+	betaOnlyRuleID = "01JBETARULE"
 )
+
+// deliveryStamp is the fixed time the delivery-report probe writes.
+//
+// Fixed rather than time.Now, because the probe asserts on what did *not* change in the other
+// tenant's rows, and a moving value makes a failure read as a timing problem rather than a leak.
+var deliveryStamp = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 // TestGuaranteeOneTenantCannotSeeAnother is the isolation boundary, asserted rather than assumed.
 //
@@ -331,7 +395,7 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// reason and proves nothing about tenancy. An earlier version of this probe did exactly
 				// that whenever it ran before the ClaimJobs probe — a pass in about half of map orders,
 				// which is also a latent flake in the other half.
-				err := alpha.RecordResult(ctx, betaClaimedHostID, protocol.ResultRequest{
+				_, err := alpha.RecordResult(ctx, betaClaimedHostID, protocol.ResultRequest{
 					JobID: betaClaimedJobID, Status: protocol.StatusSucceeded,
 				})
 				if !errors.Is(err, ErrNotFound) {
@@ -347,7 +411,7 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 
 				// And the refusal was tenancy and nothing else: the identical call from the job's own
 				// tenant is accepted, which proves the row was in a recordable state all along.
-				if err := beta.RecordResult(ctx, betaClaimedHostID, protocol.ResultRequest{
+				if _, err := beta.RecordResult(ctx, betaClaimedHostID, protocol.ResultRequest{
 					JobID: betaClaimedJobID, Status: protocol.StatusSucceeded,
 				}); err != nil {
 					t.Fatalf("beta recording the result alpha was refused: %v", err)
@@ -398,6 +462,332 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatal("alpha issued a certificate against a host belonging to beta")
 				}
 			},
+			"GetEnrollmentToken": func(t *testing.T) {
+				// A token issued by beta must be unusable from alpha — the same one answer unknown,
+				// expired and consumed get, so holding another fleet's token teaches nothing.
+				if _, err := alpha.GetEnrollmentToken(ctx, "hash-"+string(beta.Tenant())); !errors.Is(err, ErrTokenUnusable) {
+					t.Fatalf("alpha read a token issued to beta: %v", err)
+				}
+				token, err := alpha.GetEnrollmentToken(ctx, "hash-"+string(alpha.Tenant()))
+				if err != nil {
+					t.Fatalf("alpha cannot read its own token: %v", err)
+				}
+				if token.Label != string(alpha.Tenant())+"-token" {
+					t.Fatalf("alpha's token lookup returned %+v", token)
+				}
+			},
+			"CreateTemplateVersion": func(t *testing.T) {
+				// Both tenants hold sharedTemplateName at v1. A new version created by alpha must
+				// continue alpha's own numbering and must not supersede what beta's latest resolves to.
+				version, err := alpha.CreateTemplateVersion(ctx, TemplateVersion{
+					Name:       sharedTemplateName,
+					BodySealed: []byte("sealed-for-" + string(alpha.Tenant()) + "-v2"),
+					CreatedAt:  time.Now().UTC(),
+					CreatedBy:  "test:" + string(alpha.Tenant()),
+				})
+				if err != nil {
+					t.Fatalf("alpha creating a second version: %v", err)
+				}
+				if version < 2 {
+					t.Fatalf("alpha's second version was numbered %d", version)
+				}
+				latest, err := beta.GetTemplateVersion(ctx, sharedTemplateName, 0)
+				if err != nil {
+					t.Fatalf("reading beta's latest: %v", err)
+				}
+				if latest.CreatedBy != "test:"+string(beta.Tenant()) {
+					t.Fatalf("beta's latest template was created by %q", latest.CreatedBy)
+				}
+			},
+			"ListTemplates": func(t *testing.T) {
+				templates, err := alpha.ListTemplates(ctx)
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				var mine bool
+				for _, tpl := range templates {
+					if tpl.CreatedBy == "test:"+string(beta.Tenant()) {
+						t.Errorf("alpha's template listing contains beta's %q", tpl.Name)
+					}
+					if tpl.Name == sharedTemplateName {
+						mine = true
+					}
+				}
+				if !mine {
+					t.Fatalf("alpha's own template is missing from its listing: %+v", templates)
+				}
+			},
+			"GetTemplateVersion": func(t *testing.T) {
+				// The colliding name must resolve to the caller's own bytes.
+				tpl, err := alpha.GetTemplateVersion(ctx, sharedTemplateName, 1)
+				if err != nil {
+					t.Fatalf("alpha cannot read its own template: %v", err)
+				}
+				if string(tpl.BodySealed) != "sealed-for-"+string(alpha.Tenant()) {
+					t.Fatalf("alpha read template bytes %q, which are not its own", tpl.BodySealed)
+				}
+				// And a name only beta holds is nothing rather than beta's.
+				if _, err := alpha.GetTemplateVersion(ctx, betaOnlyTemplateName, 0); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha read a template only beta has: %v", err)
+				}
+			},
+			"RecordEvent": func(t *testing.T) {
+				// An event recorded by alpha must not surface in beta's inbox, whatever id it carries.
+				if err := alpha.RecordEvent(ctx, Event{
+					ID: "01JCROSSEVENT", Kind: "job.failed", Summary: "crossing", At: time.Now().UTC(),
+				}); err != nil {
+					t.Fatalf("recording: %v", err)
+				}
+				events, err := beta.ListEvents(ctx, EventFilter{})
+				if err != nil {
+					t.Fatalf("listing beta's events: %v", err)
+				}
+				for _, e := range events {
+					if e.ID == "01JCROSSEVENT" {
+						t.Fatal("an event alpha recorded is in beta's inbox")
+					}
+				}
+			},
+			"ListEvents": func(t *testing.T) {
+				events, err := alpha.ListEvents(ctx, EventFilter{})
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				var mine bool
+				for _, e := range events {
+					if e.Summary == "event-for-"+string(beta.Tenant()) {
+						t.Error("alpha's inbox holds beta's event")
+					}
+					if e.Summary == "event-for-"+string(alpha.Tenant()) {
+						mine = true
+					}
+				}
+				if !mine {
+					t.Fatalf("alpha's own event is missing from its inbox: %+v", events)
+				}
+			},
+			"RecordUnitTransitions": func(t *testing.T) {
+				// Aimed at beta's host from alpha: refused — the composite foreign key's job — and
+				// beta's history untouched.
+				err := alpha.RecordUnitTransitions(ctx, betaHostID, []UnitTransition{
+					{Unit: "forged.service", From: "active", To: "failed", At: time.Now().UTC()},
+				})
+				if err == nil {
+					t.Fatal("alpha recorded unit history onto a host belonging to beta")
+				}
+				history, err := beta.ListUnitTransitions(ctx, betaHostID, 0)
+				if err != nil {
+					t.Fatalf("reading beta's history: %v", err)
+				}
+				for _, tr := range history {
+					if tr.Unit == "forged.service" {
+						t.Fatal("the refused write still landed in beta's history")
+					}
+				}
+			},
+			"ListUnitTransitions": func(t *testing.T) {
+				// Beta's host has history; alpha asking about it gets nothing rather than beta's.
+				history, err := alpha.ListUnitTransitions(ctx, betaHostID, 0)
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				if len(history) != 0 {
+					t.Fatalf("alpha read %d transition(s) from beta's host", len(history))
+				}
+				own, err := alpha.ListUnitTransitions(ctx, alphaHostID, 0)
+				if err != nil || len(own) == 0 {
+					t.Fatalf("alpha cannot read its own history: %d, %v", len(own), err)
+				}
+			},
+			"CreateAlertRule": func(t *testing.T) {
+				if err := alpha.CreateAlertRule(ctx, AlertRule{
+					ID: "01JCROSSRULE", Condition: ConditionUnitFailed, Enabled: true,
+					CreatedAt: time.Now().UTC(), CreatedBy: "test:alpha",
+				}); err != nil {
+					t.Fatalf("creating: %v", err)
+				}
+				rules, err := beta.ListAlertRules(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's rules: %v", err)
+				}
+				for _, r := range rules {
+					if r.ID == "01JCROSSRULE" {
+						t.Fatal("a rule alpha created is listed for beta")
+					}
+				}
+			},
+			"ListAlertRules": func(t *testing.T) {
+				rules, err := alpha.ListAlertRules(ctx)
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				var mine bool
+				for _, r := range rules {
+					if r.CreatedBy == "test:"+string(beta.Tenant()) {
+						t.Errorf("alpha's rules include one created by %q", r.CreatedBy)
+					}
+					if r.ID == sharedRuleID {
+						mine = true
+					}
+				}
+				if !mine {
+					t.Fatalf("alpha's own rule is missing: %+v", rules)
+				}
+			},
+			"UpdateAlertRule": func(t *testing.T) {
+				// The colliding id must update the caller's own copy and only it.
+				if err := alpha.UpdateAlertRule(ctx, AlertRule{
+					ID: sharedRuleID, Threshold: 99, Enabled: true,
+				}); err != nil {
+					t.Fatalf("alpha updating its own rule: %v", err)
+				}
+				rules, err := beta.ListAlertRules(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's rules: %v", err)
+				}
+				for _, r := range rules {
+					if r.ID == sharedRuleID && r.Threshold == 99 {
+						t.Fatal("alpha's update rewrote beta's rule")
+					}
+				}
+			},
+			"DeleteAlertRule": func(t *testing.T) {
+				if err := alpha.DeleteAlertRule(ctx, betaOnlyRuleID); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha deleting a rule only beta has: %v", err)
+				}
+				rules, err := beta.ListAlertRules(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's rules: %v", err)
+				}
+				var survived bool
+				for _, r := range rules {
+					if r.ID == betaOnlyRuleID {
+						survived = true
+					}
+				}
+				if !survived {
+					t.Fatal("beta's rule did not survive alpha's delete")
+				}
+			},
+			"RecordAlertDelivery": func(t *testing.T) {
+				// The delivery report is the one write on a rule that comes from the notification
+				// path rather than from an operator, so it is the one most easily written without a
+				// tenant in mind. Naming beta's rule must stamp nothing, and stamping the colliding
+				// id must reach only the caller's own copy.
+				if err := alpha.RecordAlertDelivery(ctx, betaOnlyRuleID, deliveryStamp,
+					"alpha's relay refused"); err != nil {
+					t.Fatalf("alpha reporting against a rule only beta has: %v", err)
+				}
+				if err := alpha.RecordAlertDelivery(ctx, sharedRuleID, deliveryStamp,
+					"alpha's relay refused"); err != nil {
+					t.Fatalf("alpha reporting on its own rule: %v", err)
+				}
+				rules, err := beta.ListAlertRules(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's rules: %v", err)
+				}
+				for _, r := range rules {
+					if r.LastDeliveryError != "" {
+						t.Fatalf("alpha's delivery report landed on beta's rule %s: %q",
+							r.ID, r.LastDeliveryError)
+					}
+				}
+			},
+			"ListAlertStates": func(t *testing.T) {
+				states, err := alpha.ListAlertStates(ctx)
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				var mine bool
+				for _, st := range states {
+					if st.HostID == betaHostID {
+						t.Error("alpha's states include one about beta's host")
+					}
+					if st.RuleID == sharedRuleID && st.HostID == alphaHostID {
+						mine = true
+					}
+				}
+				if !mine {
+					t.Fatalf("alpha's own state is missing: %+v", states)
+				}
+			},
+			"ClaimAlertNotification": func(t *testing.T) {
+				// The claim is a write keyed on a rule, so naming beta's must fail rather than
+				// silently create a state row under alpha's tenant that beta's rule now owns — and
+				// must leave whatever beta had alone.
+				if _, err := alpha.ClaimAlertNotification(ctx, betaOnlyRuleID, alphaHostID,
+					deliveryStamp, time.Hour); err == nil {
+					t.Fatal("alpha claimed a notification against a rule belonging to beta")
+				}
+				// And alpha's own claim on the colliding id must be alpha's alone: beta must still be
+				// able to claim the same pair, because their states are different rows.
+				if won, err := alpha.ClaimAlertNotification(ctx, sharedRuleID, alphaHostID,
+					deliveryStamp, time.Hour); err != nil || !won {
+					t.Fatalf("alpha claiming its own rule: won=%v err=%v", won, err)
+				}
+				if won, err := beta.ClaimAlertNotification(ctx, sharedRuleID, betaHostID,
+					deliveryStamp, time.Hour); err != nil || !won {
+					t.Fatalf("alpha's claim blocked beta's: won=%v err=%v", won, err)
+				}
+			},
+			"ReleaseAlertFiring": func(t *testing.T) {
+				// A rule only beta holds, deliberately: the probes run in map order and must not
+				// depend on one another, and sharedRuleID is the pair ClaimAlertNotification asserts
+				// on. Setting a cooldown on that pair here would make the other probe fail
+				// intermittently, depending on which ran first — the exact kind of flake that gets a
+				// real isolation failure dismissed as noise.
+				if err := beta.UpsertAlertState(ctx, AlertState{
+					RuleID: betaOnlyRuleID, HostID: betaHostID, Firing: true,
+					Since: deliveryStamp, LastNotified: deliveryStamp,
+				}); err != nil {
+					t.Fatalf("beta setting up a firing pair: %v", err)
+				}
+				if released, err := alpha.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
+					released {
+					t.Fatalf("alpha released a firing that belongs to beta: released=%v err=%v",
+						released, err)
+				}
+				states, err := beta.ListAlertStates(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's states: %v", err)
+				}
+				var stillFiring bool
+				for _, st := range states {
+					if st.RuleID == betaOnlyRuleID && st.HostID == betaHostID && st.Firing {
+						stillFiring = true
+					}
+				}
+				if !stillFiring {
+					t.Fatal("beta's firing did not survive alpha's release")
+				}
+
+				// Beta releases its own, which asserts the positive case and leaves the fixture as it
+				// was found. The probes share one pair of tenants and run in map order, so a probe
+				// that leaves a row behind is a probe that breaks whichever one happens to run next.
+				if released, err := beta.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
+					!released {
+					t.Fatalf("beta releasing its own firing: released=%v err=%v", released, err)
+				}
+			},
+			"UpsertAlertState": func(t *testing.T) {
+				// Naming a rule only beta holds must be refused — the composite foreign key again —
+				// and must leave beta's state alone.
+				err := alpha.UpsertAlertState(ctx, AlertState{
+					RuleID: betaOnlyRuleID, HostID: alphaHostID, Firing: true,
+				})
+				if err == nil {
+					t.Fatal("alpha recorded state against a rule belonging to beta")
+				}
+				states, err := beta.ListAlertStates(ctx)
+				if err != nil {
+					t.Fatalf("listing beta's states: %v", err)
+				}
+				for _, st := range states {
+					if st.RuleID == betaOnlyRuleID && st.Firing {
+						t.Fatal("the refused upsert still landed in beta's states")
+					}
+				}
+			},
 		}
 
 		// A second job that exists only in beta, for the write probes above to aim at. Beta's host is
@@ -407,6 +797,24 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 			Job: jobFor(betaJobID, "facts.collect"), HostID: betaHostID, CreatedBy: "test:beta",
 		}); err != nil {
 			t.Fatalf("creating beta's private job: %v", err)
+		}
+
+		// A template only beta stores, for the GetTemplateVersion probe's negative half.
+		if _, err := beta.CreateTemplateVersion(ctx, TemplateVersion{
+			Name:       betaOnlyTemplateName,
+			BodySealed: []byte("sealed-only-for-beta"),
+			CreatedAt:  time.Now().UTC(),
+			CreatedBy:  "test:beta",
+		}); err != nil {
+			t.Fatalf("creating beta's private template: %v", err)
+		}
+
+		// A rule only beta holds, for the delete and state probes that must miss it.
+		if err := beta.CreateAlertRule(ctx, AlertRule{
+			ID: betaOnlyRuleID, Condition: ConditionUnitFailed, Enabled: true,
+			CreatedAt: time.Now().UTC(), CreatedBy: "test:beta",
+		}); err != nil {
+			t.Fatalf("creating beta's private rule: %v", err)
 		}
 
 		// And a claimed job on a host only beta has, for the RecordResult probe. Claimed here, before
@@ -538,14 +946,15 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 		if _, err := tenant.scoped.ClaimJobs(ctx, tenant.hostID, 10); err != nil {
 			t.Fatalf("claiming for %s: %v", tenant.scoped.Tenant(), err)
 		}
-		if err := tenant.scoped.RecordResult(ctx, tenant.hostID, protocol.ResultRequest{
+		if _, err := tenant.scoped.RecordResult(ctx, tenant.hostID, protocol.ResultRequest{
 			JobID: sharedJobID, Status: protocol.StatusSucceeded,
 		}); err != nil {
 			t.Fatalf("recording a result for %s: %v", tenant.scoped.Tenant(), err)
 		}
 	}
 
-	for _, table := range []string{"hosts", "jobs", "certificates", "enrollment_tokens", "job_results"} {
+	for _, table := range []string{"hosts", "jobs", "certificates", "enrollment_tokens", "job_results",
+		"templates", "events", "unit_transitions", "alert_rules", "alert_states"} {
 		t.Run(table, func(t *testing.T) {
 			// No tenant set at all. Fail closed: current_setting(…, true) is NULL when unset, and
 			// `tenant_id = NULL` is NULL rather than true, so the policy admits nothing.
@@ -672,6 +1081,9 @@ func TestGuaranteeDeletingATenantLeavesNothingBehind(t *testing.T) {
 		if tokens, err := alpha.ListEnrollmentTokens(ctx); err != nil || len(tokens) != 0 {
 			t.Errorf("a deleted tenant lists %d token(s): %v", len(tokens), err)
 		}
+		if _, err := alpha.GetTemplateVersion(ctx, sharedTemplateName, 0); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a deleted tenant's template is still readable: %v", err)
+		}
 
 		// The certificate is the one that would still authenticate. An agent presents it on every
 		// request, and a row that survived its tenant would let a deleted customer's machine keep
@@ -684,6 +1096,9 @@ func TestGuaranteeDeletingATenantLeavesNothingBehind(t *testing.T) {
 		// too enthusiastic rather than too timid.
 		if _, err := beta.GetHost(ctx, betaHostID); err != nil {
 			t.Errorf("deleting alpha removed beta's host: %v", err)
+		}
+		if _, err := beta.GetTemplateVersion(ctx, sharedTemplateName, 0); err != nil {
+			t.Errorf("deleting alpha removed beta's template: %v", err)
 		}
 		if _, err := beta.GetJob(ctx, sharedJobID); err != nil {
 			t.Errorf("deleting alpha removed beta's job: %v", err)

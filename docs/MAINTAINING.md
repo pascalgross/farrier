@@ -44,7 +44,7 @@ trailer is preserved deterministically rather than depending on what the contrib
 eleven commits.
 
 **Settings → Security.** Turn on private vulnerability reporting; the issue templates and
-`docs/SECURITY.md` §10 both send people to it. Turn on Dependabot alerts and security updates —
+`docs/SECURITY.md` §11 both send people to it. Turn on Dependabot alerts and security updates —
 `.github/dependabot.yml` already configures the version updates.
 
 ## 2. Branch protection

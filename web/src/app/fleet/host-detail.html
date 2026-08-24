@@ -60,6 +60,10 @@
                 } @else { none }
               </span>
             </mat-list-item>
+            <mat-list-item>
+              <span matListItemTitle>Watched units</span>
+              <span matListItemLine>{{ watchedSummary(host) }}</span>
+            </mat-list-item>
             <mat-list-item><span matListItemTitle>Job age limit</span><span matListItemLine class="farrier-numeric">{{ policy.limits.maxJobAgeSeconds }}s</span></mat-list-item>
           </mat-list>
 
@@ -127,6 +131,58 @@
           }
         } @else {
           <p class="opacity-60 m-0">The host has not reported its inventory yet.</p>
+        }
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="md:col-span-2">
+      <mat-card-header><mat-card-title>Units</mat-card-title></mat-card-header>
+      <mat-card-content class="!pt-4">
+        @if (failedUnits().length) {
+          <p class="m-0 mb-3 text-farrier-bad">
+            Failed now:
+            @for (unit of failedUnits(); track unit.name) {
+              <span class="farrier-numeric">{{ unit.name }} ({{ unit.subState }})</span>
+              @if (!$last) { <span>, </span> }
+            }
+          </p>
+        } @else {
+          <p class="m-0 mb-3 text-sm opacity-80">Nothing this host reported is in the failed state.</p>
+        }
+
+        @if (host.facts?.servicesTruncated) {
+          <p class="m-0 mb-3 text-sm text-farrier-warn">
+            This host's unit list was cut at the protocol's cap, in sorted order, so a failed unit
+            after the cut is not above. That is an unknown rather than a clean answer.
+          </p>
+        }
+
+        <mat-divider class="!my-3"></mat-divider>
+
+        @if (transitions(); as history) {
+          @if (history.transitions.length) {
+            <ol class="list-none m-0 p-0 flex flex-col gap-1">
+              @for (change of history.transitions; track change.unit + change.at) {
+                <li class="text-sm farrier-numeric flex flex-wrap gap-x-2">
+                  <span class="font-medium">{{ change.unit }}</span>
+                  <span class="opacity-80">{{ change.from }} → {{ change.to }}</span>
+                  <span class="opacity-60">{{ transitionAge(change) }}</span>
+                </li>
+              }
+            </ol>
+          } @else {
+            <p class="m-0 text-sm opacity-70">No unit has changed state since this host enrolled.</p>
+          }
+
+          <p class="text-sm opacity-70 mt-3 mb-0">
+            Recorded at heartbeat resolution — every {{ history.resolutionSeconds }}s — so a unit that
+            failed and recovered between two beats is not in this list. It is a stated property of
+            reporting on the heartbeat rather than a gap somebody should hunt for during an incident.
+          </p>
+        } @else if (historyError()) {
+          <p class="m-0 text-sm text-farrier-warn">{{ historyError() }}</p>
+        } @else {
+          <p class="m-0 text-sm opacity-60">Reading the unit history…</p>
         }
       </mat-card-content>
     </mat-card>

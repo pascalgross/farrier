@@ -75,6 +75,15 @@ const (
 	// list-units ignores -o/--output, which selects a journal format — so state is read over the D-Bus
 	// interface instead, which returns typed structs and needs no polkit authorisation.
 	Systemctl Program = "/usr/bin/systemctl"
+
+	// CloudInit applies a verified bootstrap template at enrolment, exactly once.
+	//
+	// This is guardrail 5 of docs/SECURITY.md §7 in one line: cloud-init does the applying, so
+	// Farrier never grows a hand-written YAML-to-shell engine — which would be the exec channel
+	// wearing a hat. The argument vector is fully fixed by the agent; nothing from a template body
+	// ever reaches a command line, because the body is a *file* cloud-init reads from its seed
+	// directory, not an argument.
+	CloudInit Program = "/usr/bin/cloud-init"
 )
 
 // allowed is the run-time allowlist.
@@ -89,6 +98,7 @@ var allowed = map[Program]bool{
 	Pro:               true,
 	Shutdown:          true,
 	Systemctl:         true,
+	CloudInit:         true,
 }
 
 // ErrNotAllowed reports an attempt to execute a program outside the allowlist.

@@ -20,6 +20,7 @@ import (
 	"github.com/pascalgross/farrier/internal/collect"
 	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/seal"
 	"github.com/pascalgross/farrier/internal/server"
 	"github.com/pascalgross/farrier/internal/store"
 )
@@ -71,6 +72,10 @@ type harness struct {
 
 	// platformToken administers tenants and reaches no tenant's data.
 	platformToken string
+
+	// templateKey is the sealing key the server was built with, for fixtures that store templates
+	// directly and still need the enrolment path to be able to open them.
+	templateKey *seal.Key
 }
 
 // scoped returns a store handle for the harness's own tenant.
@@ -123,10 +128,15 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("preparing the online key: %v", err)
 	}
+	templateKey, err := seal.Ensure(filepath.Join(dir, "ca"))
+	if err != nil {
+		t.Fatalf("preparing the template key: %v", err)
+	}
 
 	srv, err := server.New(server.Config{
 		Authority:        authority,
 		OnlineKey:        online,
+		TemplateKey:      templateKey,
 		Store:            memory,
 		Auth:             provider,
 		HeartbeatSeconds: 60,
@@ -154,7 +164,7 @@ func newHarness(t *testing.T) *harness {
 		server: ts, store: memory, dir: dir, caFile: caFile,
 		adminToken: adminToken, secondToken: secondToken,
 		tenant: tenant, otherToken: otherToken, otherTenant: otherTenant,
-		platformToken: platformToken,
+		platformToken: platformToken, templateKey: templateKey,
 	}
 }
 

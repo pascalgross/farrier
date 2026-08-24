@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -54,6 +55,15 @@ type EnrollOptions struct {
 
 	// Hostname overrides the reported hostname, for testing.
 	Hostname string
+
+	// seedDir overrides where the verified user-data is written, for tests. Empty means
+	// CloudInitSeedDir, which is root-owned and therefore unreachable from a unit test.
+	seedDir string
+
+	// applyUserData overrides how the seeded user-data is applied, for tests. Nil means cloud-init's
+	// own stages via internal/run; a unit test must not reinitialise cloud-init on the machine
+	// running it.
+	applyUserData func(ctx context.Context) error
 }
 
 // ErrNoTrustAnchor reports that --bootstrap was requested with no trusted signers present.
@@ -140,6 +150,7 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 		return nil, errors.New("agent: the control plane returned an incomplete enrolment response")
 	}
 
+	var bootstrapKey signing.PublicKey
 	if opts.Bootstrap != "" {
 		if res.Bootstrap == nil {
 			return nil, fmt.Errorf("agent: --bootstrap %q was requested and the control plane returned "+
@@ -153,18 +164,16 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 			return nil, fmt.Errorf("agent: --bootstrap %q but the control plane returned a template "+
 				"named %q; refusing", opts.Bootstrap, res.Bootstrap.Name)
 		}
-		signer, err := verifyBootstrap(opts.StateDir, *res.Bootstrap)
+		// Verified — interlock, signature against this host's own trusted-signers, full text printed —
+		// before any credential is written, so a template that fails verification leaves nothing
+		// behind. Application waits until the host is enrolled locally, further down: a template may
+		// legitimately end in a reboot, and an operation that may not return must find the credential
+		// already durable, the same ordering the agent uses for a result before host.reboot.
+		key, err := verifyBootstrap(opts.StateDir, *res.Bootstrap)
 		if err != nil {
 			return nil, err
 		}
-		// The refusal is here rather than inside verifyBootstrap, so that "this build applies nothing"
-		// reads as a property of this phase at the one place that would apply it, and so that
-		// verification stays a function that can succeed. Nothing has been written: no record, no
-		// credential. A later build with an executor can still apply this template exactly once.
-		return nil, fmt.Errorf("agent: --bootstrap %q was verified against %s (signed by %s), and this "+
-			"build applies no templates: nothing was executed and nothing was recorded. Tier 2 "+
-			"provisioning arrives in phase 3 and cloud-init will do the applying",
-			res.Bootstrap.Name, signing.TrustedSignersPath, signer)
+		bootstrapKey = key
 	}
 
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
@@ -194,6 +203,17 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 	state := &State{ServerURL: trimSlash(opts.ServerURL), HostID: res.HostID, EnrolledAt: time.Now()}
 	if err := state.Save(opts.StateDir); err != nil {
 		return nil, err
+	}
+
+	if opts.Bootstrap != "" {
+		// Applied last, after the credential and the state are durable: a bootstrap template may
+		// legitimately end in a reboot, and a machine that comes back must come back enrolled. A
+		// failure here does not undo the enrolment — the error says so, because "your host is fine
+		// and your template is not" and "start over" are very different afternoons.
+		if err := applyBootstrap(ctx, opts, *res.Bootstrap, bootstrapKey, res.HostID); err != nil {
+			return nil, fmt.Errorf("agent: enrolled as %s, and the bootstrap did not complete: %w",
+				res.HostID, err)
+		}
 	}
 
 	slog.Info("enrolled", "host", res.HostID, "server", state.ServerURL, "hostname", hostname)
@@ -250,28 +270,6 @@ func installLocalFile(source, destination string) error {
 	return WriteFileAtomic(destination, body, 0o644)
 }
 
-// BootstrapRecordFile is where an applied provisioning template is recorded permanently.
-const BootstrapRecordFile = "bootstrap-applied.json"
-
-// bootstrapRecord is the permanent record of a template that was applied.
-//
-// This build reads it and never writes it: the interlock has to be honoured by every build, and only a
-// build that applies something has anything to record. Writing it here would consume the apply-once
-// interlock for an application that did not happen.
-type bootstrapRecord struct {
-	// Name is the template as the operator named it.
-	Name string `json:"name"`
-
-	// Body is the full text, recorded so that what ran is knowable afterwards.
-	Body string `json:"body"`
-
-	// SignerKeyID names the key from this host's own trusted-signers that authorised it.
-	SignerKeyID string `json:"signerKeyId"`
-
-	// AppliedAt is when it was applied.
-	AppliedAt time.Time `json:"appliedAt"`
-}
-
 // verifyBootstrap checks a provisioning template against this host's own trust anchor, and shows it.
 //
 // This is the exception named in the second paragraph of the guarantee, and the guardrails in
@@ -280,13 +278,15 @@ type bootstrapRecord struct {
 // trusted-signers, and the full text is printed before anything could happen.
 //
 // It stops there, and returns the key that authorised it. Applying — and writing the permanent record
-// that consumes the interlock — belongs to the code that actually applies, which this build does not
-// have: Tier 2 provisioning is a later phase, and none of phase 1's executors touch a template.
-// Recording an application that did not happen would be both a false audit entry and a spent interlock,
-// leaving a host that could never apply the template it was enrolled for.
+// that consumes the interlock — belongs to applyBootstrap, which runs only after the enrolment
+// credential is durable. Keeping verification and application apart is what lets a failed verification
+// leave nothing behind: no record, no spent interlock, and a host that can still be enrolled for the
+// template it was meant to have.
 func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.PublicKey, error) {
 	recordPath := filepath.Join(stateDir, BootstrapRecordFile)
-	if raw, err := os.ReadFile(recordPath); err == nil {
+	raw, err := os.ReadFile(recordPath)
+	switch {
+	case err == nil:
 		// Named in the refusal where the record is readable. "A template was already applied" sends an
 		// operator looking through a file; "standard-server was applied on the 4th" usually ends the
 		// question.
@@ -298,6 +298,16 @@ func verifyBootstrap(stateDir string, bootstrap protocol.Bootstrap) (signing.Pub
 		}
 		return signing.PublicKey{}, fmt.Errorf("agent: a bootstrap template has already been applied on "+
 			"this host (see %s); templates are applied at most once", recordPath)
+
+	case !errors.Is(err, fs.ErrNotExist):
+		// The interlock is a file that is *there*, and anything other than "there is no such file"
+		// leaves that question unanswered — a permission error, an I/O error, a directory where the
+		// record should be. Treating an unreadable record as an absent one would apply a template a
+		// second time, which is the one thing this function exists to prevent, so an unreadable one
+		// refuses. An operator who has genuinely lost the file can see why and decide.
+		return signing.PublicKey{}, fmt.Errorf("agent: cannot read the bootstrap record at %s, so "+
+			"whether a template has already been applied here is unknown; refusing rather than "+
+			"risking a second application: %w", recordPath, err)
 	}
 
 	signers, err := signing.LoadTrustedSigners()

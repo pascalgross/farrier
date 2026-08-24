@@ -1,0 +1,98 @@
+<header class="mb-6 flex flex-wrap items-baseline gap-x-6 gap-y-2">
+  <h1 class="text-2xl font-medium m-0">Events</h1>
+
+  <p class="m-0 text-sm opacity-80 flex items-center gap-2">
+    @if (stream.connected()) {
+      <mat-icon class="!w-4 !h-4 !text-base text-farrier-ok" aria-hidden="true">bolt</mat-icon>
+      <span>live</span>
+    } @else {
+      <mat-icon class="!w-4 !h-4 !text-base text-farrier-quiet" aria-hidden="true">bolt</mat-icon>
+      <span [matTooltip]="'The page is reconnecting. Nothing is lost: every event is in this inbox.'">
+        reconnecting
+      </span>
+    }
+  </p>
+
+  <span class="flex-1"></span>
+
+  <button mat-button (click)="reload()">
+    <mat-icon>refresh</mat-icon>
+    Refresh
+  </button>
+</header>
+
+<mat-card class="mb-6">
+  <mat-card-content class="!pt-6 flex flex-wrap items-center gap-6">
+    @if (desktopAvailable) {
+      <mat-slide-toggle
+        [checked]="stream.desktopWanted()"
+        [disabled]="desktopDenied"
+        (change)="toggleDesktop($event.checked)">
+        Desktop notifications
+      </mat-slide-toggle>
+
+      @if (desktopDenied) {
+        <p class="m-0 text-sm text-farrier-warn">
+          This browser has denied notifications for this origin. Re-allow them in the site settings;
+          the page cannot ask again.
+        </p>
+      } @else {
+        <p class="m-0 text-sm opacity-80">
+          Shows a system notification when an event arrives while this tab is open. Clicking one
+          focuses the tab and does nothing else — releasing a job or starting one happens on its own
+          page, behind the same authentication as everything else.
+        </p>
+      }
+    } @else {
+      <p class="m-0 text-sm opacity-80">
+        This browser does not offer desktop notifications. The inbox below is the full record either
+        way.
+      </p>
+    }
+  </mat-card-content>
+</mat-card>
+
+<mat-form-field appearance="outline" class="w-72">
+  <mat-label>Kind</mat-label>
+  <mat-select [ngModel]="kind()" (ngModelChange)="kind.set($event)">
+    <mat-option value="">Everything</mat-option>
+    @for (entry of kinds; track entry.value) {
+      <mat-option [value]="entry.value">{{ entry.label }}</mat-option>
+    }
+  </mat-select>
+</mat-form-field>
+
+@if (shown().length === 0) {
+  <mat-card class="max-w-2xl">
+    <mat-card-content class="!pt-6 text-sm opacity-80">
+      @if (kind()) {
+        <p class="m-0">Nothing of this kind has happened yet.</p>
+      } @else {
+        <p class="m-0">
+          Nothing has happened yet. Enrolments, failed jobs, failed units and anything an alerting
+          rule fires on land here, and stay whether or not a tab was open when they did.
+        </p>
+      }
+    </mat-card-content>
+  </mat-card>
+} @else {
+  <ol class="list-none m-0 p-0 flex flex-col gap-2">
+    @for (event of shown(); track event.id) {
+      <li class="flex items-start gap-3 p-3 rounded bg-black/3 dark:bg-white/5">
+        <mat-icon [class]="tone(event)" [matTooltip]="event.kind" aria-hidden="true">
+          {{ icon(event) }}
+        </mat-icon>
+
+        <div class="min-w-0 flex-1">
+          <p class="m-0">{{ event.summary }}</p>
+          <p class="m-0 text-xs opacity-70 farrier-numeric">
+            {{ label(event) }} · {{ age(event) }}
+            @if (event.hostId) {
+              · <a [routerLink]="['/hosts', event.hostId]">{{ event.hostname || event.hostId }}</a>
+            }
+          </p>
+        </div>
+      </li>
+    }
+  </ol>
+}

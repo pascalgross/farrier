@@ -28,13 +28,16 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/ca"
+	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/onlinekey"
 	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/farrier/internal/seal"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -73,11 +76,27 @@ type Config struct {
 	// the two against different anchors and will not accept this key for a destructive intent.
 	OnlineKey *onlinekey.Key
 
+	// TemplateKey seals provisioning template bodies at rest, and is required.
+	//
+	// Required rather than optional, unlike OnlineKey, because its absence would not disable a feature
+	// — it would ship the same feature storing plaintext, and docs/SECURITY.md §7 promises encrypted
+	// bodies unconditionally. `farrier-server serve` generates one beside the CA on first start, so
+	// requiring it costs an operator nothing.
+	TemplateKey *seal.Key
+
 	// HeartbeatSeconds is the pacing handed to agents.
 	//
 	// It is server-set so that a control plane can spread load across the minute, or back a whole
 	// fleet off during an incident, without deploying a new agent.
 	HeartbeatSeconds int
+
+	// SMTP is how alert mail leaves the control plane, zero-valued for not at all.
+	//
+	// Process configuration rather than tenant data: which relay this control plane may speak to is
+	// the installation operator's decision. Tenants choose recipients, per alert rule, and a rule
+	// with recipients on an installation with no relay is delivered everywhere except mail — with
+	// the gap named in the log rather than silent.
+	SMTP notify.SMTPConfig
 
 	// TokenTTL is how long a newly issued enrolment token remains usable.
 	TokenTTL time.Duration
@@ -115,6 +134,39 @@ type Server struct {
 
 	// enrolLimiter bounds attempts against the one endpoint that needs no client certificate.
 	enrolLimiter *rateLimiter
+
+	// events fans live events out to subscribed browser tabs; the durable copy is the store's inbox.
+	events eventStream
+
+	// outbound counts the deliveries running detached from the request that produced them, so a
+	// shutdown drains them rather than abandoning an alert mail mid-conversation.
+	outbound sync.WaitGroup
+
+	// background counts the long-lived goroutines the server owns — today, the alert evaluator.
+	//
+	// Separate from outbound and waited on first: the evaluator *produces* detached deliveries, so
+	// closing the outbound set before its last pass finished would refuse exactly the notifications
+	// a stopping control plane most needs to have sent.
+	background sync.WaitGroup
+
+	// outboundMu guards draining and inFlight, and serialises them against outbound.Add.
+	outboundMu sync.Mutex
+
+	// draining reports that the shutdown drain has begun, after which no new delivery starts.
+	draining bool
+
+	// inFlight is how many detached deliveries are running, for the cap in detach.
+	inFlight int
+
+	// outboundCtx is the parent of every detached delivery.
+	//
+	// It exists so that a shutdown ends them at a moment this process chooses, rather than whenever
+	// the supervisor loses patience: the listener stops, the drain waits, and anything still going
+	// after the grace period is cancelled with a log line saying so.
+	outboundCtx context.Context
+
+	// outboundStop cancels outboundCtx.
+	outboundStop context.CancelFunc
 }
 
 // New builds a server from a configuration.
@@ -127,6 +179,10 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Auth == nil {
 		return nil, errors.New("server: an authentication provider is required")
+	}
+	if cfg.TemplateKey == nil {
+		return nil, errors.New("server: a template sealing key is required; " +
+			"seal.Ensure generates one beside the CA")
 	}
 	if cfg.HeartbeatSeconds == 0 {
 		cfg.HeartbeatSeconds = protocol.DefaultHeartbeatSeconds
@@ -152,6 +208,9 @@ func New(cfg Config) (*Server, error) {
 		paths:        http.NewServeMux(),
 		allow:        map[string][]string{},
 	}
+	// Background rather than derived from a request or from ListenAndServe's context: a detached
+	// delivery must outlive the request that caused it, and must still be cancellable as a group.
+	s.outboundCtx, s.outboundStop = context.WithCancel(context.Background())
 	s.routes()
 	return s, nil
 }
@@ -182,6 +241,18 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
 	s.route(http.MethodPost, "/api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
 	s.route(http.MethodGet, "/api/v1/whoami", s.requireOperator(s.handleWhoami))
+	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
+	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
+	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))
+	s.route(http.MethodPost, "/api/v1/templates/{name}/render", s.requireOperator(s.handleRenderTemplate))
+	s.route(http.MethodGet, "/api/v1/events", s.requireOperator(s.handleListEvents))
+	s.route(http.MethodGet, "/api/v1/events/stream", s.requireOperator(s.handleEventStream))
+	s.route(http.MethodGet, "/api/v1/services/failed", s.requireOperator(s.handleFailedServices))
+	s.route(http.MethodGet, "/api/v1/hosts/{id}/services/history", s.requireOperator(s.handleServiceHistory))
+	s.route(http.MethodGet, "/api/v1/alerts", s.requireOperator(s.handleListAlertRules))
+	s.route(http.MethodPost, "/api/v1/alerts", s.requireOperator(s.handleCreateAlertRule))
+	s.route(http.MethodPatch, "/api/v1/alerts/{id}", s.requireOperator(s.handleUpdateAlertRule))
+	s.route(http.MethodDelete, "/api/v1/alerts/{id}", s.requireOperator(s.handleDeleteAlertRule))
 
 	// Tenant administration, for whoever runs the installation rather than a fleet in it. These are the
 	// only routes a platform credential can reach, and the only routes an operator credential cannot.
@@ -303,7 +374,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// *because* ctx was cancelled, so deriving the shutdown deadline from it would produce a context
 	// that is already done and a Shutdown that abandons every in-flight request instead of draining it.
 	// The fifteen seconds are what a long-poll needs to finish.
+	// Closed once Shutdown has returned, which is what the drain below waits for. ListenAndServeTLS
+	// returns the moment Shutdown is *invoked*, so draining on that alone would race the connection
+	// drain and abandon deliveries detached by requests that were still being served.
+	shutdownDone := make(chan struct{})
 	go func() { //nolint:gosec // G118: the request-scoped context is the cancelled one; see above.
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -330,9 +406,96 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	err := srv.ListenAndServeTLS("", "")
 	if errors.Is(err, http.ErrServerClosed) {
+		// A deliberate stop: the handlers are still finishing, and some of them are still detaching
+		// deliveries. Wait for that to be over before deciding what is outstanding.
+		<-shutdownDone
+		s.drainOutbound(ctx)
 		return nil
 	}
+
+	// Any other error means the listener never ran or died under us, so nothing is waiting on
+	// Shutdown to return. Drain anyway: the evaluator may have detached work already.
+	s.drainOutbound(ctx)
 	return err
+}
+
+// outboundDrainGrace is how long a stopping control plane waits, once for the evaluator and once for
+// the deliveries.
+//
+// Deliveries beyond the inbox run detached from the request that produced them, so the process must
+// not simply exit while one is in flight: an alert mail abandoned mid-SMTP is precisely the delivery
+// whose absence somebody would trust. It must not wait indefinitely either — a full retry sequence
+// against a hanging relay outlasts every reasonable stop timeout, and a service killed by its
+// supervisor is a service that logged nothing about why.
+//
+// The arithmetic that picks it, against systemd's default 90-second TimeoutStopSec: fifteen seconds
+// for the connection drain, then two of these graces, then a tail of at most three uncancellable
+// delivery records at deliveryRecordTimeout each. Ten seconds keeps the total near fifty, which
+// leaves room for a supervisor configured tighter than the default.
+const outboundDrainGrace = 10 * time.Second
+
+// drainOutbound waits for the detached deliveries, then cancels the ones that are still going.
+//
+// The second wait is bounded by the work itself rather than by another timer. Cancelling the group
+// makes the webhook return at once, makes the retry loop stop between attempts, and makes the rule
+// loop stop starting mail; an SMTP conversation already in progress finishes inside the deadline it
+// set on its own connection. What is left after that is at most three delivery records — the attempt
+// that was cancelled, the claim that could not be made, and the rules that were never started — each
+// on a deadline of its own, deliberately surviving the cancellation: the delivery a stopping control
+// plane abandoned is exactly the one whose absence somebody would otherwise trust. Fifteen seconds
+// past the grace, in the worst case, bought with an honest answer.
+func (s *Server) drainOutbound(ctx context.Context) {
+	// The evaluator first: it is a producer, and closing the outbound set while it is still mid-pass
+	// would refuse the very notifications this drain exists to let finish. It returns on the same
+	// cancelled context the listener stopped on, and every store call in a pass is bounded, so this
+	// wait is short.
+	//
+	// Only when that context is actually done, though. A listener that failed to *start* — a port
+	// already bound — leaves the evaluator legitimately ticking, and waiting for it there would hang
+	// the process on the one error it most needs to report and exit on.
+	//
+	// Bounded like the wait below it, and for a sharper reason than symmetry: the calls in a pass
+	// that survive cancellation are the *reporting* ones — the inbox write, the delivery record —
+	// and against a database that hangs rather than refuses, an unbounded wait here would spend the
+	// supervisor's whole patience before the grace below had even started, and the process would be
+	// killed still holding the records this drain exists to preserve.
+	if ctx.Err() != nil && !waitBounded(&s.background, outboundDrainGrace) {
+		slog.Warn("the alert evaluator did not finish its pass in time; closing deliveries anyway",
+			"waited", outboundDrainGrace)
+	}
+
+	// Then closed to new work, under the same lock detach takes. A WaitGroup whose counter goes from
+	// zero back up while somebody waits on it is a documented misuse.
+	s.outboundMu.Lock()
+	s.draining = true
+	s.outboundMu.Unlock()
+
+	if waitBounded(&s.outbound, outboundDrainGrace) {
+		return
+	}
+
+	slog.Warn("event deliveries are still running at shutdown; cancelling them",
+		"waited", outboundDrainGrace)
+	s.outboundStop()
+	s.outbound.Wait()
+}
+
+// waitBounded waits for a group and reports whether it finished within the grace.
+//
+// A WaitGroup has no deadline of its own, and every wait in a shutdown path needs one: the difference
+// between a process that exits late with a log line and one the supervisor kills is exactly this.
+func waitBounded(wg *sync.WaitGroup, grace time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(grace):
+		return false
+	}
 }
 
 // agentContextKey is the type of the context key carrying an authenticated host.

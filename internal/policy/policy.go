@@ -157,6 +157,18 @@ type Services struct {
 	// "farrier-*.service" without enumerating instances. The list is empty in the shipped default:
 	// like trusted-signers, a fresh host permits nothing until an administrator says otherwise.
 	Restartable []string `toml:"restartable"`
+
+	// Watched lists the units whose state changes this host considers worth an event, with the same
+	// shell-style globbing as Restartable.
+	//
+	// It lives here, in the host's file, because which units matter is a per-host question: the
+	// machine's owner knows that nginx.service matters and motd-news.timer does not, and the control
+	// plane can at most read what they wrote down. The empty default means everything — a fresh host
+	// should surface a failed unit rather than hide it behind a setting nobody has heard of — and a
+	// host that wants quiet, or that one day wants to report only these units, writes the list. It
+	// bounds what the control plane says about this host, never what may be done to it, which is why
+	// widening it is not a permission change.
+	Watched []string `toml:"watched"`
 }
 
 // Limits is the [limits] section of the policy file.
@@ -349,6 +361,11 @@ func (p *Policy) validate() error {
 	for _, pattern := range p.Services.Restartable {
 		if _, err := filepath.Match(pattern, "probe.service"); err != nil {
 			return fmt.Errorf("services.restartable: %q is not a valid pattern: %w", pattern, err)
+		}
+	}
+	for _, pattern := range p.Services.Watched {
+		if _, err := filepath.Match(pattern, "probe.service"); err != nil {
+			return fmt.Errorf("services.watched: %q is not a valid pattern: %w", pattern, err)
 		}
 	}
 	return nil

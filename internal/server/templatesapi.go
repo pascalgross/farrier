@@ -1,0 +1,499 @@
+package server
+
+import (
+	"encoding/base64"
+	"errors"
+	"log/slog"
+	"net/http"
+	"regexp"
+	"strconv"
+	"time"
+
+	"github.com/pascalgross/farrier/internal/provision"
+	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/store"
+)
+
+// templateNamePattern is the only shape a template name may take.
+//
+// A name is typed by an operator on a command line — `farrier enroll --bootstrap standard-server` —
+// and recorded in a host's permanent bootstrap record, so it is kept to the characters that survive
+// both without quoting. An allowlist rather than a denylist, for the same reason job ids are.
+var templateNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// templateNameShape describes the accepted shape, for error messages that say what to do instead.
+const templateNameShape = "lower-case letters, digits and hyphens, starting with a letter or digit, " +
+	"at most 64 characters"
+
+// MaxTemplateRequestBytes bounds a template-save request body.
+//
+// The body itself is bounded to provision.MaxBodyBytes; this leaves room for the JSON encoding and the
+// signature fields around it, and exists so the request is bounded before it is in memory.
+const MaxTemplateRequestBytes = 256 << 10
+
+// createVersionAttempts is how many times a save retries a version-number collision.
+//
+// Two operators saving the same template concurrently can compute the same next version, and the
+// primary key then refuses the second insert as ErrConflict. The retry re-computes against the
+// committed row, so the second saver gets the next number rather than an error — nothing is ever
+// overwritten either way, which is the property that matters.
+const createVersionAttempts = 3
+
+// templateRequest is the body of POST /api/v1/templates.
+type templateRequest struct {
+	// Name is the template's identifier, shared by all its versions.
+	Name string `json:"name"`
+
+	// Body is the cloud-init user-data, plaintext here and sealed before it reaches the store.
+	Body string `json:"body"`
+
+	// Signature is a detached signature over the canonical {name, body} payload, base64, from
+	// `farrier sign-template`. Optional: an unsigned version can be rendered and never issued at
+	// enrolment.
+	Signature string `json:"signature,omitempty"`
+
+	// SignerKeyID names the key that signed it.
+	SignerKeyID string `json:"signerKeyId,omitempty"`
+
+	// SignerAlgorithm is "ed25519" or "ecdsa-p256".
+	SignerAlgorithm string `json:"signerAlgorithm,omitempty"`
+}
+
+// templateSummaryView is one template as the listing renders it.
+type templateSummaryView struct {
+	// Name is the template's identifier.
+	Name string `json:"name"`
+
+	// LatestVersion is the highest stored version.
+	LatestVersion int `json:"latestVersion"`
+
+	// CreatedAt is when the latest version was stored.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// CreatedBy is who stored the latest version.
+	CreatedBy string `json:"createdBy"`
+
+	// Signed reports whether the latest version can be issued to an enrolling host at all.
+	Signed bool `json:"signed"`
+}
+
+// templateView is one template version in full, body included.
+type templateView struct {
+	// Name is the template's identifier.
+	Name string `json:"name"`
+
+	// Version is this revision's number.
+	Version int `json:"version"`
+
+	// Body is the plaintext user-data, decrypted for this response only.
+	Body string `json:"body"`
+
+	// Signed reports whether this version carries an offline signature.
+	Signed bool `json:"signed"`
+
+	// SignerKeyID names the key that signed it, empty when unsigned.
+	SignerKeyID string `json:"signerKeyId,omitempty"`
+
+	// CreatedAt is when this version was stored.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// CreatedBy is who stored it.
+	CreatedBy string `json:"createdBy"`
+
+	// Placeholders are the parameter names the body substitutes, so a client can build the render
+	// form without parsing cloud-init itself.
+	Placeholders []string `json:"placeholders"`
+
+	// Warnings are the secret shapes found in the body, consequence spelled out. Warnings, never
+	// refusals — see internal/provision.
+	Warnings []string `json:"warnings"`
+}
+
+// handleListTemplates returns one summary per template, newest first.
+func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request, who operator) {
+	summaries, err := who.Store.ListTemplates(r.Context())
+	if err != nil {
+		slog.Error("could not list templates", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the templates")
+		return
+	}
+	views := make([]templateSummaryView, 0, len(summaries))
+	for _, t := range summaries {
+		views = append(views, templateSummaryView{
+			Name:          t.Name,
+			LatestVersion: t.LatestVersion,
+			CreatedAt:     t.CreatedAt,
+			CreatedBy:     t.CreatedBy,
+			Signed:        t.Signed,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"templates": views})
+}
+
+// handleCreateTemplate stores the next version of a template.
+//
+// Every save is a new version; there is no update path, because the Tier 2 bootstrap record on a host
+// names a version and must resolve to the bytes that actually ran. Secret shapes in the body warn and
+// never block — see internal/provision for why a refusal here would train operators to route around
+// the one control that should be read.
+func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request, who operator) {
+	var req templateRequest
+	if err := decodeJSON(w, r, MaxTemplateRequestBytes, &req); err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "too_large", "the request body is too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+		return
+	}
+
+	if !templateNamePattern.MatchString(req.Name) {
+		writeError(w, http.StatusBadRequest, "malformed",
+			"a template name is "+templateNameShape+"; it is typed on an enrolment command line and "+
+				"recorded permanently on hosts")
+		return
+	}
+	if req.Body == "" {
+		writeError(w, http.StatusBadRequest, "malformed", "a template body is required")
+		return
+	}
+	if len(req.Body) > provision.MaxBodyBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large",
+			"the template body exceeds "+strconv.Itoa(provision.MaxBodyBytes)+" bytes; cloud "+
+				"providers cap user-data well below that, so a body this size would not boot anyway")
+		return
+	}
+	if err := validateTemplateSignature(req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed", err.Error())
+		return
+	}
+
+	sealed, err := s.cfg.TemplateKey.Seal([]byte(req.Body))
+	if err != nil {
+		slog.Error("could not seal a template body", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not encrypt the template")
+		return
+	}
+
+	record := store.TemplateVersion{
+		Name:            req.Name,
+		BodySealed:      sealed,
+		Signature:       req.Signature,
+		SignerKeyID:     req.SignerKeyID,
+		SignerAlgorithm: req.SignerAlgorithm,
+		CreatedAt:       time.Now().UTC(),
+		CreatedBy:       who.Principal(),
+	}
+	var version int
+	for attempt := 0; ; attempt++ {
+		version, err = who.Store.CreateTemplateVersion(r.Context(), record)
+		if !errors.Is(err, store.ErrConflict) || attempt+1 >= createVersionAttempts {
+			break
+		}
+	}
+	if err != nil {
+		slog.Error("could not store a template version", "error", err, "template", req.Name)
+		writeError(w, http.StatusInternalServerError, "internal", "could not store the template")
+		return
+	}
+
+	// The name and the author, never the body: template bodies carry the things the warnings below
+	// are about, and a log line lives in more places than the sealed column does.
+	slog.Info("template version stored",
+		"template", req.Name, "version", version, "tenant", who.Store.Tenant(),
+		"operator", who.Principal(), "signed", record.Signed(), "signer", req.SignerKeyID)
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name":         req.Name,
+		"version":      version,
+		"signed":       record.Signed(),
+		"placeholders": provision.Placeholders(req.Body),
+		"warnings":     warningsOrEmpty(provision.Warnings(req.Body)),
+	})
+}
+
+// validateTemplateSignature checks the optional signature triple on a save.
+//
+// All three fields or none: a signature without its key id would verify on a host and then be recorded
+// as authorised by nobody, and a key id without a signature is a claim with nothing behind it. The
+// signature itself is not verified here — it verifies against a key in some host's trusted-signers,
+// which this control plane deliberately does not hold a copy of.
+func validateTemplateSignature(req templateRequest) error {
+	signedFields := 0
+	for _, field := range []string{req.Signature, req.SignerKeyID, req.SignerAlgorithm} {
+		if field != "" {
+			signedFields++
+		}
+	}
+	switch signedFields {
+	case 0:
+		return nil
+	case 3:
+		if !signing.Algorithm(req.SignerAlgorithm).Valid() {
+			return errors.New("signerAlgorithm must be ed25519 or ecdsa-p256")
+		}
+		if _, err := base64.StdEncoding.DecodeString(req.Signature); err != nil {
+			return errors.New("the signature is not valid base64")
+		}
+		return nil
+	default:
+		return errors.New("a signed template carries signature, signerKeyId and signerAlgorithm " +
+			"together; use `farrier sign-template`, which produces all three")
+	}
+}
+
+// handleGetTemplate returns one version of a template in full, latest unless ?version= names one.
+//
+// The response is marked non-cacheable: a body is where operators put the things the warnings exist
+// for, and a browser cache is one more place for them to live.
+func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request, who operator) {
+	version := 0
+	if raw := r.URL.Query().Get("version"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "malformed", "version must be a positive whole number")
+			return
+		}
+		version = n
+	}
+
+	record, err := who.Store.GetTemplateVersion(r.Context(), r.PathValue("name"), version)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "no such template")
+		return
+	}
+	if err != nil {
+		slog.Error("could not read a template", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+		return
+	}
+
+	body, err := s.cfg.TemplateKey.Open(record.BodySealed)
+	if err != nil {
+		// The one way this happens outside a bug is a database restored without the key beside the CA.
+		// Saying so is the difference between an operator fixing their restore and filing "templates
+		// are corrupt".
+		slog.Error("could not decrypt a stored template; the sealing key does not match the database",
+			"template", record.Name, "version", record.Version, "error", err)
+		writeError(w, http.StatusInternalServerError, "sealed",
+			"the stored template cannot be decrypted; the control plane's template key does not match "+
+				"this database. See docs/INSTALL.md on backing the key up beside the CA.")
+		return
+	}
+
+	noStore(w)
+	writeJSON(w, http.StatusOK, templateView{
+		Name:         record.Name,
+		Version:      record.Version,
+		Body:         string(body),
+		Signed:       record.Signed(),
+		SignerKeyID:  record.SignerKeyID,
+		CreatedAt:    record.CreatedAt,
+		CreatedBy:    record.CreatedBy,
+		Placeholders: provision.Placeholders(string(body)),
+		Warnings:     warningsOrEmpty(provision.Warnings(string(body))),
+	})
+}
+
+// renderRequest is the body of POST /api/v1/templates/{name}/render.
+type renderRequest struct {
+	// Version names the version to render, zero for the latest.
+	Version int `json:"version,omitempty"`
+
+	// Params are the values substituted into the template's placeholders.
+	Params map[string]string `json:"params,omitempty"`
+
+	// Token configures the enrolment token minted when the template uses {{enrollmentToken}}.
+	Token *renderTokenRequest `json:"token,omitempty"`
+}
+
+// renderTokenRequest configures the token a render mints.
+//
+// The same fields POST /api/v1/tokens takes, because it is the same act: the render endpoint mints
+// through the same store method, and the token appears in the listing like any other.
+type renderTokenRequest struct {
+	// Label is a human-readable name, defaulted to the template's.
+	Label string `json:"label,omitempty"`
+
+	// Group is the fleet group hosts enrolled with it join.
+	Group string `json:"group,omitempty"`
+
+	// TTLSeconds overrides the server's default token lifetime.
+	TTLSeconds int `json:"ttlSeconds,omitempty"`
+
+	// Bootstrap names the template this token may request at enrolment, empty for none.
+	Bootstrap string `json:"bootstrap,omitempty"`
+}
+
+// handleRenderTemplate renders one version to user-data and returns it exactly once.
+//
+// The output is a credential: it usually carries a live enrolment token, minted here. So the response
+// is non-cacheable, the body never reaches a log line or an audit entry, and nothing stores it — an
+// operator who loses it renders again, which mints a fresh token and costs nothing.
+func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, who operator) {
+	var req renderRequest
+	if err := decodeJSON(w, r, MaxTemplateRequestBytes, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+		return
+	}
+	if req.Version < 0 {
+		writeError(w, http.StatusBadRequest, "malformed", "version must be a positive whole number")
+		return
+	}
+
+	record, err := who.Store.GetTemplateVersion(r.Context(), r.PathValue("name"), req.Version)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "no such template")
+		return
+	}
+	if err != nil {
+		slog.Error("could not read a template", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+		return
+	}
+	body, err := s.cfg.TemplateKey.Open(record.BodySealed)
+	if err != nil {
+		slog.Error("could not decrypt a stored template; the sealing key does not match the database",
+			"template", record.Name, "version", record.Version, "error", err)
+		writeError(w, http.StatusInternalServerError, "sealed",
+			"the stored template cannot be decrypted; the control plane's template key does not match "+
+				"this database. See docs/INSTALL.md on backing the key up beside the CA.")
+		return
+	}
+
+	params := req.Params
+	if params == nil {
+		params = map[string]string{}
+	}
+	if _, caller := params[provision.TokenPlaceholder]; caller {
+		// Minted, never supplied: the whole point of the placeholder is that the token is single-use
+		// and expiring, and a caller-pasted one is a token whose history nobody knows.
+		writeError(w, http.StatusBadRequest, "malformed",
+			provision.TokenPlaceholder+" is minted at render time and cannot be supplied; configure it "+
+				"with the token field instead")
+		return
+	}
+
+	// Everything that can refuse this request runs before anything is minted. A token is a live
+	// credential the moment it exists, and one minted for a render that then failed on a typo is a
+	// credential nobody was shown, nobody can revoke by name, and nobody knows is there — so the
+	// substitution is rehearsed against a placeholder first, and the real token replaces it only once
+	// the whole render is known to succeed.
+	mints := usesToken(string(body))
+	if mints {
+		params[provision.TokenPlaceholder] = "rehearsal"
+	}
+	if _, err := provision.Render(string(body), params); err != nil {
+		writeError(w, http.StatusBadRequest, "unrenderable", err.Error())
+		return
+	}
+	if req.Token != nil && !checkBootstrapIsIssuable(w, r, who, req.Token.Bootstrap) {
+		return
+	}
+
+	var tokenExpiresAt *time.Time
+	if mints {
+		token, expires, err := s.mintRenderToken(r, who, record.Name, req.Token)
+		if err != nil {
+			slog.Error("could not mint an enrolment token for a render",
+				"template", record.Name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal",
+				"could not mint the enrolment token this template substitutes")
+			return
+		}
+		params[provision.TokenPlaceholder] = token
+		tokenExpiresAt = &expires
+	}
+
+	rendered, err := provision.Render(string(body), params)
+	if err != nil {
+		// Unreachable in practice: the rehearsal above ran the same substitution over the same body
+		// with the same parameter names. Handled rather than ignored, because "unreachable" is a
+		// claim about today's Render and the credential has already been minted by this point.
+		slog.Error("a rehearsed render failed on its second pass",
+			"template", record.Name, "version", record.Version, "error", err)
+		writeError(w, http.StatusBadRequest, "unrenderable", err.Error())
+		return
+	}
+
+	// The name and version, and deliberately not the output: the output is the credential.
+	slog.Info("template rendered",
+		"template", record.Name, "version", record.Version, "tenant", who.Store.Tenant(),
+		"operator", who.Principal(), "token_minted", tokenExpiresAt != nil)
+
+	noStore(w)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":           record.Name,
+		"version":        record.Version,
+		"userData":       rendered,
+		"warnings":       warningsOrEmpty(provision.Warnings(rendered)),
+		"tokenExpiresAt": tokenExpiresAt,
+		"note": "This output is a credential: it is shown once, and nothing stores it. Paste it into " +
+			"your provisioner now, or render again for a fresh token.",
+	})
+}
+
+// usesToken reports whether a body substitutes the reserved enrolment-token placeholder.
+func usesToken(body string) bool {
+	for _, name := range provision.Placeholders(body) {
+		if name == provision.TokenPlaceholder {
+			return true
+		}
+	}
+	return false
+}
+
+// mintRenderToken issues the enrolment token a render substitutes.
+//
+// It goes through the same store method as POST /api/v1/tokens, so the token appears in the listing
+// like any other and expires like any other. The label defaults to naming the template, because a page
+// of tokens all called "render" answers nobody's question.
+func (s *Server) mintRenderToken(r *http.Request, who operator, templateName string,
+	cfg *renderTokenRequest) (string, time.Time, error) {
+
+	if cfg == nil {
+		cfg = &renderTokenRequest{}
+	}
+	ttl := s.cfg.TokenTTL
+	if cfg.TTLSeconds > 0 {
+		ttl = time.Duration(cfg.TTLSeconds) * time.Second
+	}
+	label := cfg.Label
+	if label == "" {
+		label = "rendered:" + templateName
+	}
+
+	token, hash, err := NewEnrollmentToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	now := time.Now()
+	record := store.EnrollmentToken{
+		Hash:      hash,
+		Label:     label,
+		Group:     cfg.Group,
+		Bootstrap: cfg.Bootstrap,
+		CreatedAt: now,
+		ExpiresAt: now.Add(ttl),
+	}
+	if err := who.Store.CreateEnrollmentToken(r.Context(), record); err != nil {
+		return "", time.Time{}, err
+	}
+	return token, record.ExpiresAt, nil
+}
+
+// noStore marks a response as holding a credential no cache may keep.
+//
+// no-store rather than no-cache: no-cache permits storing and requires revalidation, and a rendered
+// template in a shared proxy's cache is precisely the disclosure being prevented.
+func noStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+}
+
+// warningsOrEmpty returns an empty slice rather than nil, so the JSON is [] and never null.
+func warningsOrEmpty(warnings []string) []string {
+	if warnings == nil {
+		return []string{}
+	}
+	return warnings
+}

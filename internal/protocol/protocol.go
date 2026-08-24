@@ -132,6 +132,14 @@ type Bootstrap struct {
 	// Name is the template's name, as the operator typed it.
 	Name string `json:"name"`
 
+	// Version numbers the stored revision this body came from, for the record written to the host.
+	//
+	// It is informational and deliberately outside the signed payload: the signature covers the name
+	// and the exact bytes of the body, which is what makes a version resolvable afterwards — the
+	// record on the host keeps the body verbatim, so what ran is knowable from the host alone even if
+	// a control plane relabelled its version numbers.
+	Version int `json:"version,omitempty"`
+
 	// Body is the cloud-init user-data, in full. cloud-init does the applying; Farrier never
 	// interprets this itself, because a hand-written YAML-to-shell engine would be the exec channel
 	// wearing a hat.

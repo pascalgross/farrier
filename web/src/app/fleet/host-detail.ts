@@ -8,9 +8,9 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { catchError, of, startWith, switchMap } from 'rxjs';
 
-import { Host } from '../core/api.models';
+import { Host, UnitState, UnitTransition } from '../core/api.models';
 import { ApiService } from '../core/api.service';
-import { formatDuration, formatOffset } from '../core/format';
+import { formatAge, formatDuration, formatOffset } from '../core/format';
 
 /**
  * One host in full: its identity, what it reported, and — the part that matters — what it will accept.
@@ -62,6 +62,46 @@ export class HostDetail {
   /** Whether the host is still loading. */
   protected readonly loading = computed(() => this.host() === null && !this.error());
 
+  /**
+   * Why the unit history could not be read, empty while it is loading or once it has.
+   *
+   * Its own signal rather than reading a null `transitions` as failure, which is the same fix the
+   * `host` signal already carries: null means "no answer yet", and the in-flight window is most of a
+   * page load — so conflating the two renders "could not be read" every single time, on a card that
+   * is about to fill in.
+   */
+  protected readonly historyError = signal('');
+
+  /**
+   * This host's recorded unit-state changes, newest first.
+   *
+   * Its own request rather than a field on the host, because it is the one part of this page that is
+   * a time series: everything else answers "now" from the last heartbeat, and this answers "since
+   * when" — which is what turns "nginx is failed" into "nginx has been flapping since Tuesday".
+   */
+  protected readonly transitions = toSignal(
+    toObservable(this.id).pipe(
+      switchMap((id) => {
+        // Cleared as the request goes out, so switching hosts does not carry the previous host's
+        // failure onto the next one's page.
+        this.historyError.set('');
+        return this.api.serviceHistory(id).pipe(
+          startWith(null),
+          catchError(() => {
+            this.historyError.set('The unit history could not be read.');
+            return of(null);
+          }),
+        );
+      }),
+    ),
+    { initialValue: null },
+  );
+
+  /** The units this host currently reports as failed. */
+  protected readonly failedUnits = computed<UnitState[]>(() =>
+    (this.host()?.facts?.services ?? []).filter((unit) => unit.activeState === 'failed'),
+  );
+
   /** Renders the host's uptime. */
   protected uptime(host: Host): string {
     return formatDuration(host.uptimeSeconds);
@@ -98,6 +138,26 @@ export class HostDetail {
       return 'not reported yet';
     }
     return dist.prettyName || `${dist.id} ${dist.version} (${dist.codename})`;
+  }
+
+  /**
+   * Describes what this host's `[services] watched` list means, in words rather than as a list length.
+   *
+   * The empty default is the opposite of `restartable`'s and reads wrong as "none": permitting an
+   * action and reporting a fact are different questions, so an empty watch list watches everything.
+   */
+  protected watchedSummary(host: Host): string {
+    const watched = host.policy?.services.watched ?? [];
+    if (watched.length === 0) {
+      return 'every unit — the host has named none, and reporting is the default';
+    }
+    return watched.join(', ');
+  }
+
+  /** Renders how long ago a transition was, against the control plane's clock. */
+  protected transitionAge(transition: UnitTransition): string {
+    const now = this.transitions()?.serverTime;
+    return now ? formatAge(transition.at, now) : '—';
   }
 
   /** Renders Ubuntu Pro state, distinguishing "not applicable" from "not attached". */

@@ -109,3 +109,46 @@ func (w *Webhook) Deliver(ctx context.Context, ev Event) error {
 	}
 	return nil
 }
+
+// DeliveryAttempts is how many times a delivery is tried before it is given up on.
+//
+// Three, with a short backoff between them, because the failures alerting actually hits are transient
+// — a relay refusing a connection during its own restart, a webhook endpoint behind a rolling deploy
+// — and one attempt turns a ten-second outage into a page nobody received. Beyond three the failure
+// is not transient, and the honest answer is the recorded error rather than a queue that retries into
+// next week.
+const DeliveryAttempts = 3
+
+// deliveryBackoff is the pause after each failed attempt.
+//
+// Bounded deliberately: the whole retry sequence has to fit inside the caller's patience, because the
+// path this runs on is a request handler or one tick of the evaluator, not a background queue.
+var deliveryBackoff = []time.Duration{2 * time.Second, 6 * time.Second}
+
+// DeliverWithRetry attempts one delivery up to DeliveryAttempts times and returns the last failure.
+//
+// It exists because Deliver is required not to block, which makes each individual attempt short and
+// therefore fragile. Retrying is what turns "the relay was restarting" into a delivered mail; the
+// returned error is what turns "it never went out" into something the caller can record rather than
+// only log — which for an alert is the difference between a silence somebody investigates and a
+// silence somebody trusts.
+//
+// A cancelled context stops the sequence immediately: the process is shutting down, and finishing a
+// backoff to attempt a delivery that will be cancelled anyway only delays the shutdown.
+func DeliverWithRetry(ctx context.Context, sink Sink, ev Event) error {
+	var err error
+	for attempt := range DeliveryAttempts {
+		if err = sink.Deliver(ctx, ev); err == nil {
+			return nil
+		}
+		if attempt == DeliveryAttempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("notify: %s: %w (giving up: %w)", sink.Name(), err, ctx.Err())
+		case <-time.After(deliveryBackoff[attempt]):
+		}
+	}
+	return fmt.Errorf("notify: %s failed %d times, last error: %w", sink.Name(), DeliveryAttempts, err)
+}

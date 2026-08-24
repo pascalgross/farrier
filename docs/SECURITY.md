@@ -5,7 +5,7 @@ claim below is either enforced by code with a test in the `guarantee` CI workflo
 marked as a boundary that Farrier does **not** defend.
 
 If you find a way to violate the guarantee in [§1](#1-the-guarantee), that is the most serious class
-of bug this project can have. See [§10](#10-reporting-a-vulnerability).
+of bug this project can have. See [§11](#11-reporting-a-vulnerability).
 
 ---
 
@@ -484,27 +484,40 @@ report container state, that must be done through a read-only path, not group me
 This is the exception named in the second paragraph of the guarantee. It is stated plainly here because
 it is the only way a Farrier component ever applies operator-authored configuration to a host.
 
-**Tier 1 — first in the build order, and not yet built** (phase 2 of the roadmap,
-[#9](https://github.com/pascalgross/farrier/issues/9); what follows is its specification). Farrier
-stores, versions and renders cloud-init templates, and **never delivers them to a host**. The rendered
-`user-data` goes to a human, or to Terraform / Proxmox / MAAS / a cloud provider's user-data field; the
-machine consumes it at first boot from the hypervisor that created it. Farrier is not in the delivery
-path at all. This also covers bare metal, since Ubuntu `autoinstall` for PXE and ISO is delivered as
-cloud-init user-data.
+**Tier 1 — implemented.** Farrier stores, versions and renders cloud-init templates, and **never
+delivers them to a host**. The rendered `user-data` goes to a human, or to Terraform / Proxmox / MAAS /
+a cloud provider's user-data field; the machine consumes it at first boot from the hypervisor that
+created it. Farrier is not in the delivery path at all. This also covers bare metal, since Ubuntu
+`autoinstall` for PXE and ISO is delivered as cloud-init user-data.
 
-**Tier 2 — the exception** (phase 3, [#10](https://github.com/pascalgross/farrier/issues/10); the
-phase-1 agent verifies a bootstrap template and then refuses to continue, executing nothing and
-recording nothing, and says so to the operator). `farrier enroll --bootstrap NAME` applies a named
-template once, on a host that is being enrolled by hand. Every one of these guardrails is required:
+A template is a document with `{{placeholder}}` substitution sites and nothing else: no conditional, no
+loop, no expression — a renderer that grew a `{{ exec }}` would defeat the guarantee without touching
+the intent catalogue, so `internal/provision` refuses to be a template language by construction. Every
+saved revision is a new immutable version, because the Tier 2 record below names one and a record that
+resolves to editable bytes is not a record.
+
+**Tier 2 — the exception, implemented.** `farrier enroll --bootstrap NAME` applies a named template
+once, on a host that is being enrolled by hand. The template arrives in the enrolment response carrying
+a signature the control plane stored but cannot mint — it is produced offline by
+`farrier sign-template`, with a key the control plane does not hold, and the enrolment token must have
+been minted naming that template, so holding a leaked token is not the authority to choose what runs.
+An agent that asked for a template and receives none, or an unsigned one, fails the enrolment loudly
+rather than continuing as though something had been applied. Every one of these guardrails is required:
 
 1. Explicit `--bootstrap NAME` on that specific invocation. Never implicit, never a server default,
    never a group setting.
 2. The full text is printed to the terminal, written to the journal, and recorded in
-   `/var/lib/farrier/bootstrap-applied.json` **before** execution.
+   `/var/lib/farrier/bootstrap-applied.json` **before** execution. The record is fsynced — file and
+   directory — before anything runs, because it is the only thing that survives a template that
+   crashes the machine halfway, and "what was attempted" is the question an incident asks.
 3. It is signed by a key already present in that host's `trusted-signers`.
-4. It runs exactly once, enforced by an on-disk interlock.
-5. **cloud-init does the applying.** Farrier never ships a hand-written YAML-to-shell engine — that
-   would be the exec channel wearing a hat.
+4. It runs exactly once, enforced by an on-disk interlock — which is the record itself, one file, so
+   the two cannot disagree. A crash between "decided to apply" and "applied" refuses a second attempt
+   rather than permitting one; re-enrolling a bootstrapped host does not re-apply.
+5. **cloud-init does the applying.** Farrier writes the verified body into cloud-init's NoCloud seed
+   directory under a fresh instance-id and runs cloud-init's own stages with argument vectors fixed in
+   the agent; no byte of a template ever reaches a command line. Farrier never ships a hand-written
+   YAML-to-shell engine — that would be the exec channel wearing a hat.
 
 The chicken-and-egg problem is that `trusted-signers` is empty on a fresh install. It is solved by
 establishing the anchor from a local, administrator-chosen file **before** anything is fetched:
@@ -534,7 +547,92 @@ therefore:
 
 ---
 
-## 8. What Farrier does *not* defend against
+## 8. Observability
+
+Farrier tells an operator what it noticed. It does not act on it — the two halves of that sentence are
+the whole of this section.
+
+### 8.1 What may be said, and where it goes
+
+The event vocabulary is **closed at compile time**, like the intent catalogue and for a related reason:
+a kind is a word operators build webhook filters, mail rules and dashboards on, and a control plane
+that let a handler invent one under deadline is a control plane whose dashboards each miss half the
+events. The set lives in `internal/notify/kinds.go`, and a test fails when it changes without the
+expected-set literal changing in the same commit.
+
+| Kind | When |
+| --- | --- |
+| `host.enrolled` | A machine joined the fleet |
+| `host.silent` / `host.recovered` | A host stopped, then resumed, heartbeating |
+| `job.created` / `job.approved` | A job was queued, or released by an operator |
+| `job.failed` | A host attempted a job and failed it |
+| `job.expired` | A job's validity window closed before it executed |
+| `service.failed` / `service.recovered` | A watched unit failed, then ran again |
+| `updates.pending` / `updates.resolved` | A host's security backlog crossed a rule's line, then fell back |
+| `reboot.overdue` / `reboot.done` | A reboot went unaddressed past a rule's line, then happened |
+
+A refusal is deliberately not in that list. `refused_by_policy` is the system working, and an event
+stream that painted it the same colour as a failure would teach its readers to ignore both.
+
+Every event is written to its tenant's **inbox** before any delivery is attempted, because the inbox is
+the only delivery with a guarantee. Everything after it is best-effort and has to *look* best-effort:
+an open tab receives the event over a server-sent-events stream, the tenant's webhook receives it if
+one is configured, and an alert rule's recipients receive mail. A tab that was closed, a webhook that
+was down and a relay that refused all produce the same outcome — the event is on the page when somebody
+looks.
+
+Delivery outside the process runs **detached from the request that produced it**, retried with a short
+backoff and bounded, and drained on shutdown. That is not an optimisation: `emit` is called from
+handlers an agent is waiting on, and a control plane made slow by somebody else's mail server is a
+control plane whose heartbeats time out.
+
+Scoping is the same as everywhere else. An event carries its tenant, reaches that tenant's endpoint and
+that tenant's tabs, and nothing else; the stream is authorised exactly like any other read of
+control-plane state ([§5](#5-tenants)).
+
+### 8.2 What the host decides
+
+`[services] watched` in `policy.toml` lists the units whose state changes this host considers worth an
+event, with the same shell-style globbing as `restartable`. It is on the host because which units
+matter is a per-host question: the machine's owner knows that `nginx.service` matters and
+`motd-news.timer` does not.
+
+Two properties of it are worth stating, because both are the opposite of what the neighbouring key
+does. The empty default watches **everything** — permitting an action and reporting a fact are
+different questions, and a fresh host should surface a failed unit rather than hide it behind a setting
+nobody has heard of. And widening the list is **not a permission change**: it bounds what the control
+plane says about this host, never what may be done to it.
+
+The resolution is the heartbeat interval, by construction: state changes are noticed by comparing one
+full report against the previous one, so a unit that fails and recovers between two beats is invisible.
+That is a stated property rather than a bug, and the UI states it where the history is rendered rather
+than leaving somebody to discover it during an incident.
+
+### 8.3 The line an alerting rule does not cross
+
+**A rule produces a notification. A rule never produces a job.**
+
+"Apply the security updates when more than five are pending" is the obvious next request, and it does
+not break [§1](#1-the-guarantee) — the host's own policy still bounds it, and anything destructive
+still needs a signature from a key in that host's own `trusted-signers`. What it does is convert the
+control plane from something that asks into something that acts on a schedule of its own, and that is a
+different feature with a different threat model. There is deliberately no code path here that could,
+and it gets its own argument or it does not happen.
+
+Rules live in the control plane's own database and not in `policy.toml`, for the reason that file
+exists: `policy.toml` is the *host's* authority over what may be done to it, and an alerting rule is the
+control plane's business. Putting them together would blur the one distinction the whole design rests
+on. Like everything else a tenant owns, rules are behind forced row-level security.
+
+Mail leaves over STARTTLS on 587 or implicit TLS on 465 and never in plaintext, because an alert
+legitimately carries hostnames and failure text. The relay is process configuration — which mail server
+an installation may speak to is the installation operator's decision — and the recipients are per rule,
+which is the one delivery a tenant opts into. A rule whose last mail did not go out says so on the
+rule: an alert that never went out and an alert that never fired are indistinguishable from an inbox.
+
+---
+
+## 9. What Farrier does *not* defend against
 
 An honest guarantee needs an honest boundary. Farrier does not protect you from:
 
@@ -582,7 +680,7 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
 
 ---
 
-## 9. Hardening notes for operators
+## 10. Hardening notes for operators
 
 - Put real keys in `trusted-signers` and use a touch-required hardware token where you can. The
   audit log distinguishes `ops-laptop (file)` from `ops-yubikey-1 (PKCS#11)` precisely so that this is
@@ -609,7 +707,7 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
 
 ---
 
-## 10. Reporting a vulnerability
+## 11. Reporting a vulnerability
 
 Report security issues privately through GitHub's **Report a vulnerability** button on the repository's
 Security tab, which opens a private advisory. Please do not open a public issue for a vulnerability.

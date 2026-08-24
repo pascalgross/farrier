@@ -3,12 +3,23 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
 import {
+  AlertRuleRequest,
+  AlertRulesResponse,
   CatalogueResponse,
   CreateReadJobRequest,
+  CreateTemplateRequest,
+  EventsResponse,
+  FailedServicesResponse,
   FleetResponse,
   Host,
   Job,
   JobsResponse,
+  RenderTemplateRequest,
+  RenderedTemplate,
+  ServiceHistoryResponse,
+  StoredTemplateVersion,
+  TemplateVersion,
+  TemplatesResponse,
   Whoami,
 } from './api.models';
 import { TokenStore } from './token-store';
@@ -122,5 +133,96 @@ export class ApiService {
     return this.http.post<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/approve`, null, {
       headers: this.headers(),
     });
+  }
+
+  /**
+   * Fetches the event inbox, newest first, optionally narrowed to one kind.
+   *
+   * This is the durable half of the notification design. The live stream tells a tab that happens to
+   * be open; this tells the operator asking what they missed overnight, which is the question the
+   * whole feature exists for.
+   */
+  events(kind?: string): Observable<EventsResponse> {
+    const query = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+    return this.http.get<EventsResponse>(`/api/v1/events${query}`, { headers: this.headers() });
+  }
+
+  /** Fetches every host with a failed unit, without opening hosts one at a time. */
+  failedServices(): Observable<FailedServicesResponse> {
+    return this.http.get<FailedServicesResponse>('/api/v1/services/failed', {
+      headers: this.headers(),
+    });
+  }
+
+  /** Fetches one host's unit-state history, which is what makes "flapping since Tuesday" visible. */
+  serviceHistory(hostId: string): Observable<ServiceHistoryResponse> {
+    return this.http.get<ServiceHistoryResponse>(
+      `/api/v1/hosts/${encodeURIComponent(hostId)}/services/history`,
+      { headers: this.headers() },
+    );
+  }
+
+  /** Fetches this fleet's alerting rules. */
+  alertRules(): Observable<AlertRulesResponse> {
+    return this.http.get<AlertRulesResponse>('/api/v1/alerts', { headers: this.headers() });
+  }
+
+  /** Creates an alerting rule. */
+  createAlertRule(request: AlertRuleRequest): Observable<unknown> {
+    return this.http.post('/api/v1/alerts', request, { headers: this.headers() });
+  }
+
+  /** Changes a rule's threshold, cooldown, recipients or enabled flag. Never its condition. */
+  updateAlertRule(id: string, request: AlertRuleRequest): Observable<unknown> {
+    return this.http.patch(`/api/v1/alerts/${encodeURIComponent(id)}`, request, {
+      headers: this.headers(),
+    });
+  }
+
+  /** Deletes a rule and the firing state it accumulated. */
+  deleteAlertRule(id: string): Observable<unknown> {
+    return this.http.delete(`/api/v1/alerts/${encodeURIComponent(id)}`, { headers: this.headers() });
+  }
+
+  /** Fetches one summary per provisioning template. */
+  templates(): Observable<TemplatesResponse> {
+    return this.http.get<TemplatesResponse>('/api/v1/templates', { headers: this.headers() });
+  }
+
+  /** Fetches one version of a template in full, defaulting to the latest. */
+  template(name: string, version?: number): Observable<TemplateVersion> {
+    const query = version ? `?version=${version}` : '';
+    return this.http.get<TemplateVersion>(
+      `/api/v1/templates/${encodeURIComponent(name)}${query}`,
+      { headers: this.headers() },
+    );
+  }
+
+  /**
+   * Stores the next version of a template.
+   *
+   * There is no update method and no delete, which is the storage model rather than an omission: a
+   * host's bootstrap record names a version and must resolve to the bytes that actually ran.
+   */
+  createTemplate(request: CreateTemplateRequest): Observable<StoredTemplateVersion> {
+    return this.http.post<StoredTemplateVersion>('/api/v1/templates', request, {
+      headers: this.headers(),
+    });
+  }
+
+  /**
+   * Renders a template to user-data.
+   *
+   * The response is a credential — it usually carries a freshly minted enrolment token — so it is
+   * shown once and nothing stores it, here or on the server. There is deliberately no method that
+   * would *deliver* the result to a host: Farrier is not in the delivery path, and a control that
+   * implied otherwise would be Tier 3, which is never built.
+   */
+  renderTemplate(name: string, request: RenderTemplateRequest): Observable<RenderedTemplate> {
+    return this.http.post<RenderedTemplate>(
+      `/api/v1/templates/${encodeURIComponent(name)}/render`,
+      request,
+      { headers: this.headers() },
+    );
   }
 }

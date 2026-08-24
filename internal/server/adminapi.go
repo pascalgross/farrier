@@ -214,6 +214,9 @@ type tokenView struct {
 
 	// Usable reports whether it can still be redeemed.
 	Usable bool `json:"usable"`
+
+	// Bootstrap names the provisioning template this token may request at enrolment, empty for none.
+	Bootstrap string `json:"bootstrap,omitempty"`
 }
 
 // handleListTokens returns enrolment tokens, newest first, without their secrets.
@@ -236,6 +239,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, who op
 			Consumed:       !t.ConsumedAt.IsZero(),
 			ConsumedByHost: t.ConsumedByHost,
 			Usable:         t.Usable(now),
+			Bootstrap:      t.Bootstrap,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": views})
@@ -256,6 +260,13 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 
 		// TTLSeconds overrides the server's default lifetime.
 		TTLSeconds int `json:"ttlSeconds"`
+
+		// Bootstrap names the provisioning template this token may request at enrolment.
+		//
+		// Optional, and empty means this token authorises no bootstrap at all: the template a host
+		// applies is decided when the token is minted, by an authenticated operator, not chosen later
+		// by whoever holds the token.
+		Bootstrap string `json:"bootstrap"`
 	}
 	if err := decodeJSON(w, r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
@@ -265,6 +276,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 	ttl := s.cfg.TokenTTL
 	if req.TTLSeconds > 0 {
 		ttl = time.Duration(req.TTLSeconds) * time.Second
+	}
+
+	if !checkBootstrapIsIssuable(w, r, who, req.Bootstrap) {
+		return
 	}
 
 	token, hash, err := NewEnrollmentToken()
@@ -279,6 +294,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 		Hash:      hash,
 		Label:     req.Label,
 		Group:     req.Group,
+		Bootstrap: req.Bootstrap,
 		CreatedAt: now,
 		ExpiresAt: now.Add(ttl),
 	}
@@ -289,13 +305,15 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 	}
 
 	slog.Info("enrolment token created",
-		"label", req.Label, "group", req.Group, "tenant", who.Store.Tenant(), "operator", who.Principal(),
+		"label", req.Label, "group", req.Group, "bootstrap", req.Bootstrap,
+		"tenant", who.Store.Tenant(), "operator", who.Principal(),
 		"expires", record.ExpiresAt.Format(time.RFC3339))
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"token":     token,
 		"label":     req.Label,
 		"group":     req.Group,
+		"bootstrap": req.Bootstrap,
 		"expiresAt": record.ExpiresAt,
 		"note": "This token is shown once and cannot be recovered: only its hash is stored, " +
 			"so a database dump does not let its holder enrol hosts.",
@@ -349,4 +367,37 @@ func (s *Server) handleCatalogue(w http.ResponseWriter, _ *http.Request, _ opera
 			"that adds to it; new intents arrive only as reviewed source changes. The refused list " +
 			"will never be implemented — see docs/SECURITY.md.",
 	})
+}
+
+// checkBootstrapIsIssuable reports whether a token may name this template, answering the caller if not.
+//
+// The template must exist now and its latest version must be signed. Checking at mint time is operator
+// protection rather than security — enrolment checks again, against the host's own trusted-signers,
+// which is where the decision actually lives — but a token that names a template no enrolment can be
+// issued would fail a machine in a datacentre instead of a person at a keyboard, which is the expensive
+// place to find out.
+//
+// Shared by the two places that mint a token, and shared deliberately: the render endpoint mints one
+// too, and a check that lived in only one of them would be a check the other silently skipped.
+func checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request, who operator, name string) bool {
+	if name == "" {
+		return true
+	}
+	record, err := who.Store.GetTemplateVersion(r.Context(), name, 0)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found",
+			"no template named "+name+" exists in this fleet")
+		return false
+	case err != nil:
+		slog.Error("could not read a template for a token", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+		return false
+	case !record.Signed():
+		writeError(w, http.StatusConflict, "unsigned_template",
+			"the latest version of "+name+" is not signed, so no enrolment could be issued it. "+
+				"Sign it with `farrier sign-template` and store the signed version first.")
+		return false
+	}
+	return true
 }

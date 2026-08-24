@@ -28,5 +28,25 @@ export const routes: Routes = [
     loadComponent: () => import('./catalogue/catalogue').then((m) => m.Catalogue),
     title: 'Operations — Farrier',
   },
+  {
+    path: 'services',
+    loadComponent: () => import('./services/services-page').then((m) => m.ServicesPage),
+    title: 'Services — Farrier',
+  },
+  {
+    path: 'events',
+    loadComponent: () => import('./events/events-page').then((m) => m.EventsPage),
+    title: 'Events — Farrier',
+  },
+  {
+    path: 'alerts',
+    loadComponent: () => import('./alerts/alerts-page').then((m) => m.AlertsPage),
+    title: 'Alerts — Farrier',
+  },
+  {
+    path: 'templates',
+    loadComponent: () => import('./templates/templates-page').then((m) => m.TemplatesPage),
+    title: 'Templates — Farrier',
+  },
   { path: '**', redirectTo: '' },
 ];
