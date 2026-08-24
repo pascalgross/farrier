@@ -419,25 +419,31 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	return err
 }
 
-// outboundDrainGrace is how long a stopping control plane waits for its detached deliveries.
+// outboundDrainGrace is how long a stopping control plane waits, once for the evaluator and once for
+// the deliveries.
 //
 // Deliveries beyond the inbox run detached from the request that produced them, so the process must
 // not simply exit while one is in flight: an alert mail abandoned mid-SMTP is precisely the delivery
 // whose absence somebody would trust. It must not wait indefinitely either — a full retry sequence
 // against a hanging relay outlasts every reasonable stop timeout, and a service killed by its
 // supervisor is a service that logged nothing about why.
-const outboundDrainGrace = 15 * time.Second
+//
+// The arithmetic that picks it, against systemd's default 90-second TimeoutStopSec: fifteen seconds
+// for the connection drain, then two of these graces, then a tail of at most three uncancellable
+// delivery records at deliveryRecordTimeout each. Ten seconds keeps the total near fifty, which
+// leaves room for a supervisor configured tighter than the default.
+const outboundDrainGrace = 10 * time.Second
 
 // drainOutbound waits for the detached deliveries, then cancels the ones that are still going.
 //
 // The second wait is bounded by the work itself rather than by another timer. Cancelling the group
 // makes the webhook return at once, makes the retry loop stop between attempts, and makes the rule
 // loop stop starting mail; an SMTP conversation already in progress finishes inside the deadline it
-// set on its own connection. What is left after that is at most two delivery records — the one for the
-// attempt that was cancelled and the one naming the rules that were never started — each on a deadline
-// of its own, deliberately surviving the cancellation: the delivery a stopping control plane abandoned
-// is exactly the one whose absence somebody would otherwise trust. Half a minute past the grace, in
-// the worst case, bought with an honest answer.
+// set on its own connection. What is left after that is at most three delivery records — the attempt
+// that was cancelled, the claim that could not be made, and the rules that were never started — each
+// on a deadline of its own, deliberately surviving the cancellation: the delivery a stopping control
+// plane abandoned is exactly the one whose absence somebody would otherwise trust. Fifteen seconds
+// past the grace, in the worst case, bought with an honest answer.
 func (s *Server) drainOutbound(ctx context.Context) {
 	// The evaluator first: it is a producer, and closing the outbound set while it is still mid-pass
 	// would refuse the very notifications this drain exists to let finish. It returns on the same

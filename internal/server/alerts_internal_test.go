@@ -165,3 +165,90 @@ func TestASmallOutageNamesItsHosts(t *testing.T) {
 		}
 	}
 }
+
+// routingFixture stores one event-routed rule with recipients and returns it.
+func (h *alertHarness) routingFixture(t *testing.T) store.AlertRule {
+	t.Helper()
+	rule := store.AlertRule{
+		ID: "rule-routed", Condition: store.ConditionJobFailed, CooldownSeconds: 3600,
+		EmailTo: []string{"oncall@example.com"}, Enabled: true,
+		CreatedAt: time.Now().UTC(), CreatedBy: "test",
+	}
+	if err := h.scoped.CreateAlertRule(context.Background(), rule); err != nil {
+		t.Fatalf("creating the rule: %v", err)
+	}
+	return rule
+}
+
+// deliveryOutcome reads back what a rule says about its last mail attempt.
+func (h *alertHarness) deliveryOutcome(t *testing.T, ruleID string) store.AlertRule {
+	t.Helper()
+	rules, err := h.scoped.ListAlertRules(context.Background())
+	if err != nil {
+		t.Fatalf("listing rules: %v", err)
+	}
+	for _, rule := range rules {
+		if rule.ID == ruleID {
+			return rule
+		}
+	}
+	t.Fatalf("rule %s is gone", ruleID)
+	return store.AlertRule{}
+}
+
+// TestRoutingHonoursALostCooldownClaim exercises the branch the race actually takes.
+//
+// The states slice a pass routes against was read before the claim: that is the whole shape of the
+// bug — two events for one host, each in its own goroutine, both reading "nothing recent". So the
+// fixture is a claim already held in the store and a states slice that does not know about it, which
+// is precisely what the losing goroutine sees. Passing an up-to-date states slice would only re-prove
+// the cheap filter in dueRules and would pass with the claim deleted, which an earlier version of
+// this test did.
+func TestRoutingHonoursALostCooldownClaim(t *testing.T) {
+	h := newAlertHarness(t)
+	rule := h.routingFixture(t)
+
+	won, err := h.scoped.ClaimAlertNotification(
+		context.Background(), rule.ID, "host-1", time.Now().UTC(), time.Hour)
+	if err != nil || !won {
+		t.Fatalf("pre-claiming: won=%v err=%v", won, err)
+	}
+
+	h.server.routeToRules(context.Background(), h.scoped,
+		notify.Event{Kind: string(notify.KindJobFailed), HostID: "host-1", Hostname: "web-01"},
+		store.ConditionJobFailed, []store.AlertRule{rule}, nil)
+
+	// Nothing was attempted, so nothing was recorded. This installation has no relay, so a rule that
+	// *had* been attempted would carry the "no SMTP relay is configured" outcome.
+	if after := h.deliveryOutcome(t, rule.ID); !after.LastDeliveryAt.IsZero() {
+		t.Fatalf("a rule whose claim was lost still attempted mail: %q", after.LastDeliveryError)
+	}
+}
+
+// TestRoutingMailsTheRuleThatWinsItsClaim is the other half, and the reason the test above means
+// anything: without it, "nothing was recorded" would also be what a broken routing path produced.
+func TestRoutingMailsTheRuleThatWinsItsClaim(t *testing.T) {
+	h := newAlertHarness(t)
+	rule := h.routingFixture(t)
+
+	h.server.routeToRules(context.Background(), h.scoped,
+		notify.Event{Kind: string(notify.KindJobFailed), HostID: "host-1", Hostname: "web-01"},
+		store.ConditionJobFailed, []store.AlertRule{rule}, nil)
+
+	after := h.deliveryOutcome(t, rule.ID)
+	if after.LastDeliveryAt.IsZero() {
+		t.Fatal("a rule that won its claim recorded no delivery outcome at all")
+	}
+	if !strings.Contains(after.LastDeliveryError, "SMTP") {
+		t.Fatalf("the outcome does not name the missing relay: %q", after.LastDeliveryError)
+	}
+
+	// And the claim it took stops the next event for the same host inside the cooldown.
+	states, err := h.scoped.ListAlertStates(context.Background())
+	if err != nil {
+		t.Fatalf("listing states: %v", err)
+	}
+	if len(states) != 1 || states[0].LastNotified.IsZero() {
+		t.Fatalf("mailing left no cooldown behind it: %+v", states)
+	}
+}
