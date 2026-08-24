@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // FileScheme is the explicit spelling of a filesystem path.
@@ -97,4 +98,27 @@ func SplitKeyID(value string) (rest, keyID string) {
 		return value, ""
 	}
 	return value[:i], value[i+1:]
+}
+
+// ValidateKeyID refuses an identity that cannot be written to a trusted-signers line.
+//
+// The file is whitespace-separated and signing.ParseSigners splits it with strings.Fields, so a key id
+// holding any character unicode.IsSpace accepts turns a four-field line into five. What that costs is
+// out of all proportion to the typo behind it: ParseSigners abandons the whole file on the first bad
+// line rather than skipping it, so an operator who pastes such a line onto a host disarms every other
+// key already trusted there — the agent reports a trust anchor it cannot read and substitutes an empty
+// set. Refusing here costs one message at a keyboard; the alternative is found after a fleet-wide edit.
+//
+// unicode.IsSpace rather than a list of the four obvious characters, because strings.Fields splits on
+// everything it accepts: a vertical tab, a form feed and a non-breaking space all make the extra field,
+// and a check that missed them would be a check that looked complete.
+//
+// It lives here rather than in internal/signing because this is the package that already owns the rules
+// about what a reference may say, and because nothing on a managed host links it.
+func ValidateKeyID(keyID string) error {
+	if i := strings.IndexFunc(keyID, unicode.IsSpace); i >= 0 {
+		return fmt.Errorf("signing: a key id may not contain whitespace: %q. It is the third field of "+
+			"a trusted-signers line, and that file is whitespace-separated", keyID)
+	}
+	return nil
 }

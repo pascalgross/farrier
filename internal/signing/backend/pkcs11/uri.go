@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/pascalgross/farrier/internal/signing/backend"
 )
 
 // Scheme is the reference prefix that selects this backend.
@@ -120,6 +122,14 @@ func parseURI(ref string) (uri, error) {
 		return uri{}, fmt.Errorf("pkcs11: the reference needs object=<label> or id=<hex> to say which " +
 			"key to sign with; a token holding one key is not a safe assumption to build into a tool " +
 			"that authorises reboots")
+	}
+	// Here rather than at signing time, so it fails before the module is dlopened and before the
+	// operator is asked for a PIN. The label cannot simply be trimmed: findOne matches CKA_LABEL
+	// byte-for-byte, so a normalised object= would stop finding the key it names.
+	if err := backend.ValidateKeyID(out.keyID()); err != nil {
+		return uri{}, fmt.Errorf("%w. Drop object= and address this key with id=<hex> instead, or "+
+			"relabel it on the token — the label has to stay byte-exact here because it is what "+
+			"CKA_LABEL is matched against", err)
 	}
 	return out, nil
 }

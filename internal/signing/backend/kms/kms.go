@@ -31,7 +31,6 @@ import (
 	"context"
 	"crypto"
 	"fmt"
-	"strings"
 
 	"github.com/pascalgross/farrier/internal/signing"
 	"github.com/pascalgross/farrier/internal/signing/backend"
@@ -160,9 +159,8 @@ func Open(ctx context.Context, scheme, ref string) (*Signer, error) {
 			"under in every host's trusted-signers and recorded under in the audit log. A resource name "+
 			"is not one: write %s:%s#ops-kms-1", scheme, resource)
 	}
-	if strings.ContainsAny(keyID, " \t\r\n") {
-		return nil, fmt.Errorf("kms: a key id may not contain whitespace: %q. It is the third field of "+
-			"a trusted-signers line, which is whitespace-separated", keyID)
+	if err := backend.ValidateKeyID(keyID); err != nil {
+		return nil, err
 	}
 
 	prov, err := newProvider(scheme, resource)

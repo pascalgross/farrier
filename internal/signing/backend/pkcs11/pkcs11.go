@@ -70,7 +70,27 @@ func init() {
 type Signer struct {
 	// mu serialises token use. A PKCS#11 session is a single conversation, and Close must not be able
 	// to pull one out from under a signature that is still in progress.
+	//
+	// It is held across the FFI call, so it can be held for as long as a finger takes to arrive.
+	// Nothing that has to answer promptly may wait on it — which is the whole reason state exists.
 	mu sync.Mutex
+
+	// state guards closed and owedTeardown, and is never held across a call into the module.
+	//
+	// Two locks rather than one because they answer to different clocks. mu is held for the length of
+	// a token operation, which is unbounded; this one is held for a handful of assignments. Close has
+	// to be able to read and set the signer's state while a signature is still blocked on the token,
+	// and it could not do that if the two shared a lock.
+	state sync.Mutex
+
+	// owedTeardown records that Close arrived while the token was busy, so whoever is on the token
+	// tears the module down on its way out.
+	//
+	// The alternative — Close finalising the module itself while a C_Sign is still running against the
+	// session — is how a process crashes inside a vendor library rather than in Go: dlclose unmaps the
+	// code the blocked thread is executing. So the teardown is handed to the one goroutine that can
+	// safely do it, and Close returns without waiting.
+	owedTeardown bool
 
 	// mod is the loaded module.
 	mod *module
@@ -91,7 +111,7 @@ type Signer struct {
 	public crypto.PublicKey
 
 	// closed reports whether Close has run, so that a signature after it fails with a sentence rather
-	// than by calling into a finalised module.
+	// than by calling into a finalised module. Guarded by state.
 	closed bool
 }
 
@@ -434,7 +454,8 @@ func (s *Signer) Backend() string { return Scheme }
 // no cancellation: C_Sign on a touch-required token blocks until somebody puts a finger on it. What
 // this gives an operator is honest and worth stating plainly — Ctrl-C returns control to them; the
 // token may still complete the operation. The signature that results is discarded and never leaves
-// this machine, so a cancelled signature authorises nothing.
+// this machine, so a cancelled signature authorises nothing. The abandoned goroutine keeps the session
+// until the token answers, and unloads the module on its way out if Close has arrived meanwhile.
 //
 // And the signature is verified against this signer's own public key before it is returned. A token
 // returns ECDSA as a raw r‖s pair while the wire format is ASN.1 DER, and an unconverted signature
@@ -476,9 +497,9 @@ func (s *Signer) Sign(ctx context.Context, payload []byte) ([]byte, error) {
 // signOnToken is the part that talks to the token, under the session lock.
 func (s *Signer) signOnToken(payload []byte) ([]byte, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.releaseToken()
 
-	if s.closed {
+	if s.isClosed() {
 		return nil, errors.New("pkcs11: this signer has been closed")
 	}
 	switch s.algorithm {
@@ -528,20 +549,65 @@ func derFromRS(raw []byte) ([]byte, error) {
 	return der, nil
 }
 
+// isClosed reports whether Close has run.
+//
+// A method rather than a field read because the field is guarded, and because the one caller reads it
+// while holding the token lock — where taking the state lock inline would put the two in an order the
+// rest of this file is careful to avoid.
+func (s *Signer) isClosed() bool {
+	s.state.Lock()
+	defer s.state.Unlock()
+	return s.closed
+}
+
+// releaseToken gives the token back, tearing the module down if Close asked for it while it was busy.
+//
+// This is the other half of Close's hand-off, and it runs while the token lock is still held — which
+// is what makes it safe: no other call can be on the session, and the operation that was blocking has
+// returned. The state lock is dropped before the teardown so that a second Close cannot be made to
+// wait behind a module being unloaded.
+func (s *Signer) releaseToken() {
+	s.state.Lock()
+	owed := s.owedTeardown
+	s.owedTeardown = false
+	s.state.Unlock()
+
+	if owed {
+		closeSession(s.mod, s.session)
+	}
+	s.mu.Unlock()
+}
+
 // Close logs out, closes the session and unloads the module.
 //
-// It takes the session lock first, so a signature the operator interrupted cannot have the token
-// pulled out from under it: the call is still running on the token, and finalising the module
-// underneath it is how a process crashes in a vendor library rather than in Go.
+// It never waits for the token. A signature the operator interrupted is still running on the session —
+// C_Sign has no cancellation, so a touch-required token holds it until somebody puts a finger on it or
+// the token gives up — and both signing commands run this from a defer the moment Sign returns. A
+// Close that took the session lock would therefore hand the terminal back only once the token
+// answered, which is the opposite of what interrupting is for, and by then the signal handler has
+// stopped listening: the operator cannot even Ctrl-C out of the wait.
+//
+// So it tries for the lock and does not block. Holding it means nothing is on the token and this call
+// tears the module down itself; failing to get it means a signature still owns the session, and the
+// teardown is left for releaseToken to do on the way out. The module is unloaded by whichever of the
+// two finishes last, exactly once, and never underneath a live call.
 func (s *Signer) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.state.Lock()
+	defer s.state.Unlock()
 
 	if s.closed {
 		return nil
 	}
 	s.closed = true
-	closeSession(s.mod, s.session)
+
+	// TryLock rather than Lock, and taken while state is held. That is an inversion of the order
+	// releaseToken uses, and it is safe for the one reason inversions ever are: this one cannot wait.
+	if s.mu.TryLock() {
+		defer s.mu.Unlock()
+		closeSession(s.mod, s.session)
+		return nil
+	}
+	s.owedTeardown = true
 	return nil
 }
 

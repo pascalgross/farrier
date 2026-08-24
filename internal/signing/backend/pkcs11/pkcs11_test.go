@@ -564,3 +564,49 @@ func TestDERFromRSRefusesWhatItCannotConvert(t *testing.T) {
 		}
 	}
 }
+
+// TestAReferenceWhoseKeyIDCannotBeWrittenDownIsRefused catches a label at the keyboard rather than
+// after a fleet-wide edit.
+//
+// The key id here is the object label, because that is the name a person gave the key — and PKCS#11
+// permits a space in it, which OpenSC's PIV objects use. A trusted-signers line is whitespace-
+// separated, so such an id makes a five-field line, and signing.ParseSigners abandons the whole file
+// on the first bad line rather than skipping it: pasting that line onto a host stops every other key
+// already trusted there from authorising anything.
+//
+// Refused during parsing, which is before the module is dlopened and before the operator is asked for
+// a PIN — so the failure costs a message rather than a touch on a token. The label itself is never
+// trimmed or normalised: findOne matches CKA_LABEL byte-for-byte, so a normalised object= would stop
+// finding the key it names, which is why the message points at id=<hex> instead.
+func TestAReferenceWhoseKeyIDCannotBeWrittenDownIsRefused(t *testing.T) {
+	const module = "?module-path=/usr/lib/softhsm/libsofthsm2.so"
+
+	for _, ref := range []string{
+		"token=ops;object=ops key 1" + module,
+		"token=ops;object=ops%20key%201" + module,
+		"token=ops;object=ops\tkey" + module,
+	} {
+		_, err := parseURI(ref)
+		if err == nil {
+			t.Errorf("%q was accepted; the line it produces would disarm a host's whole trust anchor", ref)
+			continue
+		}
+		if !strings.Contains(err.Error(), "whitespace") {
+			t.Errorf("%q: the refusal does not say why: %v", ref, err)
+		}
+		if !strings.Contains(err.Error(), "id=<hex>") {
+			t.Errorf("%q: the refusal names no way out: %v", ref, err)
+		}
+	}
+
+	// The two references that must keep working: an ordinary label, and the hex fallback a key found
+	// by CKA_ID alone is recorded under.
+	for _, ref := range []string{
+		"token=ops;object=ops-yubikey-1" + module,
+		"token=ops;id=%01%02" + module,
+	} {
+		if _, err := parseURI(ref); err != nil {
+			t.Errorf("%q was refused: %v", ref, err)
+		}
+	}
+}

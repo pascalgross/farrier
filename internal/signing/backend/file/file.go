@@ -112,6 +112,9 @@ func Generate(path, keyID string, alg signing.Algorithm, passphrase []byte) (*Si
 	if keyID == "" {
 		return nil, errors.New("file: a key id is required; it is what the audit log records")
 	}
+	if err := backend.ValidateKeyID(keyID); err != nil {
+		return nil, err
+	}
 	if len(passphrase) == 0 {
 		return nil, errors.New("file: a passphrase is required for a file-backed key")
 	}

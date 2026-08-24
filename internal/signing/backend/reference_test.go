@@ -123,3 +123,53 @@ func TestSplitKeyIDTakesTheLastFragment(t *testing.T) {
 		}
 	}
 }
+
+// TestAKeyIDWithWhitespaceIsRefusedByEveryBackend is a small check standing in front of a large
+// consequence.
+//
+// A key id becomes the third field of a trusted-signers line, and that file is whitespace-separated.
+// signing.ParseSigners does not skip a malformed line — it abandons the whole file — so one id with a
+// space in it, pasted onto a host, stops every other key already trusted there from authorising
+// anything. The operator's symptom is a fleet that has quietly lost its trust anchor, discovered long
+// after the edit that caused it.
+//
+// The interesting cases are the ones a hand-written list of characters misses. strings.Fields splits on
+// everything unicode.IsSpace accepts, so a vertical tab, a form feed and a non-breaking space each make
+// the extra field just as a plain space does — which is why the check asks unicode rather than listing.
+func TestAKeyIDWithWhitespaceIsRefusedByEveryBackend(t *testing.T) {
+	for _, id := range []string{
+		"ops key 1",
+		"ops\tkey",
+		"ops\nkey",
+		"ops\rkey",
+		"ops\vkey",
+		"ops\fkey",
+		"ops key",
+		"ops key",
+		" ops",
+		"ops ",
+	} {
+		err := ValidateKeyID(id)
+		if err == nil {
+			t.Errorf("ValidateKeyID(%q) was accepted; strings.Fields would split it into two", id)
+			continue
+		}
+		if !strings.Contains(err.Error(), "whitespace") {
+			t.Errorf("ValidateKeyID(%q): the message does not say why: %v", id, err)
+		}
+	}
+
+	// And the ids operators actually use are accepted, including the hex fallback a PKCS#11 key found
+	// by CKA_ID alone is recorded under. A check that refused these would be worse than the bug.
+	for _, id := range []string{
+		"ops-laptop",
+		"ops_yubikey_1",
+		"pkcs11:0102ab",
+		"ops.laptop@example.org",
+		"ops-kms-1",
+	} {
+		if err := ValidateKeyID(id); err != nil {
+			t.Errorf("ValidateKeyID(%q) was refused: %v", id, err)
+		}
+	}
+}
