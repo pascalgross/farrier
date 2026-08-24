@@ -484,27 +484,40 @@ report container state, that must be done through a read-only path, not group me
 This is the exception named in the second paragraph of the guarantee. It is stated plainly here because
 it is the only way a Farrier component ever applies operator-authored configuration to a host.
 
-**Tier 1 — first in the build order, and not yet built** (phase 2 of the roadmap,
-[#9](https://github.com/pascalgross/farrier/issues/9); what follows is its specification). Farrier
-stores, versions and renders cloud-init templates, and **never delivers them to a host**. The rendered
-`user-data` goes to a human, or to Terraform / Proxmox / MAAS / a cloud provider's user-data field; the
-machine consumes it at first boot from the hypervisor that created it. Farrier is not in the delivery
-path at all. This also covers bare metal, since Ubuntu `autoinstall` for PXE and ISO is delivered as
-cloud-init user-data.
+**Tier 1 — implemented.** Farrier stores, versions and renders cloud-init templates, and **never
+delivers them to a host**. The rendered `user-data` goes to a human, or to Terraform / Proxmox / MAAS /
+a cloud provider's user-data field; the machine consumes it at first boot from the hypervisor that
+created it. Farrier is not in the delivery path at all. This also covers bare metal, since Ubuntu
+`autoinstall` for PXE and ISO is delivered as cloud-init user-data.
 
-**Tier 2 — the exception** (phase 3, [#10](https://github.com/pascalgross/farrier/issues/10); the
-phase-1 agent verifies a bootstrap template and then refuses to continue, executing nothing and
-recording nothing, and says so to the operator). `farrier enroll --bootstrap NAME` applies a named
-template once, on a host that is being enrolled by hand. Every one of these guardrails is required:
+A template is a document with `{{placeholder}}` substitution sites and nothing else: no conditional, no
+loop, no expression — a renderer that grew a `{{ exec }}` would defeat the guarantee without touching
+the intent catalogue, so `internal/provision` refuses to be a template language by construction. Every
+saved revision is a new immutable version, because the Tier 2 record below names one and a record that
+resolves to editable bytes is not a record.
+
+**Tier 2 — the exception, implemented.** `farrier enroll --bootstrap NAME` applies a named template
+once, on a host that is being enrolled by hand. The template arrives in the enrolment response carrying
+a signature the control plane stored but cannot mint — it is produced offline by
+`farrier sign-template`, with a key the control plane does not hold, and the enrolment token must have
+been minted naming that template, so holding a leaked token is not the authority to choose what runs.
+An agent that asked for a template and receives none, or an unsigned one, fails the enrolment loudly
+rather than continuing as though something had been applied. Every one of these guardrails is required:
 
 1. Explicit `--bootstrap NAME` on that specific invocation. Never implicit, never a server default,
    never a group setting.
 2. The full text is printed to the terminal, written to the journal, and recorded in
-   `/var/lib/farrier/bootstrap-applied.json` **before** execution.
+   `/var/lib/farrier/bootstrap-applied.json` **before** execution. The record is fsynced — file and
+   directory — before anything runs, because it is the only thing that survives a template that
+   crashes the machine halfway, and "what was attempted" is the question an incident asks.
 3. It is signed by a key already present in that host's `trusted-signers`.
-4. It runs exactly once, enforced by an on-disk interlock.
-5. **cloud-init does the applying.** Farrier never ships a hand-written YAML-to-shell engine — that
-   would be the exec channel wearing a hat.
+4. It runs exactly once, enforced by an on-disk interlock — which is the record itself, one file, so
+   the two cannot disagree. A crash between "decided to apply" and "applied" refuses a second attempt
+   rather than permitting one; re-enrolling a bootstrapped host does not re-apply.
+5. **cloud-init does the applying.** Farrier writes the verified body into cloud-init's NoCloud seed
+   directory under a fresh instance-id and runs cloud-init's own stages with argument vectors fixed in
+   the agent; no byte of a template ever reaches a command line. Farrier never ships a hand-written
+   YAML-to-shell engine — that would be the exec channel wearing a hat.
 
 The chicken-and-egg problem is that `trusted-signers` is empty on a fresh install. It is solved by
 establishing the anchor from a local, administrator-chosen file **before** anything is fetched:

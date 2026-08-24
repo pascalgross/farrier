@@ -115,6 +115,7 @@ every guardrail in [`SECURITY.md` §7](SECURITY.md#7-provisioning-and-the-enrolm
   "nextHeartbeatSeconds": 60,
   "bootstrap": {
     "name": "standard-server",
+    "version": 3,
     "body": "#cloud-config\n...",
     "signature": "base64...",
     "signerKeyId": "ops-yubikey-1"
@@ -130,7 +131,12 @@ every guardrail in [`SECURITY.md` §7](SECURITY.md#7-provisioning-and-the-enrolm
 
 (keys in canonical order, per [§8](#8-canonical-json)). The name is covered as well as the body: signing
 the body alone would let a compromised control plane return a genuinely signed template that the
-operator did not name.
+operator did not name. `version` is informational and deliberately outside the signed payload — the
+record on the host keeps the body verbatim, so what ran stays knowable from the host alone even if a
+control plane relabelled its version numbers. The server issues a template only when the enrolment
+token was minted naming it, and refuses the enrolment — before consuming the token — when the named
+template is missing or unsigned, because an agent that asked and silently received nothing must not
+proceed as though something had been applied.
 
 The agent MUST verify the signature against a key present in the host's **existing**
 `/etc/farrier/trusted-signers` before doing anything with `body`; MUST refuse if `name` is not the name
