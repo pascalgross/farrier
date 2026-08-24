@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/protocol"
@@ -27,7 +29,8 @@ import (
 // would be a confirmation of nothing.
 func signTemplateCommand(argv []string) int {
 	fs := flag.NewFlagSet("sign-template", flag.ExitOnError)
-	keyPath := fs.String("key", "", "path to the signing key created by `farrier key generate`")
+	keyPath := fs.String("key", "",
+		"the signing key: a path from `farrier key generate`, or a backend reference")
 	name := fs.String("name", "", "the template name operators will pass to --bootstrap")
 	bodyPath := fs.String("body", "", "path to the cloud-init user-data to sign")
 	assumeYes := fs.Bool("yes", false, "do not ask for confirmation; for scripting a known-good template")
@@ -62,7 +65,10 @@ func signTemplateCommand(argv []string) int {
 		return 1
 	}
 
-	signer, err := openSigningKey(*keyPath)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	signer, err := openWithTimeout(ctx, *keyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
 		return 1
@@ -82,9 +88,13 @@ func signTemplateCommand(argv []string) int {
 		}
 	}
 
-	// The context is honoured because hardware backends block: a touch-required token waits for a
-	// finger, and an operator who changes their mind at that moment should be able to press Ctrl-C.
-	signature, err := signer.Sign(context.Background(), payload)
+	// The context is honoured because backends block: a touch-required token waits for a finger and a
+	// key store waits for a network. The deadline starts after the confirmation for the reason
+	// `farrier sign` states: the prompt above is a person reading a template, and a timeout that
+	// covered it would refuse to sign for anybody who read it carefully.
+	signCtx, done := context.WithTimeout(ctx, DefaultSigningTimeout)
+	defer done()
+	signature, err := signer.Sign(signCtx, payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: signing failed: %v\n", err)
 		return 1

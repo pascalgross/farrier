@@ -3,6 +3,7 @@ module github.com/pascalgross/farrier
 go 1.26.7
 
 require (
+	github.com/ebitengine/purego v0.10.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/yuin/goldmark v1.8.5
 	golang.org/x/crypto v0.55.0

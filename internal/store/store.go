@@ -224,6 +224,21 @@ const (
 	// ConditionSecurityUpdates fires when a host reports at least Threshold pending security updates.
 	ConditionSecurityUpdates AlertCondition = "security_updates"
 
+	// ConditionSecurityUpdatesAge fires when a host has had security updates pending for Threshold
+	// days.
+	//
+	// The other half of the condition issue #7 names: "pending security updates > N, **or older than
+	// N days**". Count and age are different questions — one host with twelve updates published this
+	// morning is healthy, and one with a single update from a fortnight ago is not — and it is the
+	// second that describes a machine nobody is patching.
+	//
+	// The age is measured from when this control plane first saw the backlog become non-empty, which
+	// is what the evaluator's Since field already records. That is an honest answer rather than an
+	// exact one: a host enrolled today with a month-old backlog reads as new, because nothing on the
+	// wire carries when an update was published. It is stated in docs/SECURITY.md §8 rather than left
+	// to be discovered.
+	ConditionSecurityUpdatesAge AlertCondition = "security_updates_age"
+
 	// ConditionRebootRequired fires when a host has needed a reboot for Threshold days.
 	ConditionRebootRequired AlertCondition = "reboot_required"
 
@@ -238,18 +253,29 @@ const (
 // Valid reports whether a condition is one of the closed set.
 func (c AlertCondition) Valid() bool {
 	switch c {
-	case ConditionHostSilent, ConditionSecurityUpdates, ConditionRebootRequired,
-		ConditionUnitFailed, ConditionJobFailed:
+	case ConditionHostSilent, ConditionSecurityUpdates, ConditionSecurityUpdatesAge,
+		ConditionRebootRequired, ConditionUnitFailed, ConditionJobFailed:
 		return true
 	default:
 		return false
 	}
 }
 
+// MeasuredInDays reports whether this condition's threshold is a number of days the raw condition has
+// held, rather than a level the raw condition crosses.
+//
+// The two shapes need different arithmetic in the evaluator and different words in a summary, and they
+// are the difference between "a reboot is needed" — which is Tuesday — and "a reboot has been needed
+// for a fortnight", which is the thing that never gets done until it is an incident.
+func (c AlertCondition) MeasuredInDays() bool {
+	return c == ConditionRebootRequired || c == ConditionSecurityUpdatesAge
+}
+
 // Evaluated reports whether the evaluator drives this condition, as opposed to it only routing events
 // that fire on their own.
 func (c AlertCondition) Evaluated() bool {
-	return c == ConditionHostSilent || c == ConditionSecurityUpdates || c == ConditionRebootRequired
+	return c == ConditionHostSilent || c == ConditionSecurityUpdates ||
+		c == ConditionSecurityUpdatesAge || c == ConditionRebootRequired
 }
 
 // AlertRule is one tenant's decision about which events are worth waking somebody for.
@@ -304,18 +330,39 @@ type AlertRule struct {
 	LastDeliveryError string
 }
 
-// AlertState is the evaluator's memory of one (rule, host) pair.
+// AlertKey identifies the thing one firing is tracked under.
+//
+// Rule and host are the pair issue #7 asks for — "cooldown per rule per host" — and Subject is the
+// dimension that pair turned out to be missing. A unit_failed rule can fire about more than one thing
+// on one machine, and keying its cooldown on the host alone meant the second failing unit lost the
+// claim to the first and was dropped in silence: no mail, and no record that no mail went out.
+//
+// It is a struct rather than three parameters because it travels through four store methods and an
+// evaluator, and a triple passed positionally is a bug waiting for somebody to swap two strings.
+type AlertKey struct {
+	// RuleID is the rule half.
+	RuleID string
+
+	// HostID is the host half, empty for a fleet-wide digest row.
+	HostID string
+
+	// Subject narrows the key below the host: a unit name for unit_failed, and empty everywhere the
+	// rule can only be about the machine as a whole.
+	//
+	// Empty rather than a sentinel, because that is what every row written before this existed holds
+	// and what the column defaults to — a rule that is about the host keeps the key it always had.
+	Subject string
+}
+
+// AlertState is the evaluator's memory of one alert key.
 //
 // Persisted rather than held in the process, because the two things it prevents — a re-notification
 // before the cooldown, and a missing recovery event — are exactly what a restart would otherwise
 // cause: a control plane deploy at 09:00 must not re-page everybody about the host that has been down
 // since 03:00.
 type AlertState struct {
-	// RuleID is the rule half of the pair.
-	RuleID string
-
-	// HostID is the host half.
-	HostID string
+	// AlertKey is what this state is about.
+	AlertKey
 
 	// Firing reports whether the condition held at the last evaluation.
 	Firing bool
@@ -401,6 +448,31 @@ type TemplateSummary struct {
 	// Signed reports whether the latest version carries an offline signature, which is what decides
 	// whether an enrolling host can be issued this template at all.
 	Signed bool
+}
+
+// TemplateRevision is one stored version of a template, without its body.
+//
+// It exists because "every save is a new immutable version" is a property an operator has to be able to
+// *see*: a host's bootstrap record names a version, and a version nobody can enumerate is one nobody
+// can resolve back to what ran. The body is deliberately absent — it is sealed, it is potentially
+// large, and a listing that carried every revision's body would decrypt a template's whole history to
+// answer "which versions are there".
+type TemplateRevision struct {
+	// Version is this revision's number, starting at 1.
+	Version int
+
+	// CreatedAt is when it was stored.
+	CreatedAt time.Time
+
+	// CreatedBy is who stored it.
+	CreatedBy string
+
+	// Signed reports whether this revision carries an offline signature, which is what decides whether
+	// an enrolling host can be issued it at all.
+	Signed bool
+
+	// SignerKeyID names the key that signed it, empty when unsigned.
+	SignerKeyID string
 }
 
 // Online reports whether the host has been heard from recently enough to be considered up.
@@ -928,6 +1000,16 @@ type Scoped interface {
 	// ListTemplates returns one summary per template name, newest latest-version first.
 	ListTemplates(ctx context.Context) ([]TemplateSummary, error)
 
+	// ListTemplateVersions returns every stored revision of one template, newest first.
+	//
+	// Bodies are not included: this answers "what revisions exist and who made them", which is the
+	// question an operator asks when a host's bootstrap record names version 3 and the current one is
+	// 7. A caller that wants a body names a version and asks for it.
+	//
+	// An unknown name returns ErrNotFound rather than an empty list, because "this template has no
+	// versions" is not a state that can exist — a template comes into being by having one.
+	ListTemplateVersions(ctx context.Context, name string) ([]TemplateRevision, error)
+
 	// GetTemplateVersion returns one version of a template, or ErrNotFound.
 	//
 	// Version 0 means the latest, which is what enrolment issues and what the editor opens; a positive
@@ -975,10 +1057,10 @@ type Scoped interface {
 	// go and nobody to tell, which is the correct end of that story.
 	RecordAlertDelivery(ctx context.Context, ruleID string, at time.Time, failure string) error
 
-	// ListAlertStates returns the evaluator's memory for every (rule, host) pair.
+	// ListAlertStates returns the evaluator's memory for every key it holds one for.
 	ListAlertStates(ctx context.Context) ([]AlertState, error)
 
-	// ClaimAlertNotification takes the right to notify for one (rule, host) pair, atomically.
+	// ClaimAlertNotification takes the right to notify for one alert key, atomically.
 	//
 	// It reports whether this caller won: true means the cooldown had elapsed (or nothing had ever
 	// notified) and last_notified is now `at`, false means somebody else has it and this caller must
@@ -989,21 +1071,28 @@ type Scoped interface {
 	// "no recent notification" and both mail, which is precisely the flapping-unit noise the cooldown
 	// exists to stop. One statement in the database is the only version of this that holds — across
 	// goroutines and across control-plane processes alike.
-	ClaimAlertNotification(ctx context.Context, ruleID, hostID string, at time.Time,
+	ClaimAlertNotification(ctx context.Context, key AlertKey, at time.Time,
 		cooldown time.Duration) (bool, error)
 
-	// ReleaseAlertFiring clears one (rule, host) pair's firing flag, atomically.
+	// ReleaseAlertFiring clears one alert key's firing flag, atomically, keeping its cooldown.
 	//
-	// It reports whether this caller was the one that cleared it: true means the pair was firing and
+	// It reports whether this caller was the one that cleared it: true means the key was firing and
 	// is not any more, false means it was already clear and somebody else has already said so.
+	//
+	// The cooldown deliberately survives. Clearing last_notified here would make the cooldown
+	// unreachable for any condition that oscillates: a host crossing its threshold, dropping back and
+	// crossing again mails on every crossing, for ever, because each recovery hands the next firing a
+	// clean claim. Keeping the stamp is the whole of flap suppression — one firing per cooldown,
+	// whatever the condition does in between — and it is why a flapping unit costs one mail rather
+	// than one per loop.
 	//
 	// The counterpart to ClaimAlertNotification, and needed for the same reason. Every firing has an
 	// un-firing, and two control planes both reading "this was firing and is not now" would both send
 	// the recovery — which for a partition that heals is the moment an operator is least able to
 	// absorb a duplicate of every message.
-	ReleaseAlertFiring(ctx context.Context, ruleID, hostID string) (bool, error)
+	ReleaseAlertFiring(ctx context.Context, key AlertKey) (bool, error)
 
-	// UpsertAlertState records one (rule, host) pair's state, keyed on the pair.
+	// UpsertAlertState records one key's state, keyed on the key.
 	UpsertAlertState(ctx context.Context, s AlertState) error
 }
 

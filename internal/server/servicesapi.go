@@ -12,6 +12,22 @@ import (
 	"github.com/pascalgross/farrier/internal/store"
 )
 
+// UnitStateAbsent is the state a unit moves to when it stops being reported at all.
+//
+// Not a systemd state — systemd has no word for "this unit is no longer in the list" — so it is
+// Farrier's, and it is spelled out rather than left as an empty string so a history row reads as an
+// answer instead of a missing field.
+const UnitStateAbsent = "absent"
+
+// MaxUnitEventsPerBeat bounds how many unit-state events one heartbeat may produce.
+//
+// Every event is a durable write and then a detached delivery drawn from a budget the whole tenant
+// shares, and this runs inside the agent's own heartbeat request. A host that reboots badly and
+// reports forty units failing at once would otherwise serialise forty writes into one beat and starve
+// the outbound path for every other host in the tenant. Ten is more than an operator reads before
+// opening the host page anyway; the history rows are not capped, so nothing is lost from the record.
+const MaxUnitEventsPerBeat = 10
+
 // policyProbe is the slice of a host's reported policy the server reads for unit monitoring.
 type policyProbe struct {
 	// Services carries the watch list.
@@ -83,8 +99,21 @@ func (s *Server) detectUnitTransitions(ctx context.Context, who caller, previous
 	watched := parseWatched(who.Host.Policy)
 	now := time.Now().UTC()
 	var transitions []store.UnitTransition
+	emitted := 0
 
+	// emit sends one unit event, or counts it as dropped past the per-beat cap.
+	emit := func(ev notify.Event) {
+		if emitted >= MaxUnitEventsPerBeat {
+			emitted++
+			return
+		}
+		emitted++
+		s.emit(ctx, who.Store.Tenant(), ev)
+	}
+
+	seen := make(map[string]bool, len(after.Services))
 	for _, unit := range after.Services {
+		seen[unit.Name] = true
 		was, known := prior[unit.Name]
 		if !known || was.ActiveState == unit.ActiveState {
 			continue
@@ -98,7 +127,7 @@ func (s *Server) detectUnitTransitions(ctx context.Context, who caller, previous
 		}
 		switch {
 		case unit.ActiveState == "failed":
-			s.emit(ctx, who.Store.Tenant(), notify.Event{
+			emit(notify.Event{
 				Kind: string(notify.KindServiceFailed), HostID: who.Host.ID,
 				Hostname: who.Host.Hostname, At: now,
 				Summary: who.Host.Hostname + ": " + unit.Name + " failed (" + unit.SubState + ")",
@@ -108,13 +137,51 @@ func (s *Server) detectUnitTransitions(ctx context.Context, who caller, previous
 				},
 			})
 		case was.ActiveState == "failed" && unit.ActiveState == "active":
-			s.emit(ctx, who.Store.Tenant(), notify.Event{
+			emit(notify.Event{
 				Kind: string(notify.KindServiceRecovered), HostID: who.Host.ID,
 				Hostname: who.Host.Hostname, At: now,
 				Summary: who.Host.Hostname + ": " + unit.Name + " is running again",
 				Detail:  map[string]any{"unit": unit.Name, "from": was.ActiveState},
 			})
 		}
+	}
+
+	// A unit that was there and is not any more is a transition too, and it is the one that used to
+	// be invisible. It matters most for a unit that was failing: the rule that fired about it has no
+	// evaluator pass to notice, so without a recovery here it stays firing for ever — and "nginx is
+	// still failing" is exactly the sentence an operator would have acted on had it been true.
+	//
+	// Only when the list is whole. A truncated report drops units in sorted order for reasons that
+	// have nothing to do with the machine, and reading that as "the unit is gone" would manufacture a
+	// recovery for a unit that is still failing.
+	if !after.ServicesTruncated && !before.ServicesTruncated {
+		for _, unit := range before.Services {
+			if seen[unit.Name] {
+				continue
+			}
+			transitions = append(transitions, store.UnitTransition{
+				Unit: unit.Name, From: unit.ActiveState, To: UnitStateAbsent, At: now,
+			})
+			if watched.matches(unit.Name) && unit.ActiveState == "failed" {
+				emit(notify.Event{
+					Kind: string(notify.KindServiceRecovered), HostID: who.Host.ID,
+					Hostname: who.Host.Hostname, At: now,
+					Summary: who.Host.Hostname + ": " + unit.Name + " is no longer reported; it was " +
+						"failing when it was last seen",
+					Detail: map[string]any{"unit": unit.Name, "from": unit.ActiveState,
+						"to": UnitStateAbsent},
+				})
+			}
+		}
+	}
+
+	if emitted > MaxUnitEventsPerBeat {
+		// Said once, rather than dropped in silence. One host rebooting badly can move dozens of
+		// units at once, and every event is a durable write plus a detached delivery against a budget
+		// the whole tenant shares — so the cap protects the other hosts, and this line is what stops
+		// it from being the same silence it exists to prevent.
+		slog.Warn("a host reported more unit-state changes in one heartbeat than are notified",
+			"host", who.Host.ID, "changes", emitted, "notified", MaxUnitEventsPerBeat)
 	}
 
 	if len(transitions) == 0 {
@@ -145,6 +212,11 @@ type failedServiceView struct {
 	// ServicesTruncated reports that this host's unit list was cut at the protocol's cap, so "no
 	// failed units here" and "the failed unit sorts after the cap" do not render identically.
 	ServicesTruncated bool `json:"servicesTruncated"`
+
+	// FactsUnknown reports that this host has no readable facts, so nothing at all is known about
+	// its units — which is a third answer beside "clean" and "failing", and the one that used to be
+	// rendered as the first.
+	FactsUnknown bool `json:"factsUnknown"`
 }
 
 // handleFailedServices answers "where is something failed" across the fleet, without opening hosts
@@ -159,21 +231,32 @@ func (s *Server) handleFailedServices(w http.ResponseWriter, r *http.Request, wh
 
 	now := time.Now()
 	views := make([]failedServiceView, 0)
+	total := 0
 	for _, host := range hosts {
+		// A revoked host is not part of the fleet this page is about, so it is neither listed nor
+		// counted. Counting it made "3 of 300 hosts" include machines somebody had deliberately
+		// removed, which is the denominator quietly disagreeing with the numerator.
 		if host.Revoked {
 			continue
 		}
+		total++
+
+		view := failedServiceView{
+			HostID:   host.ID,
+			Hostname: host.Hostname,
+			Online:   host.Online(now, s.cfg.HeartbeatSeconds),
+			Failed:   []unitProbe{},
+		}
 		probe, ok := parseFactsProbe(host.Facts)
 		if !ok {
+			// Listed as unknown rather than skipped. A host that has never reported, or whose facts
+			// cannot be read, is not a host with no failed units — and the two rendering identically
+			// is the same failure the truncation flag exists to prevent, one level up.
+			view.FactsUnknown = true
+			views = append(views, view)
 			continue
 		}
-		view := failedServiceView{
-			HostID:            host.ID,
-			Hostname:          host.Hostname,
-			Online:            host.Online(now, s.cfg.HeartbeatSeconds),
-			Failed:            []unitProbe{},
-			ServicesTruncated: probe.ServicesTruncated,
-		}
+		view.ServicesTruncated = probe.ServicesTruncated
 		for _, unit := range probe.Services {
 			if unit.ActiveState == "failed" {
 				view.Failed = append(view.Failed, unit)
@@ -185,7 +268,7 @@ func (s *Server) handleFailedServices(w http.ResponseWriter, r *http.Request, wh
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hosts":      views,
-		"total":      len(hosts),
+		"total":      total,
 		"serverTime": now.UTC(),
 	})
 }

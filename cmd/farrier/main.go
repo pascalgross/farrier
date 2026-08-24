@@ -33,7 +33,18 @@ import (
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/farrier/internal/signing/backend"
 	"github.com/pascalgross/farrier/internal/signing/backend/file"
+
+	// The backends this build ships, registered by their own init functions.
+	//
+	// Blank imports, in the shape database/sql uses, and they are the whole of what `farrier` knows
+	// about any of them: the registry resolves a reference and this command never names a backend
+	// again. They are imported here rather than in internal/signing because the agent and the control
+	// plane import that package for the verifier and must link no backend at all — a property
+	// TestGuaranteeNoManagedHostBinaryLoadsASigningBackend asserts rather than assumes.
+	_ "github.com/pascalgross/farrier/internal/signing/backend/kms"
+	_ "github.com/pascalgross/farrier/internal/signing/backend/pkcs11"
 )
 
 // usage prints the command list.
@@ -206,10 +217,15 @@ func keyGenerate(argv []string) int {
 	return 0
 }
 
-// keyShow prints the trusted-signers line for an existing key, without unlocking it.
+// keyShow prints the trusted-signers line for an existing key.
+//
+// A file backend answers this without the passphrase, which is the situation somebody is in while
+// setting up a host with the token at the office. A token or a key store may need its PIN or its cloud
+// credential first, and says so rather than returning nothing.
 func keyShow(argv []string) int {
 	fs := flag.NewFlagSet("key show", flag.ExitOnError)
-	in := fs.String("in", "", "path to the key file")
+	in := fs.String("in", "", "path to the key file, or a backend reference: "+
+		strings.Join(referenceExamples(), ", "))
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -218,13 +234,40 @@ func keyShow(argv []string) int {
 		return 2
 	}
 
-	pub, err := file.Inspect(*in)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	showCtx, done := context.WithTimeout(ctx, DefaultSigningTimeout)
+	defer done()
+
+	pub, err := backend.Inspect(showCtx, *in, readPassphrase)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
 		return 1
 	}
 	fmt.Printf("%s %s %s %s\n", pub.Algorithm, pub.Encoded, pub.KeyID, pub.Backend)
 	return 0
+}
+
+// referenceExamples renders one example per registered backend, for the help text.
+//
+// Generated from the registry rather than written out, so a build without a backend does not advertise
+// it and a build with a new one does not need this list edited. The examples themselves are the
+// shortest reference each backend accepts.
+func referenceExamples() []string {
+	examples := map[string]string{
+		"file":     "~/.config/farrier/ops.key",
+		"pkcs11":   "pkcs11:token=ops;object=ops-yubikey-1?module-path=/usr/lib/opensc-pkcs11.so",
+		"awskms":   "awskms:arn:aws:kms:eu-central-1:123456789012:key/abcd#ops-kms-1",
+		"gcpkms":   "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1#ops-kms-1",
+		"azurekms": "azurekms:ops.vault.azure.net/keys/farrier-signing/9885aa55#ops-kms-1",
+	}
+	var out []string
+	for _, scheme := range backend.Schemes() {
+		if example, ok := examples[scheme]; ok {
+			out = append(out, example)
+		}
+	}
+	return out
 }
 
 // promptInput is the one reader every prompt in this program shares.

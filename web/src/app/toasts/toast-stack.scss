@@ -1,0 +1,58 @@
+// The stack sits over every page, anchored to the corner an operator does not read.
+//
+// Bottom right rather than top right: the toolbar's bell and identity are top right, and a toast
+// that covered them would hide the unread count it is announcing.
+:host {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 100;
+  width: min(24rem, calc(100vw - 2rem));
+  // The host is an overlay across the bottom-right of every page and must never swallow a click
+  // meant for what is underneath it. Only the toasts themselves take pointer events, so an empty
+  // stack is inert.
+  pointer-events: none;
+}
+
+.farrier-toasts {
+  // Newest nearest the corner and older ones pushed upwards, so the entry that just arrived is
+  // always in the same place and the stack does not shuffle under the reader's eye.
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.5rem;
+}
+
+.farrier-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  border-radius: var(--mat-sys-corner-medium);
+  // The theme's own tokens rather than fixed colours. The console follows the operating system's
+  // light and dark setting through `color-scheme`, and a toast painted for one of them is
+  // unreadable in the other — which, for the one element that appears unbidden over somebody's
+  // work, is worse than not showing it at all.
+  background: var(--mat-sys-surface-container-high);
+  color: var(--mat-sys-on-surface);
+  border: 1px solid var(--mat-sys-outline-variant);
+  box-shadow: var(--mat-sys-level3);
+  // A short entrance, so a toast that appears while somebody is reading registers as an arrival
+  // rather than as a paragraph that was always there.
+  animation: farrier-toast-in 120ms ease-out;
+}
+
+@keyframes farrier-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+// Honoured rather than assumed away: motion at the edge of the eye is exactly what this setting
+// exists to stop, and the toast reads the same without it.
+@media (prefers-reduced-motion: reduce) {
+  .farrier-toast {
+    animation: none;
+  }
+}

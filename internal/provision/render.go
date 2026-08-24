@@ -29,6 +29,20 @@ import (
 // the API boundary, where the operator who hit it can be told, rather than deep in the store.
 const MaxBodyBytes = 64 << 10
 
+// MaxRenderedBytes bounds what one render may produce.
+//
+// A body is bounded and a request is bounded, but substitution multiplies rather than adds: a 64 KiB
+// body of repeated `{{a}}` holds some thirteen thousand sites, and one parameter of a quarter of a
+// megabyte — which fits inside the request bound with room to spare — would expand to gigabytes. That
+// is a memory-amplification denial of service against the control plane, reachable by any authenticated
+// operator, so the output carries its own bound and it is checked from the site lengths before a byte
+// is written.
+//
+// Four times the body bound: substitution should be able to grow a document — a full authorized_keys
+// block substituted into a one-line placeholder is the ordinary case — but not multiply it. Nothing an
+// operator pastes into a provider's user-data field comes close; EC2 caps user-data at 16 KiB.
+const MaxRenderedBytes = 256 << 10
+
 // placeholderPattern matches one substitution site, such as {{hostname}} or {{ enrollmentToken }}.
 //
 // The name charset is deliberately narrow: a parameter is an identifier, not an expression, and the
@@ -71,16 +85,29 @@ func Render(body string, params map[string]string) (string, error) {
 	var missing []string
 	used := map[string]bool{}
 
-	rendered := placeholderPattern.ReplaceAllStringFunc(body, func(site string) string {
-		name := placeholderPattern.FindStringSubmatch(site)[1]
-		value, ok := params[name]
+	// Located once and substituted from the same indices below, so that the output size is arithmetic
+	// over what will actually be written rather than a guess a second pass could contradict.
+	sites := placeholderPattern.FindAllStringSubmatchIndex(body, -1)
+
+	size := len(body)
+	for _, site := range sites {
+		value, ok := params[body[site[2]:site[3]]]
 		if !ok {
-			missing = append(missing, name)
-			return site
+			missing = append(missing, body[site[2]:site[3]])
+			continue
 		}
-		used[name] = true
-		return value
-	})
+		used[body[site[2]:site[3]]] = true
+		size += len(value) - (site[1] - site[0])
+	}
+
+	// Checked before the two below, because this one is not about the caller's spelling: it is about
+	// what this process is being asked to allocate, and a request that would exhaust the control plane
+	// should be refused whether or not it also has a typo in it.
+	if size > MaxRenderedBytes {
+		return "", fmt.Errorf("provision: this would render %d bytes and the limit is %d — "+
+			"a value substituted into many placeholders multiplies rather than adds",
+			size, MaxRenderedBytes)
+	}
 
 	if len(missing) > 0 {
 		sort.Strings(missing)
@@ -100,7 +127,19 @@ func Render(body string, params map[string]string) (string, error) {
 			"a parameter nothing substitutes is usually a typo for one that exists",
 			strings.Join(unused, ", "))
 	}
-	return rendered, nil
+
+	// Every site has a value by now, so this walks the body once and writes into a buffer already the
+	// right size.
+	var out strings.Builder
+	out.Grow(size)
+	end := 0
+	for _, site := range sites {
+		out.WriteString(body[end:site[0]])
+		out.WriteString(params[body[site[2]:site[3]]])
+		end = site[1]
+	}
+	out.WriteString(body[end:])
+	return out.String(), nil
 }
 
 // dedupe removes adjacent duplicates from a sorted slice.

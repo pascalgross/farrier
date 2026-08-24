@@ -41,7 +41,14 @@ var shapes = []secretShape{
 		// separates "a password is written here" from cloud-init's chpasswd/users structure being
 		// present at all, which is legitimate and common. hashed_passwd is deliberately included: a
 		// crypt hash is still a credential worth keeping out of world-readable metadata.
-		pattern: regexp.MustCompile(`(?m)^\s*(passwd|password|hashed_passwd)\s*:\s*\S`),
+		//
+		// The horizontal-space classes are the whole of "on the same line", and they are spelled out
+		// rather than written \s because \s matches a newline: with it, the trailing \s*\S skipped
+		// blank lines to find the next non-space character anywhere further down the document, so an
+		// empty `passwd:` key in a users block warned about an inline value that was not there. That
+		// is precisely the false positive this shape is written to avoid, and it survived because the
+		// one test case covering it happened to end the string.
+		pattern: regexp.MustCompile(`(?m)^[ \t]*(passwd|password|hashed_passwd)[ \t]*:[ \t]*\S`),
 		what:    "a password field with an inline value",
 	},
 	{

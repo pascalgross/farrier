@@ -89,11 +89,32 @@ func (h *alertHarness) eventSummaries(t *testing.T, kind string) []string {
 	return summaries
 }
 
+// digestOf returns the one summary in a set that reads as a digest, and the rest.
+//
+// The two are asserted separately everywhere below, because they answer different questions: the
+// digest is what interrupts somebody, and the remainder is what the inbox has to be able to answer
+// afterwards.
+func digestOf(summaries []string, count string) (digest string, rest []string) {
+	for _, summary := range summaries {
+		if strings.HasPrefix(summary, count+" hosts ") {
+			digest = summary
+			continue
+		}
+		rest = append(rest, summary)
+	}
+	return digest, rest
+}
+
 // TestARecoveringPartitionSendsOneNotification is the un-firing half of the digest rule.
 //
 // A partition that heals recovers every host at once. Firings already collapse past the threshold,
 // and recoveries have to as well for the same reason and more so: three hundred "heartbeating again"
 // lines are what bury the one host that did not come back.
+//
+// The collapse is a property of the *notification*, not of the inbox. The inbox is the durable,
+// complete record — the answer to "what did I miss overnight" — so it still holds one row per host
+// beside the digest, and this test asserts both halves: one digest, and nobody missing from the
+// record behind it.
 func TestARecoveringPartitionSendsOneNotification(t *testing.T) {
 	h := newAlertHarness(t)
 	rule := h.createRule(t)
@@ -101,14 +122,27 @@ func TestARecoveringPartitionSendsOneNotification(t *testing.T) {
 	longAgo := time.Now().UTC().Add(-2 * time.Hour)
 	h.silentHosts(t, 10, longAgo)
 
-	// The pass that finds them silent: one digest, not ten pages.
+	// The pass that finds them silent: one digest, not ten pages — and ten rows behind it.
 	h.server.evaluateAlerts(context.Background(), time.Now().UTC())
-	firing := h.eventSummaries(t, string(notify.KindHostSilent))
-	if len(firing) != 1 {
-		t.Fatalf("ten silent hosts produced %d firing events: %v", len(firing), firing)
+	digest, perHost := digestOf(h.eventSummaries(t, string(notify.KindHostSilent)), "10")
+	if digest == "" {
+		t.Fatalf("ten silent hosts produced no digest: %v", perHost)
 	}
-	if !strings.HasPrefix(firing[0], "10 hosts ") {
-		t.Fatalf("the digest does not name the count: %q", firing[0])
+	if len(perHost) != 10 {
+		t.Fatalf("the inbox holds %d per-host rows behind the digest, expected 10: %v",
+			len(perHost), perHost)
+	}
+	for i := range 10 {
+		name := "host-" + strconv.Itoa(i)
+		found := false
+		for _, summary := range perHost {
+			if strings.HasPrefix(summary, name+":") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s is in the digest's count and not in the inbox behind it", name)
+		}
 	}
 
 	// Everybody comes back at once.
@@ -126,19 +160,23 @@ func TestARecoveringPartitionSendsOneNotification(t *testing.T) {
 	}
 
 	h.server.evaluateAlerts(context.Background(), now)
-	recovered := h.eventSummaries(t, string(notify.KindHostRecovered))
-	if len(recovered) != 1 {
-		t.Fatalf("ten recoveries produced %d events: %v", len(recovered), recovered)
+	recoveryDigest, recoveredHosts := digestOf(h.eventSummaries(t, string(notify.KindHostRecovered)), "10")
+	if recoveryDigest == "" {
+		t.Fatalf("ten recoveries produced no digest: %v", recoveredHosts)
 	}
-	if !strings.Contains(recovered[0], "10 hosts") ||
-		!strings.Contains(recovered[0], "heartbeating again") {
-		t.Fatalf("the recovery digest does not read as one: %q", recovered[0])
+	if !strings.Contains(recoveryDigest, "heartbeating again") {
+		t.Fatalf("the recovery digest does not read as one: %q", recoveryDigest)
+	}
+	if len(recoveredHosts) != 10 {
+		t.Fatalf("the inbox holds %d per-host recoveries, expected 10: %v",
+			len(recoveredHosts), recoveredHosts)
 	}
 
 	// And the rule is no longer firing for anybody, so a third pass says nothing at all.
+	before := len(h.eventSummaries(t, string(notify.KindHostRecovered)))
 	h.server.evaluateAlerts(context.Background(), now.Add(time.Minute))
-	if again := h.eventSummaries(t, string(notify.KindHostRecovered)); len(again) != 1 {
-		t.Fatalf("a quiet pass produced %d more recovery events", len(again)-1)
+	if again := h.eventSummaries(t, string(notify.KindHostRecovered)); len(again) != before {
+		t.Fatalf("a quiet pass produced %d more recovery events", len(again)-before)
 	}
 	if rule.Condition != store.ConditionHostSilent {
 		t.Fatalf("the rule under test is not the one this test describes: %s", rule.Condition)
@@ -208,8 +246,8 @@ func TestRoutingHonoursALostCooldownClaim(t *testing.T) {
 	h := newAlertHarness(t)
 	rule := h.routingFixture(t)
 
-	won, err := h.scoped.ClaimAlertNotification(
-		context.Background(), rule.ID, "host-1", time.Now().UTC(), time.Hour)
+	won, err := h.scoped.ClaimAlertNotification(context.Background(),
+		store.AlertKey{RuleID: rule.ID, HostID: "host-1"}, time.Now().UTC(), time.Hour)
 	if err != nil || !won {
 		t.Fatalf("pre-claiming: won=%v err=%v", won, err)
 	}

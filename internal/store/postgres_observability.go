@@ -279,12 +279,12 @@ func (s *scopedPostgres) DeleteAlertRule(ctx context.Context, id string) error {
 	})
 }
 
-// ListAlertStates returns the evaluator's memory for every (rule, host) pair.
+// ListAlertStates returns the evaluator's memory for every key it holds one for.
 func (s *scopedPostgres) ListAlertStates(ctx context.Context) ([]AlertState, error) {
 	var out []AlertState
 	err := s.withTenant(ctx, "listing alert states", func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT rule_id, host_id, firing,
+			SELECT rule_id, host_id, subject, firing,
 			       COALESCE(since, 'epoch'::timestamptz),
 			       COALESCE(last_notified, 'epoch'::timestamptz)
 			  FROM alert_states
@@ -296,7 +296,7 @@ func (s *scopedPostgres) ListAlertStates(ctx context.Context) ([]AlertState, err
 
 		for rows.Next() {
 			var st AlertState
-			if err := rows.Scan(&st.RuleID, &st.HostID, &st.Firing, &st.Since,
+			if err := rows.Scan(&st.RuleID, &st.HostID, &st.Subject, &st.Firing, &st.Since,
 				&st.LastNotified); err != nil {
 				return wrap(err, "scanning an alert state")
 			}
@@ -316,16 +316,18 @@ func (s *scopedPostgres) ListAlertStates(ctx context.Context) ([]AlertState, err
 	return out, nil
 }
 
-// UpsertAlertState records one (rule, host) pair's state.
+// UpsertAlertState records one key's state.
 func (s *scopedPostgres) UpsertAlertState(ctx context.Context, st AlertState) error {
 	return s.withTenant(ctx, "recording an alert state", func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO alert_states (tenant_id, rule_id, host_id, firing, since, last_notified)
-			VALUES ($1, $2, $3, $4, NULLIF($5, 'epoch'::timestamptz), NULLIF($6, 'epoch'::timestamptz))
-			ON CONFLICT (tenant_id, rule_id, host_id) DO UPDATE
+			INSERT INTO alert_states
+			            (tenant_id, rule_id, host_id, subject, firing, since, last_notified)
+			VALUES ($1, $2, $3, $4, $5,
+			        NULLIF($6, 'epoch'::timestamptz), NULLIF($7, 'epoch'::timestamptz))
+			ON CONFLICT (tenant_id, rule_id, host_id, subject) DO UPDATE
 			   SET firing = EXCLUDED.firing, since = EXCLUDED.since,
 			       last_notified = EXCLUDED.last_notified`,
-			string(s.tenant), st.RuleID, st.HostID, st.Firing,
+			string(s.tenant), st.RuleID, st.HostID, st.Subject, st.Firing,
 			zeroAsEpoch(st.Since), zeroAsEpoch(st.LastNotified))
 		return wrap(err, "recording an alert state")
 	})
@@ -341,20 +343,22 @@ func (s *scopedPostgres) UpsertAlertState(ctx context.Context, st AlertState) er
 // A read followed by a write would not do. Event-routed alerts run one detached goroutine per event,
 // so two units failing on the same heartbeat race here; and a hosted installation runs more than one
 // control plane, where a mutex would not help at all.
-func (s *scopedPostgres) ClaimAlertNotification(ctx context.Context, ruleID, hostID string,
+func (s *scopedPostgres) ClaimAlertNotification(ctx context.Context, key AlertKey,
 	at time.Time, cooldown time.Duration) (bool, error) {
 
 	claimed := false
 	err := s.withTenant(ctx, "claiming an alert notification", func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			INSERT INTO alert_states (tenant_id, rule_id, host_id, firing, since, last_notified)
-			VALUES ($1, $2, $3, true, $4, $4)
-			ON CONFLICT (tenant_id, rule_id, host_id) DO UPDATE
-			   SET firing = true, last_notified = $4,
-			       since = COALESCE(alert_states.since, $4)
+			INSERT INTO alert_states
+			            (tenant_id, rule_id, host_id, subject, firing, since, last_notified)
+			VALUES ($1, $2, $3, $4, true, $5, $5)
+			ON CONFLICT (tenant_id, rule_id, host_id, subject) DO UPDATE
+			   SET firing = true, last_notified = $5,
+			       since = COALESCE(alert_states.since, $5)
 			 WHERE alert_states.last_notified IS NULL
-			    OR alert_states.last_notified <= $5
-			RETURNING rule_id`, string(s.tenant), ruleID, hostID, at, at.Add(-cooldown))
+			    OR alert_states.last_notified <= $6
+			RETURNING rule_id`,
+			string(s.tenant), key.RuleID, key.HostID, key.Subject, at, at.Add(-cooldown))
 		if err != nil {
 			return wrap(err, "claiming an alert notification")
 		}
@@ -368,19 +372,24 @@ func (s *scopedPostgres) ClaimAlertNotification(ctx context.Context, ruleID, hos
 	return claimed, nil
 }
 
-// ReleaseAlertFiring clears one (rule, host) pair's firing flag, atomically.
+// ReleaseAlertFiring clears one key's firing flag, atomically, and keeps its cooldown.
 //
 // The WHERE clause is the compare-and-set: only a row that is currently firing is updated, and
 // RETURNING says whether one was. A second control plane arriving after the first matches nothing and
 // sends no second recovery.
-func (s *scopedPostgres) ReleaseAlertFiring(ctx context.Context, ruleID, hostID string) (bool, error) {
+//
+// last_notified is deliberately left standing. Clearing it made the cooldown unreachable for anything
+// that oscillates — every recovery handed the next firing a clean claim, so a host crossing its
+// threshold, dropping back and crossing again mailed on every crossing for ever. Keeping the stamp is
+// what makes one firing per cooldown true whatever the condition does in between.
+func (s *scopedPostgres) ReleaseAlertFiring(ctx context.Context, key AlertKey) (bool, error) {
 	released := false
 	err := s.withTenant(ctx, "releasing an alert firing", func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			UPDATE alert_states
-			   SET firing = false, since = NULL, last_notified = NULL
-			 WHERE tenant_id = $1 AND rule_id = $2 AND host_id = $3 AND firing
-			RETURNING rule_id`, string(s.tenant), ruleID, hostID)
+			   SET firing = false, since = NULL
+			 WHERE tenant_id = $1 AND rule_id = $2 AND host_id = $3 AND subject = $4 AND firing
+			RETURNING rule_id`, string(s.tenant), key.RuleID, key.HostID, key.Subject)
 		if err != nil {
 			return wrap(err, "releasing an alert firing")
 		}

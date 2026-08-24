@@ -395,3 +395,206 @@ func TestGuaranteeRootHelpersTakeNoPolicyPath(t *testing.T) {
 		})
 	}
 }
+
+// alertingFiles are the source files that make up the alerting path.
+//
+// Named rather than discovered, because the property below is about these files and a pattern that
+// swept the package would either miss a file added later or catch the job API next door. A new file on
+// this path belongs in this list, and adding one is the moment to ask whether it should be.
+var alertingFiles = []string{
+	"internal/server/alerts.go",
+	"internal/server/alertsapi.go",
+}
+
+// jobMakingCalls are the store operations that put work on a host, by method name.
+//
+// The names are the complete set from store.Store: CreateJob queues work and ApproveJob releases work
+// somebody else queued. Either one, reached from the alerting path, would turn a control plane that
+// asks into one that acts on a schedule of its own.
+var jobMakingCalls = map[string]string{
+	"CreateJob":  "queues work on a host",
+	"ApproveJob": "releases work queued for a host",
+}
+
+// TestGuaranteeAnAlertRuleCannotProduceAJob is the line docs/SECURITY.md §8.3 draws, as a check.
+//
+// A rule produces a notification. A rule never produces a job. "Auto-remediate: apply security updates
+// when more than five are pending" is the obvious next request and it is a different feature with a
+// different threat model: it does not break the guarantee — the host's own policy still bounds it, and
+// anything destructive still needs an offline signature from a key in that host's own trusted-signers
+// — but it converts the control plane from something that asks into something that acts on a schedule
+// of its own. That deserves its own argument, and until it has had one this is a compile-time-visible
+// property rather than a sentence in three documents.
+//
+// It is an assertion about source rather than about behaviour because behaviour cannot show the
+// absence of a path. A test that queued no job would pass equally well against a build that queued one
+// under a condition the test did not construct.
+func TestGuaranteeAnAlertRuleCannotProduceAJob(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	for _, rel := range alertingFiles {
+		path := filepath.Join(root, rel)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s does not exist: %v.\nIf the alerting path has moved, move this list with it.",
+				rel, err)
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", rel, err)
+		}
+		// Any mention of the name, not only a call of it. A method value assigned and invoked three
+		// lines later is the same path with an extra step, and the check that only looked at call
+		// expressions missed exactly that when it was tried against a deliberate mutation.
+		ast.Inspect(f, func(node ast.Node) bool {
+			sel, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if what, forbidden := jobMakingCalls[sel.Sel.Name]; forbidden {
+				pos := fset.Position(sel.Pos())
+				t.Errorf("%s:%d: the alerting path reaches %s, which %s.\n"+
+					"A rule produces a notification and never a job — see docs/SECURITY.md §8.3. "+
+					"Auto-remediation is a separate feature with its own argument.",
+					rel, pos.Line, sel.Sel.Name, what)
+			}
+			return true
+		})
+	}
+}
+
+// managedHostBinaries are the programs that run on a machine somebody else owns.
+//
+// The agent, the control plane and the three root helpers. `farrier` is deliberately not here: it is
+// the operator's own tool, run by a person at a terminal, and it is the one program that may load a
+// PKCS#11 module or reach a network — which is the whole reason the property below is about these
+// five and not about the repository.
+var managedHostBinaries = []string{
+	"cmd/farrier-agent",
+	"cmd/farrier-server",
+	"helpers/apply-updates",
+	"helpers/restart-unit",
+	"helpers/reboot-host",
+}
+
+// forbiddenOnAManagedHost are import paths that must not be reachable from those programs.
+//
+// Both entries are about the same sentence, which docs/SECURITY.md §3 and docs/EXTENDING.md both
+// state: there is no runtime plugin loader in the agent, ever, and dlopen is named as an example of
+// what that means. The signing backends now contain one — `farrier` loads a PKCS#11 module an operator
+// names — and purego is what it loads with. Neither may become reachable from a program that runs on a
+// managed host, and "it is not today" is a fact about the current import graph rather than a property,
+// which is what this test converts it into.
+var forbiddenOnAManagedHost = map[string]string{
+	"github.com/pascalgross/farrier/internal/signing/backend": "the signing-backend registry, which " +
+		"exists so that only the operator's own tool links a backend",
+	"github.com/ebitengine/purego": "a foreign-function interface, which is how the PKCS#11 backend " +
+		"loads a module the operator names",
+}
+
+// TestGuaranteeNoManagedHostBinaryLoadsASigningBackend keeps the safe seam safe.
+//
+// internal/signing's own doc comment argues that an open-ended set of signing backends is safe because
+// the verifier never changes: a host sees a public key and a signature over a canonical payload and
+// cannot learn which backend produced it, so adding one "cannot widen the agent's attack surface by
+// even one branch". That argument holds only while the agent links no backend, and after issue #22 a
+// backend dlopens a shared library.
+//
+// So it is asserted rather than reviewed for. The import closure is computed over this module's own
+// packages, which is enough: a first-party package is the only way one of these paths could be reached.
+func TestGuaranteeNoManagedHostBinaryLoadsASigningBackend(t *testing.T) {
+	root := repoRoot(t)
+	imports := moduleImportGraph(t, root)
+
+	for _, entry := range managedHostBinaries {
+		if _, ok := imports[entry]; !ok {
+			t.Fatalf("%s has no packages; if a binary has moved, move this list with it", entry)
+		}
+		for path, chain := range reachableFrom(imports, entry) {
+			for forbidden, why := range forbiddenOnAManagedHost {
+				if path == forbidden || strings.HasPrefix(path, forbidden+"/") {
+					t.Errorf("%s reaches %s, which is %s.\n  through: %s\n"+
+						"See docs/SECURITY.md §3: there is no runtime plugin loader in the agent, ever.",
+						entry, path, why, strings.Join(chain, " → "))
+				}
+			}
+		}
+	}
+}
+
+// moduleImportGraph maps each first-party package directory to the packages it imports.
+//
+// Built by parsing rather than by shelling out to `go list`, because a test that ran a program to
+// prove nothing runs a program would be an odd thing to have in this file — and because depguard
+// denies os/exec here as it does everywhere else.
+func moduleImportGraph(t *testing.T, root string) map[string][]string {
+	t.Helper()
+	const modulePath = "github.com/pascalgross/farrier/"
+
+	graph := map[string][]string{}
+	fset := token.NewFileSet()
+	for _, sub := range []string{"cmd", "internal", "helpers"} {
+		base := filepath.Join(root, sub)
+		err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			f, parseErr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+			if parseErr != nil {
+				return parseErr
+			}
+			rel, relErr := filepath.Rel(root, filepath.Dir(path))
+			if relErr != nil {
+				return relErr
+			}
+			for _, spec := range f.Imports {
+				imported, unquoteErr := strconv.Unquote(spec.Path.Value)
+				if unquoteErr != nil {
+					continue
+				}
+				graph[rel] = append(graph[rel], imported)
+			}
+			if _, ok := graph[rel]; !ok {
+				graph[rel] = nil
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", base, err)
+		}
+	}
+
+	// Keyed by directory so a first-party import can be followed: the module path maps onto the
+	// directory layout exactly, which is what makes this walk possible without a build.
+	_ = modulePath
+	return graph
+}
+
+// reachableFrom returns every import reachable from one package, with the chain that reached it.
+//
+// The chain is what makes a failure actionable. "farrier-agent reaches purego" is a fact somebody then
+// has to go and find; "farrier-agent → internal/agent → internal/signing/backend/pkcs11 → purego" is
+// the line to delete.
+func reachableFrom(graph map[string][]string, entry string) map[string][]string {
+	const modulePath = "github.com/pascalgross/farrier/"
+
+	seen := map[string][]string{}
+	var walk func(dir string, chain []string)
+	walk = func(dir string, chain []string) {
+		for _, imported := range graph[dir] {
+			if _, done := seen[imported]; done {
+				continue
+			}
+			next := append(append([]string(nil), chain...), imported)
+			seen[imported] = next
+			if inside, ok := strings.CutPrefix(imported, modulePath); ok {
+				walk(inside, next)
+			}
+		}
+	}
+	walk(entry, []string{entry})
+	return seen
+}

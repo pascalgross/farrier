@@ -62,6 +62,17 @@ const (
 
 	// KindRebootDone reports that an overdue host no longer needs its reboot.
 	KindRebootDone Kind = "reboot.done"
+
+	// KindDeliveryFailed reports that an event could not be delivered to a tenant's webhook.
+	//
+	// It is the visible record of what never went out, and it exists because a webhook that is down
+	// takes every other event with it silently: the inbox fills up, the endpoint receives nothing,
+	// and nobody learns which of the two is true until somebody asks why the chat channel is quiet.
+	//
+	// It is the one kind that is never delivered outwards, only recorded. Delivering a
+	// delivery-failure notice through the delivery that just failed would either fail again — and
+	// emit another — or, worse, succeed on the retry and report a failure that had resolved.
+	KindDeliveryFailed Kind = "delivery.failed"
 )
 
 // Kinds is the closed set, as a set, for validation and for the test that keeps it closed.
@@ -79,6 +90,7 @@ var Kinds = map[Kind]bool{
 	KindUpdatesResolved:  true,
 	KindRebootOverdue:    true,
 	KindRebootDone:       true,
+	KindDeliveryFailed:   true,
 }
 
 // Valid reports whether a kind is one of the closed set.

@@ -118,7 +118,8 @@ func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 			t.Fatalf("creating a rule for %s: %v", tenant.scoped.Tenant(), err)
 		}
 		if err := tenant.scoped.UpsertAlertState(ctx, AlertState{
-			RuleID: sharedRuleID, HostID: tenant.hostID, Firing: true, Since: time.Now().UTC(),
+			AlertKey: AlertKey{RuleID: sharedRuleID, HostID: tenant.hostID},
+			Firing:   true, Since: time.Now().UTC(),
 		}); err != nil {
 			t.Fatalf("recording a state for %s: %v", tenant.scoped.Tenant(), err)
 		}
@@ -531,6 +532,31 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatalf("alpha read a template only beta has: %v", err)
 				}
 			},
+			"ListTemplateVersions": func(t *testing.T) {
+				// A name both tenants hold must enumerate only the caller's own revisions, and one
+				// only beta holds must be indistinguishable from a name nobody holds. The second half
+				// is the one that matters: an operator who could learn that another tenant has a
+				// template called "standard-server" has learned something about their fleet.
+				revisions, err := alpha.ListTemplateVersions(ctx, sharedTemplateName)
+				if err != nil {
+					t.Fatalf("alpha cannot list its own template's versions: %v", err)
+				}
+				// Whose revisions, not how many. The probes share one pair of tenants and run in map
+				// order, so the CreateTemplateVersion probe may already have added a second revision —
+				// asserting a count here would pass or fail depending on which ran first, which is the
+				// flake that gets a real isolation failure dismissed as noise.
+				if len(revisions) == 0 {
+					t.Fatal("alpha sees none of its own revisions")
+				}
+				for _, rev := range revisions {
+					if rev.CreatedBy != "test:"+string(alpha.Tenant()) {
+						t.Fatalf("alpha sees a revision authored by %q, which is not its own", rev.CreatedBy)
+					}
+				}
+				if _, err := alpha.ListTemplateVersions(ctx, betaOnlyTemplateName); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha enumerated a template only beta has: %v", err)
+				}
+			},
 			"RecordEvent": func(t *testing.T) {
 				// An event recorded by alpha must not surface in beta's inbox, whatever id it carries.
 				if err := alpha.RecordEvent(ctx, Event{
@@ -715,17 +741,20 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// The claim is a write keyed on a rule, so naming beta's must fail rather than
 				// silently create a state row under alpha's tenant that beta's rule now owns — and
 				// must leave whatever beta had alone.
-				if _, err := alpha.ClaimAlertNotification(ctx, betaOnlyRuleID, alphaHostID,
+				if _, err := alpha.ClaimAlertNotification(ctx,
+					AlertKey{RuleID: betaOnlyRuleID, HostID: alphaHostID},
 					deliveryStamp, time.Hour); err == nil {
 					t.Fatal("alpha claimed a notification against a rule belonging to beta")
 				}
 				// And alpha's own claim on the colliding id must be alpha's alone: beta must still be
 				// able to claim the same pair, because their states are different rows.
-				if won, err := alpha.ClaimAlertNotification(ctx, sharedRuleID, alphaHostID,
+				if won, err := alpha.ClaimAlertNotification(ctx,
+					AlertKey{RuleID: sharedRuleID, HostID: alphaHostID},
 					deliveryStamp, time.Hour); err != nil || !won {
 					t.Fatalf("alpha claiming its own rule: won=%v err=%v", won, err)
 				}
-				if won, err := beta.ClaimAlertNotification(ctx, sharedRuleID, betaHostID,
+				if won, err := beta.ClaimAlertNotification(ctx,
+					AlertKey{RuleID: sharedRuleID, HostID: betaHostID},
 					deliveryStamp, time.Hour); err != nil || !won {
 					t.Fatalf("alpha's claim blocked beta's: won=%v err=%v", won, err)
 				}
@@ -737,13 +766,15 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// intermittently, depending on which ran first — the exact kind of flake that gets a
 				// real isolation failure dismissed as noise.
 				if err := beta.UpsertAlertState(ctx, AlertState{
-					RuleID: betaOnlyRuleID, HostID: betaHostID, Firing: true,
-					Since: deliveryStamp, LastNotified: deliveryStamp,
+					AlertKey:     AlertKey{RuleID: betaOnlyRuleID, HostID: betaHostID},
+					Firing:       true,
+					Since:        deliveryStamp,
+					LastNotified: deliveryStamp,
 				}); err != nil {
 					t.Fatalf("beta setting up a firing pair: %v", err)
 				}
-				if released, err := alpha.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
-					released {
+				if released, err := alpha.ReleaseAlertFiring(ctx,
+					AlertKey{RuleID: betaOnlyRuleID, HostID: betaHostID}); err != nil || released {
 					t.Fatalf("alpha released a firing that belongs to beta: released=%v err=%v",
 						released, err)
 				}
@@ -764,8 +795,8 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// Beta releases its own, which asserts the positive case and leaves the fixture as it
 				// was found. The probes share one pair of tenants and run in map order, so a probe
 				// that leaves a row behind is a probe that breaks whichever one happens to run next.
-				if released, err := beta.ReleaseAlertFiring(ctx, betaOnlyRuleID, betaHostID); err != nil ||
-					!released {
+				if released, err := beta.ReleaseAlertFiring(ctx,
+					AlertKey{RuleID: betaOnlyRuleID, HostID: betaHostID}); err != nil || !released {
 					t.Fatalf("beta releasing its own firing: released=%v err=%v", released, err)
 				}
 			},
@@ -773,7 +804,7 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 				// Naming a rule only beta holds must be refused — the composite foreign key again —
 				// and must leave beta's state alone.
 				err := alpha.UpsertAlertState(ctx, AlertState{
-					RuleID: betaOnlyRuleID, HostID: alphaHostID, Firing: true,
+					AlertKey: AlertKey{RuleID: betaOnlyRuleID, HostID: alphaHostID}, Firing: true,
 				})
 				if err == nil {
 					t.Fatal("alpha recorded state against a rule belonging to beta")

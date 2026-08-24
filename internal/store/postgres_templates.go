@@ -95,6 +95,45 @@ func (s *scopedPostgres) ListTemplates(ctx context.Context) ([]TemplateSummary, 
 	return out, nil
 }
 
+// ListTemplateVersions returns every stored revision of one template, newest first.
+//
+// Ordered by version rather than by creation time, because that is the number a host's bootstrap
+// record carries and the one an operator is matching against; two revisions saved in the same second
+// would otherwise come back in whichever order the planner chose.
+func (s *scopedPostgres) ListTemplateVersions(ctx context.Context, name string) ([]TemplateRevision, error) {
+	var out []TemplateRevision
+	err := s.withTenant(ctx, "listing template versions", func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT version, created_at, created_by,
+			       (signature <> '' AND signer_key_id <> '' AND signer_algorithm <> '') AS signed,
+			       signer_key_id
+			  FROM templates
+			 WHERE tenant_id = $1 AND name = $2
+			 ORDER BY version DESC`, string(s.tenant), name)
+		if err != nil {
+			return wrap(err, "listing template versions")
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var r TemplateRevision
+			if err := rows.Scan(&r.Version, &r.CreatedAt, &r.CreatedBy, &r.Signed,
+				&r.SignerKeyID); err != nil {
+				return wrap(err, "scanning a template revision")
+			}
+			out = append(out, r)
+		}
+		return wrap(rows.Err(), "listing template versions")
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	return out, nil
+}
+
 // GetTemplateVersion returns one version of a template, or ErrNotFound. Version 0 means the latest.
 func (s *scopedPostgres) GetTemplateVersion(ctx context.Context, name string, version int) (TemplateVersion, error) {
 	var t TemplateVersion

@@ -51,6 +51,17 @@ helpers: $(DIST) ## Build the three root helpers
 test: ## Run unit tests
 	go test -race -count=1 $(GO_PACKAGES)
 
+# The module the signing-backend tests drive. libsofthsm2, not softhsm2: the tests build their own
+# token through the module's own C_InitToken, C_InitPIN and C_GenerateKeyPair, so the tools package is
+# not needed.
+.PHONY: test-pkcs11
+test-pkcs11: ## Run the PKCS#11 backend against a real module, in the build that ships
+	# Twice, deliberately. `make test` runs with cgo because -race requires it, so the path the
+	# released binary actually takes — purego's own dlopen, with no cgo — is otherwise never
+	# exercised by anything.
+	go test -race -count=1 -v ./internal/signing/backend/pkcs11/
+	CGO_ENABLED=0 go test -count=1 ./internal/signing/backend/pkcs11/
+
 .PHONY: cover
 cover: ## Run unit tests with a coverage profile
 	go test -race -count=1 -coverprofile=coverage.txt -covermode=atomic $(GO_PACKAGES)

@@ -8,6 +8,8 @@
  * being hidden — an event nobody has taught the UI about is still an event.
  */
 
+import { Tone } from './tone';
+
 /** How one event kind is presented: a label, an icon, and how much it should alarm somebody. */
 export interface EventKindStyle {
   /** The human-readable name. */
@@ -16,14 +18,8 @@ export interface EventKindStyle {
   /** A Material icon ligature. */
   icon: string;
 
-  /**
-   * The severity band, which picks the colour.
-   *
-   * Three bands and not five: `bad` is something is broken, `warn` is something needs attention, and
-   * `info` is something happened. A palette with more gradations than a reader can distinguish at a
-   * glance is a palette they stop reading.
-   */
-  tone: 'bad' | 'warn' | 'info';
+  /** The severity band, which picks the colour. The bands are shared; see `core/tone.ts`. */
+  tone: Tone;
 }
 
 /** The complete vocabulary, matching `internal/notify/kinds.go`. */
@@ -48,20 +44,3 @@ export function describeKind(kind: string): EventKindStyle {
   return EVENT_KINDS[kind] ?? { label: kind, icon: 'notifications', tone: 'info' };
 }
 
-/**
- * The Tailwind text colour for a tone.
- *
- * A function rather than a class in the template, because Tailwind's scanner needs to see each class
- * literally somewhere in the source — which the strings below satisfy — and a template expression
- * that concatenated `text-farrier-` with a variable would not.
- */
-export function toneClass(tone: EventKindStyle['tone']): string {
-  switch (tone) {
-    case 'bad':
-      return 'text-farrier-bad';
-    case 'warn':
-      return 'text-farrier-warn';
-    default:
-      return 'text-farrier-quiet';
-  }
-}

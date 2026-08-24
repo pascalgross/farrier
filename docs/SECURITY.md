@@ -94,7 +94,13 @@ something else can flip back on is not an off switch.
 
 ### 2.3 Offline job signing
 
-Destructive operations require a detached signature from a key the control plane does not hold.
+Destructive operations require a detached signature from a key the control plane does not hold — and,
+more precisely, one it **cannot cause to be used**. The distinction did not matter while the only
+backend was a file on a laptop, and it matters now that a key can live in a cloud key store: the
+control plane holds nothing there either, and if its own identity can call `Sign` on that key then it
+has the authority anyway. For the `kms` backend this is an IAM property of the deployment rather than
+anything Farrier can enforce, and it is stated as such in [§9](#9-what-farrier-does-not-defend-against)
+and [§10](#10-hardening-notes-for-operators).
 
 The trust anchor is `/etc/farrier/trusted-signers` — **not the package**. It is root-owned,
 `config|noreplace`, and **empty by default**, so a freshly installed agent will execute nothing
@@ -477,6 +483,21 @@ refusal is what success looks like, because there is no harmless privileged inte
 silently undo everything in this section. If you package Farrier for a system where the agent needs to
 report container state, that must be done through a read-only path, not group membership.
 
+That read-only path now exists, and it is worth naming because it is what makes the refusal above
+sustainable rather than merely principled. The `containers` collector reads `/proc` and the unified
+cgroup hierarchy as the unprivileged `farrier` user: no socket, no helper, no group, no new intent,
+and nothing in this section changes. It is off until `[containers] report = true` is written into the
+host's own `policy.toml`, because container state is a more revealing disclosure than a unit list.
+
+What it costs is real and is stated where an operator will read it rather than discovered: the kernel
+knows a container's id, its main process and that process's *name*, when it started, and its resource
+use — and knows nothing at all about image names, exit codes, restart counts or health, because those
+are daemon state behind the socket. It reports the executable name from `/proc/<pid>/comm` and never
+the command line, which is where credentials end up. In exchange it answers four questions `docker ps`
+does not: whether a container is privileged, whether its seccomp filter was disabled, whether it runs
+as root, and **whether the Docker socket is bind-mounted into it** — which is the risk this very
+paragraph is about, found on a host rather than assumed.
+
 ---
 
 ## 7. Provisioning and the enrolment-time exception
@@ -518,6 +539,24 @@ rather than continuing as though something had been applied. Every one of these 
    directory under a fresh instance-id and runs cloud-init's own stages with argument vectors fixed in
    the agent; no byte of a template ever reaches a command line. Farrier never ships a hand-written
    YAML-to-shell engine — that would be the exec channel wearing a hat.
+
+The seed is the one thing beside the template that the control plane has any say in, because its
+meta-data carries the host id the enrolment response assigned. That is a YAML document cloud-init parses
+and acts on, so the id is validated to letters and digits before it is written: an id carrying a newline
+would be adding *keys* to that document rather than filling one in, and `public-keys` is a NoCloud key
+that cloud-init installs into `authorized_keys`. That would be a path from a compromised control plane
+to an SSH key on a host, running beside a template the operator did approve while having none of the
+guardrails above — not covered by the signature, not shown, not recorded. The seed is also removed once
+cloud-init has read it, because a NoCloud seed left in place outranks the machine's real datasource on
+every later boot.
+
+Two honest limits on guardrail 2. The record is written by `farrier enroll`, which runs as root, but it
+lives in a directory the unprivileged `farrier` user owns — so it defends the audit trail against the
+adversary [§1](#1-the-guarantee) is about, the control plane, and not against local code running as the
+agent, which [§2.2](#22-local-policy-sovereignty) already assumes may be compromised and which is above
+this file in the trust hierarchy. And "written to the journal" means written to standard error, which
+systemd routes to the journal when enrolment is run from a unit; an operator running it by hand sees it
+on their terminal, which is where guardrail 2 wanted it anyway.
 
 The chicken-and-egg problem is that `trusted-signers` is empty on a fresh install. It is solved by
 establishing the anchor from a local, administrator-chosen file **before** anything is fetched:
@@ -570,6 +609,7 @@ expected-set literal changing in the same commit.
 | `service.failed` / `service.recovered` | A watched unit failed, then ran again |
 | `updates.pending` / `updates.resolved` | A host's security backlog crossed a rule's line, then fell back |
 | `reboot.overdue` / `reboot.done` | A reboot went unaddressed past a rule's line, then happened |
+| `delivery.failed` | A tenant's webhook did not accept an event |
 
 A refusal is deliberately not in that list. `refused_by_policy` is the system working, and an event
 stream that painted it the same colour as a failure would teach its readers to ignore both.
@@ -581,6 +621,12 @@ one is configured, and an alert rule's recipients receive mail. A tab that was c
 was down and a relay that refused all produce the same outcome — the event is on the page when somebody
 looks.
 
+`delivery.failed` is the one kind that is only ever recorded and never delivered, and the reason is the
+loop: sending a delivery-failure notice through the delivery that just failed either fails again and
+emits another, or succeeds on the retry and reports a failure that had already resolved. It exists
+because a webhook that is down takes every event with it in silence — the inbox fills, the chat channel
+stays quiet, and nothing on either side says which of the two is happening.
+
 Delivery outside the process runs **detached from the request that produced it**, retried with a short
 backoff and bounded, and drained on shutdown. That is not an optimisation: `emit` is called from
 handlers an agent is waiting on, and a control plane made slow by somebody else's mail server is a
@@ -589,6 +635,19 @@ control plane whose heartbeats time out.
 Scoping is the same as everywhere else. An event carries its tenant, reaches that tenant's endpoint and
 that tenant's tabs, and nothing else; the stream is authorised exactly like any other read of
 control-plane state ([§5](#5-tenants)).
+
+A rule that fires across many hosts at once collapses into a **digest**, because three hundred identical
+pages during a partition are how the one different page gets missed. The collapse is a property of the
+notification and not of the record: every host still gets its own row in the inbox, so "what did I miss
+overnight" is answerable afterwards for all three hundred rather than for the three the digest had room
+to name.
+
+**A firing is tracked per rule, per host, and per subject** — the unit, for a rule that watches units.
+The cooldown that keeps a restart-looping unit from mailing on every loop is keyed the same way, which
+is what stops the first failing unit on a machine from silencing the second one in silence. And a
+recovery clears the firing while **keeping** the cooldown: clearing both would make the cooldown
+unreachable for anything that oscillates, because each recovery would hand the next firing a clean slate
+and a condition crossing its line every few minutes would mail every few minutes, for ever.
 
 ### 8.2 What the host decides
 
@@ -624,6 +683,14 @@ exists: `policy.toml` is the *host's* authority over what may be done to it, and
 control plane's business. Putting them together would blur the one distinction the whole design rests
 on. Like everything else a tenant owns, rules are behind forced row-level security.
 
+Two conditions watch the security backlog, and they answer different questions. `security_updates`
+fires on a count; `security_updates_age` fires when there has been *any* backlog for longer than its
+threshold in days. One host with twelve updates published this morning is healthy and one with a single
+update from a fortnight ago is not, and it is the second that describes a machine nobody is patching.
+The age is measured from when this control plane first saw the backlog become non-empty, which is an
+honest answer rather than an exact one: nothing on the wire carries when an update was published, so a
+host enrolled today with a month-old backlog reads as new.
+
 Mail leaves over STARTTLS on 587 or implicit TLS on 465 and never in plaintext, because an alert
 legitimately carries hostnames and failure text. The relay is process configuration — which mail server
 an installation may speak to is the installation operator's decision — and the recipients are per rule,
@@ -641,6 +708,14 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
 - **A compromised holder of a key in `trusted-signers`.** That key is the authority for destructive
   operations; this is exactly why the hardware-backed signing backends exist and why the audit log
   records *which* signer authorised each job.
+- **A cloud KMS key the control plane's own identity can reach.** The `kms` backend keeps the private
+  key in AWS KMS, Cloud KMS or Key Vault, and the control plane holds nothing — but "holds nothing" is
+  not the property [§1](#1-the-guarantee) rests on. If the control plane runs in the same account and
+  can assume a role with `kms:Sign`, `cryptoKeyVersions.useToSign` or the Key Vault `sign` permission on
+  that key, then an attacker who owns the control plane can authorise a reboot, and **§1 is false for
+  that installation**. A hardware token keeps them apart by physics; a KMS does it by IAM policy, which
+  is a weaker thing and one people misconfigure. Farrier cannot check this, so it is
+  [§10](#10-hardening-notes-for-operators)'s job to say what to check.
 - **The APT repository's signing key.** The agent is installed and updated as a normal Debian package
   from a signed repository. Whoever controls that GPG key controls the agent binary on every host that
   updates from it. This is a different adversary from the one in §1 — it is the ordinary distribution
@@ -687,8 +762,18 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   visible to reviewers after the fact. File-based keys are fully supported; refusing them would not
   make anyone buy a token, it would push them to keep the key on the control plane instead, which is
   strictly worse.
+- **If you use the `kms` backend, put the signing key where the control plane cannot reach it.** A
+  separate account, subscription or project; a key policy or role assignment that names the operator
+  principals and *excludes* the control plane's own role or managed identity. Then check it the only
+  way that catches the mistake: assume the control plane's identity and confirm that signing with that
+  key is denied. Everything in [§9](#9-what-farrier-does-not-defend-against) about this depends on that
+  one arrangement, and nothing in Farrier can verify it for you.
 - Set `policy.toml` to the least permission each host actually needs. It is the only control that
   survives a total control-plane compromise.
+- Leave `[containers] report` off unless somebody has asked for it. It is off in the shipped file. A
+  container list describes what a business runs, and a host that agreed to report its package state
+  has not thereby agreed to report that — see [§6](#6-host-privileges) for what it does and does not
+  disclose.
 - Do not add a socket unit, and do not widen the group on the three that exist. If you find yourself
   wanting a fourth helper, that is a request for a new typed intent upstream.
 - Back up the control plane's CA key separately from its database. An attacker with both can

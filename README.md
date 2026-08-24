@@ -100,6 +100,13 @@ workflow that no maintainer can override:
   event inbox, a live feed in the interface, and alerting rules that mail, post to a webhook or raise
   a browser notification. A rule produces a notification and never a job; see
   [`docs/SECURITY.md` §8](docs/SECURITY.md#8-observability).
+- **Container state, without the `docker` group** — off until a host opts in, read from `/proc` and the
+  cgroup tree rather than from the socket, because socket access is root equivalence. It answers what
+  is running and whether any of it is privileged, seccomp-disabled or holding the Docker socket; it
+  cannot answer image names or exit codes, and says so rather than guessing.
+- **Signing keys that are not files** — the destructive tier's key can live on a PKCS#11 token or in
+  AWS KMS, Cloud KMS or Key Vault. Whichever it is, the control plane does not hold it, and the audit
+  log records which one authorised each job.
 
 ## What it will never do
 

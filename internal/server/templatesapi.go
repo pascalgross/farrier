@@ -139,11 +139,8 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request, who
 func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request, who operator) {
 	var req templateRequest
 	if err := decodeJSON(w, r, MaxTemplateRequestBytes, &req); err != nil {
-		if isTooLarge(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, "too_large", "the request body is too large")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+		writeDecodeError(w, err, "this endpoint stores one template version, and the body holds more "+
+			"than one JSON value. Nothing was stored; send them as separate requests.")
 		return
 	}
 
@@ -295,6 +292,63 @@ func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request, who o
 	})
 }
 
+// templateRevisionView is one stored revision as the listing renders it.
+type templateRevisionView struct {
+	// Version is the revision's number.
+	Version int `json:"version"`
+
+	// Signed reports whether it can be issued to an enrolling host at all.
+	Signed bool `json:"signed"`
+
+	// SignerKeyID names the key that signed it, empty when unsigned.
+	SignerKeyID string `json:"signerKeyId,omitempty"`
+
+	// CreatedAt is when it was stored.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// CreatedBy is who stored it.
+	CreatedBy string `json:"createdBy"`
+}
+
+// handleListTemplateVersions returns every stored revision of one template, newest first.
+//
+// It exists because immutable versioning was, until this endpoint, something an operator had to take
+// on faith. A host's bootstrap record names a version; the listing showed only the latest; and reaching
+// version 3 of a template whose latest is 7 meant guessing the number and asking for it one request at
+// a time, with nothing to say whether the gaps were real. "Every save is a new version" is only a
+// property worth having if it is one somebody can look at.
+//
+// No bodies. They are sealed and potentially large, and a caller that wants one names a version and
+// asks for it — which is also the request that is marked non-cacheable, because that is the one
+// carrying something worth keeping out of a cache.
+func (s *Server) handleListTemplateVersions(w http.ResponseWriter, r *http.Request, who operator) {
+	revisions, err := who.Store.ListTemplateVersions(r.Context(), r.PathValue("name"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "no such template")
+		return
+	}
+	if err != nil {
+		slog.Error("could not list a template's versions", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the template")
+		return
+	}
+
+	views := make([]templateRevisionView, 0, len(revisions))
+	for _, rev := range revisions {
+		views = append(views, templateRevisionView{
+			Version:     rev.Version,
+			Signed:      rev.Signed,
+			SignerKeyID: rev.SignerKeyID,
+			CreatedAt:   rev.CreatedAt,
+			CreatedBy:   rev.CreatedBy,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":     r.PathValue("name"),
+		"versions": views,
+	})
+}
+
 // renderRequest is the body of POST /api/v1/templates/{name}/render.
 type renderRequest struct {
 	// Version names the version to render, zero for the latest.
@@ -333,7 +387,8 @@ type renderTokenRequest struct {
 func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, who operator) {
 	var req renderRequest
 	if err := decodeJSON(w, r, MaxTemplateRequestBytes, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+		writeDecodeError(w, err, "this endpoint renders one template, and the body holds more than one "+
+			"JSON value. Nothing was rendered and no token was minted; send them as separate requests.")
 		return
 	}
 	if req.Version < 0 {
@@ -380,14 +435,24 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request, wh
 	// substitution is rehearsed against a placeholder first, and the real token replaces it only once
 	// the whole render is known to succeed.
 	mints := usesToken(string(body))
+	if req.Token != nil && !mints {
+		// Refused rather than ignored. Every field of the token block — the group a host joins, the
+		// bootstrap template it may apply — describes a credential this render is not going to produce,
+		// and accepting the request would hand back user-data that does nothing the caller asked for.
+		// It is the same strictness Render already applies to a parameter that substitutes nothing.
+		writeError(w, http.StatusBadRequest, "malformed",
+			"this template does not substitute {{"+provision.TokenPlaceholder+"}}, so no enrolment "+
+				"token is minted and the token field would have no effect")
+		return
+	}
 	if mints {
-		params[provision.TokenPlaceholder] = "rehearsal"
+		params[provision.TokenPlaceholder] = EnrollmentTokenStandIn()
 	}
 	if _, err := provision.Render(string(body), params); err != nil {
 		writeError(w, http.StatusBadRequest, "unrenderable", err.Error())
 		return
 	}
-	if req.Token != nil && !checkBootstrapIsIssuable(w, r, who, req.Token.Bootstrap) {
+	if req.Token != nil && !s.checkBootstrapIsIssuable(w, r, who, req.Token.Bootstrap) {
 		return
 	}
 

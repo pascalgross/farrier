@@ -93,6 +93,35 @@ restartable = []
 #   watched = ["nginx.service", "postgresql*.service"]
 watched = []
 
+[containers]
+
+# Whether this host reports the containers running on it.
+#
+# The agent reads /proc and /sys/fs/cgroup as the unprivileged farrier user. It is never added to the
+# docker group and never talks to /var/run/docker.sock: Docker socket access is root equivalence, and
+# a fleet agent that held it would undo the rest of this file. That also bounds the answer — no image
+# names, no exit codes, no restart counts, and a container that has exited is not visible at all.
+#
+# What you do get is what is running, what it is using, and the four facts that are the reason this
+# exists: which containers run as root, which hold the full capability set, which have no seccomp
+# filter, and which have the Docker socket bind-mounted into them.
+#
+# THE SHIPPED DEFAULT IS false, and that is a decision rather than caution. Container names describe
+# what a business runs, and this is a disclosure a host makes to a control plane it may not own. A
+# machine willing to report its package state has not thereby agreed to report that, so the answer to
+# a question nobody has been asked is no. (The executable name is reported; the command line
+# deliberately is not, because an argument vector is where credentials end up.)
+#
+# Turning it on also costs bandwidth: the memory and CPU figures change every time they are read, so
+# this host will send a full report on every heartbeat instead of a digest.
+#
+# ORDERING WARNING. Farrier refuses a policy file containing a key it does not know, and a refused
+# policy file means the host falls closed — allow = "none", nothing restartable, every privileged job
+# refused. Writing this key on a host whose farrier-agent predates it therefore switches that host's
+# updates off until the agent is upgraded or the key is removed. Upgrade the agent first, then set the
+# key, and run `farrier-agent policy check` before restarting anything.
+report = false
+
 [limits]
 
 # How long after issue a job may still be executed.

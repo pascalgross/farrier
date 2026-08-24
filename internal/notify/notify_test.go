@@ -28,6 +28,7 @@ func TestTheEventVocabularyIsTheExpectedSet(t *testing.T) {
 		"updates.resolved":  true,
 		"reboot.overdue":    true,
 		"reboot.done":       true,
+		"delivery.failed":   true,
 	}
 	for kind := range expected {
 		if !Kinds[kind] {

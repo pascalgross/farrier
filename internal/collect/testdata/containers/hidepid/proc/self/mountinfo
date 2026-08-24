@@ -1,0 +1,2 @@
+25 30 0:24 / /proc rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw,hidepid=invisible
+26 30 0:25 / /sys rw,nosuid,nodev,noexec,relatime shared:6 - sysfs sysfs rw

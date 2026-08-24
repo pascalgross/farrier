@@ -123,6 +123,11 @@ every guardrail in [`SECURITY.md` §7](SECURITY.md#7-provisioning-and-the-enrolm
 }
 ```
 
+`hostId` is letters and digits only, at most 64 of them. An agent MUST check it rather than assume it,
+and Farrier's does: the id is interpolated into cloud-init's `meta-data` when `--bootstrap` was
+requested, which is a YAML document cloud-init parses and acts on, so an id carrying a newline would add
+keys to that document — `public-keys` among them — beside a template the operator did approve.
+
 `bootstrap` is present only if it was requested. `signature` covers the canonical encoding of
 
 ```json
@@ -253,7 +258,19 @@ so an agent and a server that agree on the encoding agree on the digest.
       "activeState": "active", "subState": "running"
     }],
     "servicesTruncated": false,
-    "extra": { "network": { "interfaces": [{ "name": "eth0", "mtu": 1500, "up": true }] } }
+    "extra": {
+      "network": { "interfaces": [{ "name": "eth0", "mtu": 1500, "up": true }] },
+      "containers": {
+        "containers": [{
+          "id": "a1b2c3…", "shortId": "a1b2c3d4e5f6", "mainPid": 4242, "command": "nginx",
+          "startedAt": "2026-06-15T16:06:40Z", "running": true, "paused": false,
+          "memoryBytes": 83886080, "cpuSeconds": 12, "pids": 7, "pidsSource": "pids.current",
+          "postureKnown": true, "runsAsRoot": true, "privileged": false,
+          "seccompDisabled": false, "dockerSocketMounted": false
+        }],
+        "total": 1, "scanComplete": true
+      }
+    }
   },
   "policy": { "...": "the effective parsed policy, for display and for min() checks server-side" },
   "signers": [{ "keyId": "ops-yubikey-1", "algorithm": "ed25519", "backend": "pkcs11" }]
@@ -269,6 +286,21 @@ see the services that do" must never look the same in a dashboard**.
 
 `extra` holds the output of registered collectors, keyed by collector name. It is where a fact added
 through the `collect.Collector` seam appears; see [`EXTENDING.md`](EXTENDING.md).
+
+`extra.containers` is present only on a host whose `policy.containers.report` is `true`, and the policy
+in the same heartbeat is what lets a client say "this host does not report containers" rather than
+"this host has none". Three states inside it are deliberately distinct and MUST NOT be rendered
+identically: `scanComplete: false` means the agent could not see — `/proc` mounted with `hidepid`, or a
+private cgroup namespace — while a complete scan with an empty list and a `note` means no container
+runtime is visible, and a complete scan with an empty list and no note means a runtime is running
+nothing. An absent `memoryBytes` means the memory controller is not enabled for that cgroup and is not
+the same claim as nought bytes.
+
+The section carries what the kernel knows and nothing else. Image names, exit codes, restart counts and
+health status are daemon state behind a socket the agent deliberately cannot reach, so they are absent
+rather than empty, and `command` is the executable name from `/proc/<pid>/comm` rather than a command
+line, which is where credentials end up. `startedAt` is the *process* start, so it resets when a
+container restarts and is not the container's creation time.
 
 `signers` carries key identities and algorithms only — never keys, and never the file. The control
 plane has no business holding a copy of a host's trust anchor, and rendering "ops-yubikey-1 (PKCS#11)"
@@ -318,6 +350,7 @@ When `|clockOffsetSeconds| > 300`:
 | Services reported | 500 |
 | Upgradable packages listed | 500 |
 | `rebootRequiredBy` entries | 100 |
+| Containers reported | 200 |
 
 Servers MUST reject over-size bodies with `413`. Agents MUST truncate rather than emit an over-size
 body, and MUST set a `truncated` flag on the affected section. In multi-tenant hosting, one host

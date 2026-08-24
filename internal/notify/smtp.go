@@ -58,6 +58,18 @@ type SMTP struct {
 	to []string
 }
 
+// implicitTLS reports whether this relay expects TLS from the first byte rather than an upgrade.
+//
+// A method rather than two comparisons, because the number decides twice — once to pick the dialer and
+// once to decide whether STARTTLS is still owed — and the two must never disagree. A build where one
+// said 465 and the other did not would dial TLS and then write the word STARTTLS into a stream the
+// relay is already reading as TLS records, which fails in a way that reads like a broken relay.
+//
+// 465 is submissions, fixed by RFC 8314, and it is not configurable for the reason nothing else in this
+// package is: a setting that let a relay be declared plaintext is a setting that mails a fleet's
+// inventory in the clear, and the port already says which transport the operator asked for.
+func (c SMTPConfig) implicitTLS() bool { return c.Port == 465 }
+
 // NewSMTP returns a sink that mails one rule's recipients.
 func NewSMTP(cfg SMTPConfig, to []string) *SMTP {
 	return &SMTP{cfg: cfg, to: to}
@@ -90,7 +102,7 @@ func (s *SMTP) Deliver(ctx context.Context, ev Event) error {
 		conn net.Conn
 		err  error
 	)
-	if s.cfg.Port == 465 {
+	if s.cfg.implicitTLS() {
 		// tls.Dialer rather than tls.DialWithDialer, so the handshake honours the caller's context
 		// too: the deadline on the dialer bounds a relay that is slow, and only cancellation stops
 		// one that has accepted the connection and gone quiet during a shutdown.
@@ -116,7 +128,7 @@ func (s *SMTP) Deliver(ctx context.Context, ev Event) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	if s.cfg.Port != 465 {
+	if !s.cfg.implicitTLS() {
 		// STARTTLS or nothing. Continuing in plaintext on a relay that does not offer it would mail
 		// hostnames and failure text across the network in the clear, silently, for ever.
 		if ok, _ := client.Extension("STARTTLS"); !ok {
@@ -193,7 +205,14 @@ func renderMail(from string, to []string, ev Event) []byte {
 // sanitizeHeader strips the line breaks that would let a summary inject mail headers.
 //
 // Summaries are built from hostnames and error text, and error text is whatever a helper printed.
-// The rest of the header is fixed here, so this one substitution is the whole injection surface.
+//
+// It is not the whole injection surface, and this comment used to say it was. The other two headers
+// rendered here — From and To — are interpolated unsanitized, and one of them carries operator-supplied
+// text: the recipient list comes from an alert rule. What closes those is a layer down rather than
+// here. net/smtp refuses a line break inside Client.Mail and Client.Rcpt, and both run before this
+// function is called, so a poisoned address ends the delivery with an error instead of reaching a
+// header. The body below the blank line is likewise not this function's problem: Client.Data returns a
+// dot-stuffing writer, so a summary cannot end the DATA phase early either.
 func sanitizeHeader(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
 	return strings.ReplaceAll(s, "\n", " ")

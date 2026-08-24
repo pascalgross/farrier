@@ -13,7 +13,10 @@ import (
 // interoperability bug waiting for the second implementation.
 func decodeSignature(encoded string) ([]byte, error) {
 	if encoded == "" {
-		return nil, fmt.Errorf("agent: the job carries no signature")
+		// "signed thing" rather than "job": this decodes a job's signature and a bootstrap template's,
+		// and a template with no signature reported as a job error sends the reader looking in the
+		// wrong half of the system.
+		return nil, fmt.Errorf("agent: the signed payload carries no signature")
 	}
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {

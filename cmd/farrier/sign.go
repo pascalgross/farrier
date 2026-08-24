@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/canonical"
@@ -15,7 +17,7 @@ import (
 	"github.com/pascalgross/farrier/internal/intent"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/signing/backend/file"
+	"github.com/pascalgross/farrier/internal/signing/backend"
 )
 
 // DefaultSignedValidity is how long a signed job stays valid when the operator does not say.
@@ -25,6 +27,28 @@ import (
 // the honest default is "long enough to reach a fleet that is mostly up, short enough that forgetting
 // about it is not dangerous". An operator who needs longer says so and sees the value in the summary.
 const DefaultSignedValidity = time.Hour
+
+// DefaultSigningTimeout bounds one call into a signing backend.
+//
+// It exists for the backends that reach a network: a cloud key store having a bad afternoon must not
+// leave this command hanging with no way out. Thirty seconds is far longer than a signature takes and
+// short enough to be a failure rather than a hang.
+//
+// It is not a flag. Issue #11's point about this command is that it stops growing one per backend, and
+// nobody has yet needed a different number. It deliberately does not cover the confirmation prompt —
+// see where it is applied.
+const DefaultSigningTimeout = 30 * time.Second
+
+// openWithTimeout resolves a key reference under its own deadline.
+//
+// Separate from the signing deadline because the two bound different things: opening a token or
+// fetching a cloud key's public half happens before the operator is shown anything, and a backend that
+// cannot be reached should say so promptly rather than after the same wait twice.
+func openWithTimeout(ctx context.Context, reference string) (signing.Signer, error) {
+	openCtx, done := context.WithTimeout(ctx, DefaultSigningTimeout)
+	defer done()
+	return openSigningKey(openCtx, reference)
+}
 
 // signCommand implements `farrier sign`.
 //
@@ -41,7 +65,9 @@ const DefaultSignedValidity = time.Hour
 // catalogue, and print what it means.
 func signCommand(argv []string) int {
 	fs := flag.NewFlagSet("sign", flag.ExitOnError)
-	keyPath := fs.String("key", "", "path to the signing key created by `farrier key generate`")
+	keyPath := fs.String("key", "",
+		"the signing key: a path from `farrier key generate`, or a backend reference such as\n"+
+			"pkcs11:token=ops;object=ops-yubikey-1?module-path=/usr/lib/opensc-pkcs11.so")
 	host := fs.String("host", "", "the host id this job is for; a signature is bound to exactly one")
 	name := fs.String("intent", "", "the catalogue member, for example service.restart")
 	params := fs.String("params", "{}", "the parameter object as JSON")
@@ -73,7 +99,10 @@ func signCommand(argv []string) int {
 		return 1
 	}
 
-	signer, err := openSigningKey(*keyPath)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	signer, err := openWithTimeout(ctx, *keyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
 		return 1
@@ -93,9 +122,16 @@ func signCommand(argv []string) int {
 		}
 	}
 
-	// The context is honoured because hardware backends block: a touch-required token waits for a
-	// finger, and an operator who changes their mind at that moment should be able to press Ctrl-C.
-	signature, err := signer.Sign(context.Background(), payload)
+	// The context is honoured because backends block: a touch-required token waits for a finger and a
+	// key store waits for a network, and an operator who changes their mind at that moment should be
+	// able to press Ctrl-C.
+	//
+	// The deadline starts here rather than around the whole command, and that ordering is the point:
+	// the confirmation above is a person reading a payload, and a timeout that covered it would refuse
+	// to sign for anyone who thought about it for half a minute.
+	signCtx, done := context.WithTimeout(ctx, DefaultSigningTimeout)
+	defer done()
+	signature, err := signer.Sign(signCtx, payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: signing failed: %v\n", err)
 		return 1
@@ -219,20 +255,30 @@ func buildSignableJob(jobID, host, name, rawParams, notBefore string, validFor t
 	}, spec, decoded, nil
 }
 
-// openSigningKey opens a file-backed key, prompting for its passphrase.
+// openSigningKey resolves a key reference to a signer, whichever backend holds it.
 //
-// Only the file backend for now. docs/EXTENDING.md describes the PKCS#11 and KMS backends this seam
-// exists for, and when one arrives it is selected here rather than by this command learning about it.
-func openSigningKey(path string) (signing.Signer, error) {
-	passphrase, err := readPassphrase("Passphrase for " + path + ": ")
-	if err != nil {
-		return nil, err
-	}
-	signer, err := file.Open(path, passphrase)
-	if err != nil {
-		return nil, err
-	}
-	return signer, nil
+// This command learns nothing about any backend: a reference names one, the registry in
+// internal/signing/backend resolves it, and a path with no scheme is a file exactly as it always was.
+// That is docs/EXTENDING.md's governing rule for this seam — extension means adding an implementation,
+// never editing a switch — and it is why adding PKCS#11 and the three key stores changed one line
+// here.
+//
+// The prompt is passed in rather than reached for, so the rule that matters travels with it: a
+// passphrase or a PIN is never a command-line argument, where every user on the machine can read it
+// from the process list.
+func openSigningKey(ctx context.Context, reference string) (signing.Signer, error) {
+	return backend.Open(ctx, reference, readPassphrase)
+}
+
+// referencer is a signer whose key is somewhere worth naming on the confirmation screen.
+//
+// A file's path is on the command line the operator just typed; a cloud key's resource name is not,
+// and it is the thing this backend's caveat is entirely about — a key in the same account as the
+// control plane is a key the control plane can use. So the confirmation shows it, and an operator
+// about to reboot a fleet can see which account is about to authorise it.
+type referencer interface {
+	// Reference renders the key's location, for display.
+	Reference() string
 }
 
 // describeJob renders what is about to be signed.
@@ -257,6 +303,9 @@ func describeJob(job protocol.Job, spec intent.Spec, decoded intent.Params,
 		job.NotBefore.Format(time.RFC3339), job.NotAfter.Format(time.RFC3339),
 		job.NotAfter.Sub(job.NotBefore).Round(time.Second))
 	fmt.Fprintf(&b, "  Signing key %s (%s)\n", signer.KeyID(), signer.Backend())
+	if named, ok := signer.(referencer); ok {
+		fmt.Fprintf(&b, "  Held in    %s\n", named.Reference())
+	}
 	fmt.Fprintf(&b, "\n  This host will act on it only if %s is listed in its own %s.\n",
 		signer.KeyID(), signing.TrustedSignersPath)
 	fmt.Fprintf(&b, "\n  Signed payload, verbatim:\n    %s\n\n", payload)

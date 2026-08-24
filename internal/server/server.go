@@ -244,6 +244,8 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
 	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
 	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))
+	s.route(http.MethodGet, "/api/v1/templates/{name}/versions",
+		s.requireOperator(s.handleListTemplateVersions))
 	s.route(http.MethodPost, "/api/v1/templates/{name}/render", s.requireOperator(s.handleRenderTemplate))
 	s.route(http.MethodGet, "/api/v1/events", s.requireOperator(s.handleListEvents))
 	s.route(http.MethodGet, "/api/v1/events/stream", s.requireOperator(s.handleEventStream))
@@ -724,6 +726,25 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) er
 // and the other is two well-formed requests where the endpoint takes one, and only the second leaves
 // the caller believing something was queued that was not.
 var errTrailingData = errors.New("server: the request body holds more than one JSON value")
+
+// writeDecodeError answers a failed decodeJSON with the status and the message that failure deserves.
+//
+// Three failures arrive as one error and want three answers, and every handler that collapsed them
+// taught its caller something untrue: an over-size body answered as malformed sends an agent into a
+// retry loop over something that will never parse (docs/PROTOCOL.md §11), and two concatenated JSON
+// values answered as malformed leaves a caller believing the first request was refused when in fact
+// only the first was ever read. The trailing-data message is per-endpoint because what was *not* done
+// is per-endpoint, and that is the half the caller needs.
+func writeDecodeError(w http.ResponseWriter, err error, trailing string) {
+	switch {
+	case isTooLarge(err):
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "the request body is too large")
+	case errors.Is(err, errTrailingData):
+		writeError(w, http.StatusBadRequest, "malformed", trailing)
+	default:
+		writeError(w, http.StatusBadRequest, "malformed", "the request body could not be read")
+	}
+}
 
 // isTooLarge reports whether a decode failed because the body exceeded its bound.
 //

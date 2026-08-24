@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, signal } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -9,10 +9,34 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { RouterLink } from '@angular/router';
 
-import { EVENT_KINDS, describeKind, toneClass } from '../core/event-kinds';
-import { EventStream } from '../core/event-stream';
+import { ApiService } from '../core/api.service';
+import { EVENT_KINDS, describeKind } from '../core/event-kinds';
+import { EventStream, mergeEvents } from '../core/event-stream';
 import { FleetEvent } from '../core/api.models';
+import { describeError } from '../core/errors';
 import { formatAge } from '../core/format';
+import { toneClass } from '../core/tone';
+
+/**
+ * How often the ages on this page are recomputed, in milliseconds.
+ *
+ * They have to tick. The feed stays open for hours and new rows arrive on it, so a `now` captured
+ * once at construction leaves every row saying "2m ago" for the rest of the afternoon — and an age
+ * that is confidently wrong is worse than no age at all on a page whose whole purpose is telling
+ * somebody when something happened. Ten seconds is finer than the smallest unit `formatAge` prints
+ * once a row is a minute old, and coarse enough to be invisible next to the stream itself.
+ */
+const AGE_TICK_MILLISECONDS = 10_000;
+
+/**
+ * How many events a filtered read asks the control plane for.
+ *
+ * The largest it accepts, `store.MaxEventLimit`, asked for rather than defaulted: the default is a
+ * tenth of the inbox and is right for "what is new", while narrowing to one kind is the request that
+ * wants depth. An operator filtering `job.expired` is asking what has expired, not what expired most
+ * recently — and the inbox keeps a thousand events per fleet, so there is history here to reach.
+ */
+const FILTERED_EVENT_LIMIT = 500;
 
 /**
  * The event inbox: what the control plane noticed, whether or not anybody's tab was open.
@@ -23,6 +47,13 @@ import { formatAge } from '../core/format';
  * the shared feed rather than fetching for itself — the feed is the merge of this inbox and the live
  * stream, de-duplicated on the event id, so an operator watching it during an incident sees new
  * entries appear without reloading and without double-counting.
+ *
+ * The kind filter is the one thing this page does not do in memory, and the reason is arithmetic: the
+ * feed holds the newest two hundred events and the inbox holds a thousand, so filtering the feed for
+ * `job.expired` could not reach a single expiry that happened before the newest two hundred events —
+ * it would answer "nothing of this kind has happened" about a fleet where plenty had. Choosing a kind
+ * asks the server, which filters over the whole inbox; the live stream's matching events are merged
+ * on top so the filtered view stays live too.
  *
  * Nothing here is actionable, deliberately. There is no approve button and no retry button on an
  * event: anything that changes state goes through its own page with its own authentication, and a
@@ -49,8 +80,27 @@ export class EventsPage {
   /** The merged live-and-durable feed. */
   protected readonly stream = inject(EventStream);
 
+  /** Talks to the control plane, for the filtered read the shared feed cannot answer. */
+  private readonly api = inject(ApiService);
+
+  /** Stops the age ticker when the operator leaves the page, so a closed page costs nothing. */
+  private readonly destroyRef = inject(DestroyRef);
+
   /** The kind filter, empty for everything. */
   protected readonly kind = signal('');
+
+  /**
+   * The server's answer for the chosen kind, over the whole inbox rather than over the feed.
+   *
+   * Null while a fetch is in flight and whenever no kind is chosen. Null rather than an empty array
+   * on purpose: "the server has not answered yet" and "the server says there are none" are different
+   * states, and rendering the first as the second would flash "nothing of this kind has happened"
+   * over a fleet where it had.
+   */
+  private readonly matching = signal<FleetEvent[] | null>(null);
+
+  /** Why the filtered read failed, empty when it did not. Shown beside the filter, not as the page. */
+  protected readonly filterError = signal('');
 
   /** Every kind, for the filter, with its label. */
   protected readonly kinds = Object.entries(EVENT_KINDS).map(([value, style]) => ({
@@ -66,14 +116,31 @@ export class EventsPage {
    * `serverTime` covers every row, and an event that arrived over the stream a second ago has no
    * server timestamp newer than its own. A skewed laptop mis-renders these ages, which for a "what
    * happened" list is a smaller cost than a clock that jumps backwards between rows.
+   *
+   * It advances on a timer; see AGE_TICK_MILLISECONDS for why a page with a live stream on it cannot
+   * hold one instant for the whole session.
    */
   protected readonly now = signal(new Date().toISOString());
 
-  /** The events the filter admits. */
+  /**
+   * The events the filter admits, newest first.
+   *
+   * Unfiltered, this is the shared feed unchanged. Filtered, it is the server's answer with the live
+   * stream's matching events merged over it — de-duplicated on the event id, because during an
+   * incident the same event arrives from both and an operator counting them must not count it twice.
+   * While the server's answer is outstanding the live half stands alone, which is a partial view
+   * rather than a wrong one and fills in as the fetch lands.
+   */
   protected readonly shown = computed(() => {
     const wanted = this.kind();
-    const events = this.stream.events();
-    return wanted ? events.filter((event) => event.kind === wanted) : events;
+    const feed = this.stream.events();
+    if (!wanted) {
+      return feed;
+    }
+    return mergeEvents(
+      this.matching() ?? [],
+      feed.filter((event) => event.kind === wanted),
+    );
   });
 
   /** Whether the browser can show desktop notifications at all. */
@@ -98,12 +165,54 @@ export class EventsPage {
       this.stream.events();
       this.stream.markSeen();
     });
+
+    const ticker = setInterval(
+      () => this.now.set(new Date().toISOString()),
+      AGE_TICK_MILLISECONDS,
+    );
+    this.destroyRef.onDestroy(() => clearInterval(ticker));
   }
 
   /** Re-reads the inbox. The effect above clears the unread count as the answer arrives. */
   protected reload(): void {
     this.now.set(new Date().toISOString());
     this.stream.refresh();
+    this.fetchKind();
+  }
+
+  /** Chooses the kind filter, and asks the control plane for it rather than sieving the feed. */
+  protected chooseKind(kind: string): void {
+    this.kind.set(kind);
+    this.fetchKind();
+  }
+
+  /**
+   * Reads the chosen kind from the control plane.
+   *
+   * Every answer is checked against the filter that is current when it lands. Two fetches for two
+   * kinds can be in flight at once — an operator changing their mind is the ordinary case, not the
+   * pathological one — and without the check the slower answer would paint the wrong kind's events
+   * under the right kind's label.
+   */
+  private fetchKind(): void {
+    const wanted = this.kind();
+    this.matching.set(null);
+    this.filterError.set('');
+    if (!wanted) {
+      return;
+    }
+    this.api.events(wanted, FILTERED_EVENT_LIMIT).subscribe({
+      next: (response) => {
+        if (this.kind() === wanted) {
+          this.matching.set(response.events);
+        }
+      },
+      error: (err: unknown) => {
+        if (this.kind() === wanted) {
+          this.filterError.set(describeError(err));
+        }
+      },
+    });
   }
 
   /** Turns desktop notifications on or off, asking the browser the first time. */

@@ -1,0 +1,24 @@
+Name:	kubelet
+Umask:	0022
+State:	S (sleeping)
+Tgid:	8300
+Pid:	8300
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	64
+Groups:	
+NStgid:	8300	1
+NSpid:	8300	1
+NSpgid:	8300	1
+Threads:	1
+CapInh:	0000000000000000
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+voluntary_ctxt_switches:	12

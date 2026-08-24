@@ -9,7 +9,12 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
-import { RenderedTemplate, TemplateSummary, TemplateVersion } from '../core/api.models';
+import {
+  RenderedTemplate,
+  TemplateRevision,
+  TemplateSummary,
+  TemplateVersion,
+} from '../core/api.models';
 import { ApiService } from '../core/api.service';
 import { describeError } from '../core/errors';
 
@@ -75,6 +80,26 @@ export class TemplatesPage {
   /** The version currently open, null when none is. */
   protected readonly opened = signal<TemplateVersion | null>(null);
 
+  /**
+   * The template this pane is currently about, empty when none is.
+   *
+   * It exists because opening a template is two requests — the version and its history — and nothing
+   * else ties their answers together. Without a name to check them against, a response that arrives
+   * for a template the operator has already navigated away from overwrites the one they are looking
+   * at. Written before either request goes out, so both have something to be late for.
+   */
+  private readonly opening = signal('');
+
+  /**
+   * Every stored revision of the open template, newest first, empty when none is open.
+   *
+   * Held beside the open version rather than derived from it, because it answers a different
+   * question: the version pane shows one revision's bytes, this shows that the others exist. Until
+   * it did, "every save is a new version" was a property an operator had to take on faith — the
+   * listing showed only the latest, and reaching an older one meant guessing a number.
+   */
+  protected readonly revisions = signal<TemplateRevision[]>([]);
+
   /** Why the last write or render failed, shown where the action was taken. */
   protected readonly actionError = signal('');
 
@@ -139,26 +164,106 @@ export class TemplatesPage {
   /**
    * Opens one version, defaulting to the latest.
    *
-   * The previous render is dropped as the page moves: a credential belonging to one template must not
-   * still be on screen while another is open, where somebody would eventually copy the wrong one.
+   * The whole render form is dropped as the page moves, the previous render included: a credential
+   * belonging to one template must not still be on screen while another is open, where somebody
+   * would eventually copy the wrong one.
    */
   protected open(name: string, version?: number): void {
-    this.rendered.set(null);
+    this.clearRenderForm();
     this.actionError.set('');
+    this.opened.set(null);
+    this.revisions.set([]);
+    this.opening.set(name);
+
     this.api.template(name, version).subscribe({
       next: (record) => {
-        this.opened.set(record);
-        this.renderParams.set({});
+        if (this.opening() === record.name) {
+          this.opened.set(record);
+        }
       },
-      error: (err: unknown) => this.actionError.set(describeError(err)),
+      error: (err: unknown) => {
+        if (this.opening() === name) {
+          this.actionError.set(describeError(err));
+        }
+      },
+    });
+    this.loadRevisions(name);
+  }
+
+  /**
+   * Re-reads one template's revision history, discarding an answer about a different template.
+   *
+   * The discard is not defensive coding, it is the correctness of the pane. This is a second request
+   * racing the one that fetches the body, and the two can disagree in both directions: reading a
+   * version decrypts a sealed body and can answer 500 where this listing, which decrypts nothing,
+   * answers 200; and two clicks in flight can land in either order. Either way the markup would then
+   * compare one template's revision numbers against another template's open version — marking the
+   * wrong row "open" and offering buttons that pair this name with that one's versions. The response
+   * names the template it is about, so it can be checked rather than assumed.
+   *
+   * Its failure stays silent, and deliberately so: the history is context beside the version, not the
+   * thing the operator asked for, and an error banner over an empty list would report a page as
+   * broken when the version it exists to show is on screen and correct. What a failure costs is the
+   * list of older revisions, which the operator can get back by opening the template again.
+   */
+  private loadRevisions(name: string): void {
+    this.api.templateVersions(name).subscribe({
+      next: (response) => {
+        if (this.opening() === response.name) {
+          this.revisions.set(response.versions);
+        }
+      },
+      error: () => {
+        if (this.opening() === name) {
+          this.revisions.set([]);
+        }
+      },
     });
   }
 
-  /** Closes the open version, dropping any render with it. */
+  /** Closes the open version, dropping the render form and any render with it. */
   protected close(): void {
+    this.opening.set('');
     this.opened.set(null);
-    this.rendered.set(null);
+    this.revisions.set([]);
+    this.clearRenderForm();
     this.actionError.set('');
+  }
+
+  /**
+   * Drops everything the render form holds: placeholder values, fleet group, bootstrap template and
+   * the last render.
+   *
+   * One method because those four have to move together, and the bootstrap field is why. A render
+   * mints a live enrolment token, and `bootstrap` decides which template that token may request when
+   * a host enrols with it — so a name typed while template A was open and left in place would arm
+   * template B's freshly minted token with A's bootstrap, with nothing on screen having asked. The
+   * group has the same shape of consequence one step down: it decides which fleet group the host
+   * joins. Carrying either across a template switch is a setting the operator did not make.
+   */
+  private clearRenderForm(): void {
+    this.renderParams.set({});
+    this.renderGroup.set('');
+    this.renderBootstrap.set('');
+    this.rendered.set(null);
+  }
+
+  /**
+   * Renders when a revision was stored, in UTC, to the minute.
+   *
+   * A timestamp rather than an age, which is the opposite of what every other page here does, and for
+   * the reason those pages give: `formatAge` insists on the control plane's clock because an age is a
+   * decision input and a wrong laptop clock silently corrupts it. This response carries no server
+   * time — and a version history does not need one. What an operator asks of this column is "which of
+   * these is the one from the change window on Tuesday", and a UTC stamp answers that without
+   * consulting any clock at all.
+   */
+  protected stored(revision: TemplateRevision): string {
+    const at = new Date(revision.createdAt);
+    if (Number.isNaN(at.getTime())) {
+      return '—';
+    }
+    return `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
   }
 
   /** Loads the open template's body into the editor, as the starting point for its next version. */

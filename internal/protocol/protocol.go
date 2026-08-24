@@ -408,6 +408,31 @@ func ValidJobID(id string) bool {
 // JobIDShape describes the accepted shape, for an error message that says what to do instead.
 const JobIDShape = "letters and digits only, at most 64 of them"
 
+// MaxHostIDBytes bounds a host identifier.
+//
+// Generated ones are 26 characters. The bound is here rather than assumed because a host id is
+// assigned by the control plane and read by the agent, and the agent does not get to assume the
+// control plane is well behaved — the whole design is what remains true when it is not.
+const MaxHostIDBytes = 64
+
+// ValidHostID reports whether a host identifier is one the agent will carry.
+//
+// It shares jobIDPattern because both come from internal/id and both end up in places where a
+// character outside the alphabet changes the meaning of a document rather than the value of a field.
+// For a host id that place is cloud-init's meta-data: the agent writes `instance-id: <host id>` into a
+// YAML document cloud-init parses and acts on, so an id carrying a newline would let whoever assigned
+// it add keys to that document — `public-keys`, which cc_ssh installs into authorized_keys. That is a
+// path from a control plane to an SSH key on a host, and it would run beside the bootstrap template
+// rather than inside it: not covered by the offline signature, not shown to the operator, not written
+// into the permanent record. Validating here is what keeps the enrolment-time exception in
+// docs/SECURITY.md §1 to exactly the template its operator named.
+func ValidHostID(id string) bool {
+	return id != "" && len(id) <= MaxHostIDBytes && jobIDPattern.MatchString(id)
+}
+
+// HostIDShape describes the accepted shape, for an error message that says what to do instead.
+const HostIDShape = "letters and digits only, at most 64 of them"
+
 // Result statuses. They are stable strings because they end up in the UI, in the audit log and in
 // operators' alerting rules, and renaming one silently breaks somebody's dashboard.
 const (

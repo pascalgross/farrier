@@ -209,9 +209,15 @@ func reportState(policyPath string) {
 //
 // It is also what the integration suite compares against apt's own output, which is how the
 // security/regular split is checked on a real machine rather than against a fixture.
+//
+// It reads the policy file, which for a command that changes nothing looks unnecessary and is not: the
+// local policy decides which sections a host discloses at all, so a subcommand that skipped it would
+// print a document the heartbeat would not send — and would fail at the one job it exists to do, which
+// is to tell "the host reported it wrongly" from "the control plane displayed it wrongly".
 func factsCommand(argv []string) int {
 	fs := flag.NewFlagSet("facts", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the facts document as JSON, exactly as it goes on the wire")
+	policyPath := fs.String("policy", policy.Path, "policy file to read")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -226,7 +232,19 @@ func factsCommand(argv []string) int {
 		return 1
 	}
 
-	facts, err := collect.Gather(ctx, plat, collector.All()...)
+	// The same fall-through the agent itself uses: a missing file takes the built-in default, an
+	// unreadable one takes the closed policy, and neither is fatal to printing the facts. Reporting
+	// less than the heartbeat would is the correct behaviour for a host whose policy cannot be read.
+	p, err := policy.LoadFrom(*policyPath)
+	switch {
+	case errors.Is(err, policy.ErrNoPolicyFile):
+		slog.Warn("no policy file; using the built-in default", "path", *policyPath)
+	case err != nil:
+		slog.Error("policy could not be read; sections this host may decline to report are omitted",
+			"path", *policyPath, "error", err)
+	}
+
+	facts, err := collect.Gather(ctx, plat, p, collector.All()...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-agent: collecting facts: %v\n", err)
 		return 1
@@ -268,8 +286,19 @@ func factsCommand(argv []string) int {
 		fmt.Printf("ubuntu pro          not applicable\n")
 	}
 	fmt.Printf("units               %d\n", len(facts.Services))
-	for name := range facts.Extra {
-		fmt.Printf("collector           %s\n", name)
+	for _, c := range collector.All() {
+		// Listed from the registry rather than from the document, so that a section the local policy
+		// withheld is visible as withheld. Iterating the document alone would print nothing for it,
+		// which reads exactly like a collector nobody wrote.
+		if _, reported := facts.Extra[c.Name()]; reported {
+			fmt.Printf("collector           %s\n", c.Name())
+			continue
+		}
+		if gated, ok := c.(collect.PolicyGated); ok && !gated.PermittedBy(p) {
+			fmt.Printf("collector           %s (withheld by %s)\n", c.Name(), p.Source())
+			continue
+		}
+		fmt.Printf("collector           %s (failed; see the log above)\n", c.Name())
 	}
 	fmt.Printf("facts digest        %s\n", digest)
 	return 0
@@ -308,6 +337,7 @@ func policyCommand(argv []string) int {
 	fmt.Printf("updates.window      %s (%s)\n", p.Window(), p.Updates.Timezone)
 	fmt.Printf("updates.reboot      %s\n", p.Updates.Reboot)
 	fmt.Printf("services.restartable %v\n", p.Services.Restartable)
+	fmt.Printf("containers.report   %t\n", p.Containers.Report)
 	fmt.Printf("limits.max_job_age_seconds %d\n", p.Limits.MaxJobAgeSeconds)
 	fmt.Printf("paused              %t\n", policy.Paused())
 	if !p.Window().Always() {

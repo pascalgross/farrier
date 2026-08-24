@@ -1,0 +1,259 @@
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideZonelessChangeDetection } from '@angular/core';
+import { of, throwError } from 'rxjs';
+
+import { ApiService } from '../core/api.service';
+import { TemplateRevision, TemplateVersion } from '../core/api.models';
+import { TemplatesPage } from './templates-page';
+
+/** Builds one revision of the history, so each spec names only the part it is about. */
+function revision(partial: Partial<TemplateRevision>): TemplateRevision {
+  return {
+    version: 1,
+    signed: false,
+    createdAt: '2026-08-24T09:41:07.512Z',
+    createdBy: 'test:tester',
+    ...partial,
+  };
+}
+
+/** Builds the one version the detail pane holds open. */
+function version(partial: Partial<TemplateVersion>): TemplateVersion {
+  return {
+    name: 'standard-server',
+    version: 3,
+    body: '#cloud-config\n{}\n',
+    signed: false,
+    createdAt: '2026-08-24T09:41:07.512Z',
+    createdBy: 'test:tester',
+    placeholders: [],
+    warnings: [],
+    ...partial,
+  };
+}
+
+/**
+ * The two protected members these specs reach for, named so the casts below stay readable.
+ *
+ * Protected rather than public because they are the template's to call, and a spec that drives the
+ * page the way the markup does has to say so out loud rather than widen the component's surface.
+ */
+interface PageInternals {
+  /** Opens one template, which is also what loads its revision history. */
+  open(name: string, version?: number): void;
+
+  /** Renders one revision's stored time, which is the formatting one spec is about. */
+  stored(revision: TemplateRevision): string;
+}
+
+/** Renders the page with one template open and a fixed history behind it. */
+function render(
+  open: TemplateVersion,
+  history: TemplateRevision[] | 'fails',
+): ComponentFixture<TemplatesPage> {
+  TestBed.configureTestingModule({
+    providers: [
+      provideZonelessChangeDetection(),
+      {
+        provide: ApiService,
+        useValue: {
+          templates: () =>
+            of({
+              templates: [
+                {
+                  name: open.name,
+                  latestVersion: open.version,
+                  createdAt: open.createdAt,
+                  createdBy: open.createdBy,
+                  signed: open.signed,
+                },
+              ],
+            }),
+          template: () => of(open),
+          templateVersions: () =>
+            history === 'fails'
+              ? throwError(() => new Error('the control plane is down'))
+              : of({ name: open.name, versions: history }),
+        } as unknown as ApiService,
+      },
+    ],
+  });
+  const fixture = TestBed.createComponent(TemplatesPage);
+  fixture.detectChanges();
+  (fixture.componentInstance as unknown as PageInternals).open(open.name);
+  fixture.detectChanges();
+  return fixture;
+}
+
+/**
+ * Every h2 on the page, collapsed.
+ *
+ * The detail pane's heading is not the first h2 — the stored-templates list has one above it — so a
+ * spec asking "is this template open" has to look at the set rather than at whichever comes first.
+ */
+function headings(fixture: ComponentFixture<TemplatesPage>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('h2')).map((h) => text(h as Element));
+}
+
+/** Every card title on the page, collapsed, so a spec can assert a pane is absent. */
+function cardTitles(fixture: ComponentFixture<TemplatesPage>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('mat-card-title')).map((t) =>
+    text(t as Element),
+  );
+}
+
+/** Collapses whitespace, so an assertion can be written the way a row actually reads. */
+function text(element: Element | null): string {
+  return (element?.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+describe('TemplatesPage version history', () => {
+  /**
+   * Immutable versioning is the storage model, and until this pane existed it was something an
+   * operator had to take on faith: the listing showed only the latest version, so reaching version 3
+   * of a template whose latest is 7 meant guessing a number. A property nobody can look at is not a
+   * property worth having.
+   */
+  it('lists every stored revision with who stored it and whether it is signed', () => {
+    const fixture = render(version({ version: 3 }), [
+      revision({ version: 3, createdBy: 'test:tester' }),
+      revision({ version: 2, signed: true, signerKeyId: 'ops-1', createdBy: 'alice' }),
+      revision({ version: 1, createdBy: 'alice' }),
+    ]);
+
+    const rendered = Array.from(
+      fixture.nativeElement.querySelectorAll('mat-card-content > div'),
+    ).map((row) => text(row as Element));
+    const rows = rendered.filter((row) => /^v\d/.test(row));
+
+    expect(rows.length).toBe(3);
+    expect(rows[0]).toContain('v3');
+    expect(rows[1]).toContain('v2');
+    expect(rows[1]).toContain('signed');
+    expect(rows[1]).toContain('alice');
+    expect(rows[2]).toContain('unsigned');
+  });
+
+  /**
+   * The timestamp is UTC and stated as such. Every other page in this application renders an age
+   * against the control plane's clock, precisely because a laptop clock ten minutes out would corrupt
+   * a number operators make decisions on. This response carries no server time, so the answer here is
+   * to consult no clock at all: "which of these is the one from Tuesday's change window" is answered
+   * by the stamp the server wrote.
+   */
+  it('renders the stored time in UTC rather than relative to the browser', () => {
+    const fixture = render(version({}), [revision({ version: 1 })]);
+    const shown = (fixture.componentInstance as unknown as PageInternals).stored(
+      revision({ createdAt: '2026-08-24T09:41:07.512Z' }),
+    );
+
+    expect(shown).toBe('2026-08-24 09:41 UTC');
+    expect(shown).not.toContain('ago');
+  });
+
+  /**
+   * The history is context beside the version, not the thing the operator asked for. A failure to
+   * load it must not put an error banner over a pane whose body, warnings and render form are on
+   * screen and correct — that reports a working page as broken.
+   */
+  it('stays silent when the history cannot be loaded', () => {
+    const fixture = render(version({ body: '#cloud-config\nhostname: fixed\n' }), 'fails');
+
+    expect(text(fixture.nativeElement.querySelector('pre'))).toContain('hostname: fixed');
+    expect(fixture.nativeElement.querySelectorAll('.text-farrier-bad').length).toBe(0);
+  });
+
+  /**
+   * A single-version template has no history worth a pane: one row saying "v1, open" is furniture
+   * that makes the page longer without answering a question anybody had.
+   */
+  it('shows no pane for a template with one version', () => {
+    const fixture = render(version({ version: 1 }), [revision({ version: 1 })]);
+    const titles = Array.from(fixture.nativeElement.querySelectorAll('mat-card-title')).map((t) =>
+      text(t as Element),
+    );
+
+    expect(titles).not.toContain('Versions');
+    expect(titles).toContain('Render');
+  });
+});
+
+describe('TemplatesPage pane correlation', () => {
+  /**
+   * Opening a template is two requests — the body and the history — and nothing else ties their
+   * answers together. They can disagree in both directions: reading a version decrypts a sealed body
+   * and answers 500 where the listing, which decrypts nothing, answers 200; and two clicks in flight
+   * can land in either order. Either way the markup would compare one template's revision numbers
+   * against another's open version, marking the wrong row "open" and offering buttons that pair this
+   * name with that one's versions.
+   */
+  it('discards a history that belongs to a different template', () => {
+    const open = version({ name: 'standard-server', version: 2 });
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        {
+          provide: ApiService,
+          useValue: {
+            templates: () => of({ templates: [] }),
+            template: () => of(open),
+            // A late answer about the template the operator has already navigated away from.
+            templateVersions: () =>
+              of({
+                name: 'something-else',
+                versions: [revision({ version: 9 }), revision({ version: 8 })],
+              }),
+          } as unknown as ApiService,
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(TemplatesPage);
+    fixture.detectChanges();
+    (fixture.componentInstance as unknown as PageInternals).open('standard-server');
+    fixture.detectChanges();
+
+    expect(cardTitles(fixture)).not.toContain('Versions');
+    expect(headings(fixture)).toContain('standard-server v2');
+  });
+
+  /**
+   * The complementary half: a failed body fetch must not leave the previous template on screen while
+   * the new one's history loads underneath it. Clearing both up front is what makes the pane's two
+   * halves always describe the same template, including in the window before either answer arrives.
+   */
+  it('does not show one template\'s history against another template\'s body', () => {
+    let call = 0;
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        {
+          provide: ApiService,
+          useValue: {
+            templates: () => of({ templates: [] }),
+            // The first open succeeds; the second — a different template — fails on the body.
+            template: () =>
+              call++ === 0
+                ? of(version({ name: 'first', version: 1 }))
+                : throwError(() => new Error('sealed')),
+            templateVersions: (name: string) =>
+              of({ name, versions: [revision({ version: 4 }), revision({ version: 3 })] }),
+          } as unknown as ApiService,
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(TemplatesPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance as unknown as PageInternals;
+
+    page.open('first');
+    fixture.detectChanges();
+    expect(headings(fixture)).toContain('first v1');
+
+    page.open('second');
+    fixture.detectChanges();
+
+    // No stale header, and therefore no pane pairing "second"'s revisions with "first"'s version.
+    expect(headings(fixture).join(' ')).not.toContain('first v1');
+    expect(cardTitles(fixture)).not.toContain('Versions');
+  });
+});

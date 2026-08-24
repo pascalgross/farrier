@@ -32,6 +32,17 @@ make deb         # build the .deb (needs nfpm)
 make web         # build the Angular app into where farrier-server embeds it
 ```
 
+The PKCS#11 backend needs a module to drive. `libsofthsm2` is enough — the tests build their own token
+through the module's own entry points — and `make test-pkcs11` runs them twice, with cgo and without,
+because the binary that ships is the one without and `-race` forces the one with:
+
+```bash
+sudo apt-get install -y libsofthsm2
+make test-pkcs11
+```
+
+They skip when no module is present, and CI greps for the pass rather than trusting the summary.
+
 One test, one package:
 
 ```bash
@@ -86,6 +97,10 @@ conversation, not a commit.
   against the catalogue.
 - **The trust anchor is `/etc/farrier/trusted-signers`, not the package**, and it ships empty. A fresh
   agent executes nothing destructive until an administrator puts a key there.
+- **A signing backend is linked by `cmd/farrier` and by nothing else.** That is what makes an
+  open-ended set of them safe — the verifier never changes and a host cannot tell which produced a
+  signature — and it stopped being merely true when `pkcs11` began loading a shared library. Adding a
+  backend means adding a package under `internal/signing/backend`, never an import in the agent.
 - **Clock skew is a security boundary.** Signature validity windows are checked against the **local**
   clock only. `serverTime` is used solely to compute an offset for display.
 - **Never `apt`; always `apt-get`**, and wrap `unattended-upgrade` with `--force-confdef`,
@@ -126,8 +141,16 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   worked without dismantling the sandbox.
 - `internal/signing` + `internal/canonical` — offline signature verification over canonical JSON
   (sorted keys, no HTML escaping, integers only). Every authorisation decision is downstream of these.
+  The backends that *produce* signatures live one directory down, in `internal/signing/backend`, and
+  only `cmd/farrier` links them: `file`, `pkcs11` (via purego, so `CGO_ENABLED=0` still holds) and
+  `kms` (AWS, GCP and Azure over their REST APIs, no vendor SDK).
+  `TestGuaranteeNoManagedHostBinaryLoadsASigningBackend` asserts that the agent, the server and the
+  helpers reach none of them, because one of them dlopens a library an operator names.
 - `internal/collect` — facts, with a `Platform` seam for the four distribution differences that
   otherwise produce silent wrong answers (security origins, the reboot marker, Ubuntu Pro, `apt-check`).
+  Two collectors ship: `network`, and `containers`, which reads `/proc` and the cgroup tree — no socket,
+  no group, no helper — and is the one implementer of the optional `PolicyGated` half of the seam, so a
+  host that has not written `[containers] report = true` sends no such section at all.
 - `internal/store` — PostgreSQL, plus an in-memory implementation for tests only.
 - `web/` — Angular 20 standalone, built into where `farrier-server` embeds it.
 - `tools/doccheck`, `tools/docsite` — the doc-comment checker and the documentation site generator.

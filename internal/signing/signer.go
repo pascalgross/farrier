@@ -3,6 +3,7 @@ package signing
 import (
 	"context"
 	"crypto"
+	"fmt"
 )
 
 // Signer produces a detached signature over the canonical job payload.
@@ -78,4 +79,32 @@ func TrustedSignerLine(s Signer) (string, error) {
 		line += " " + b
 	}
 	return line, nil
+}
+
+// SelfCheck verifies a signature a backend has just produced, against that backend's own public key.
+//
+// It exists because of one failure mode, and it is the one every remote key store walks into. A
+// PKCS#11 token returns ECDSA as a raw r‖s pair and Azure Key Vault returns it base64url-encoded, and
+// the wire format is ASN.1 DER; a digest sent where the payload was meant produces a signature over
+// the wrong bytes. None of that fails at the signer. It fails on every host in the fleet, as
+// ErrNoTrustedSigner — "no key produced this signature" — which reads to an operator as a broken key
+// or a wrong trust anchor, days after the fact, on machines they cannot easily inspect.
+//
+// Checking locally costs a verification and turns the whole class into an error at the terminal of the
+// person who ran the command. Both issue #22 and issue #23 ask for exactly this in words: the failure
+// when a backend cannot produce what is needed must say so, rather than surfacing as a signature that
+// does not verify.
+//
+// It proves the encoding, not the key custody. A backend that signed with the wrong key would pass
+// this and fail on a host, which is correct: what a host trusts is its own trusted-signers file and
+// nothing here can or should second-guess it.
+func SelfCheck(s Signer, payload, signature []byte) error {
+	key := PublicKey{Algorithm: s.Algorithm(), KeyID: s.KeyID(), Key: s.Public()}
+	if key.Verify(payload, signature) {
+		return nil
+	}
+	return fmt.Errorf("signing: the %s backend produced a signature that does not verify against its "+
+		"own public key for %s. It has not been used, because a host would have refused it as coming "+
+		"from no trusted signer — which would have looked like a broken trust anchor rather than an "+
+		"encoding fault here", s.Backend(), s.KeyID())
 }

@@ -503,7 +503,7 @@ export interface FailedServiceHost {
   /** Whether it has been heard from recently. */
   online: boolean;
 
-  /** Its units in the failed state. */
+  /** Its units in the failed state, each carrying the load state that says what kind of failure. */
   failed: UnitState[];
 
   /**
@@ -513,14 +513,29 @@ export interface FailedServiceHost {
    * must not look the same, which is the same rule the needrestart scan already follows.
    */
   servicesTruncated: boolean;
+
+  /**
+   * Whether the control plane could read this host's facts at all.
+   *
+   * True for a host that has never reported, or whose stored facts will not parse. It is a third
+   * answer beside "clean" and "failing" and has to render as one: a host nothing is known about is
+   * not a host with no failed units, which is the same distinction `servicesTruncated` exists to
+   * make one level down.
+   */
+  factsUnknown: boolean;
 }
 
 /** The response of `GET /api/v1/services/failed`. */
 export interface FailedServicesResponse {
-  /** Only the hosts with something failed, or with a truncated list. */
+  /** Only the hosts with something failed, with a truncated list, or with no readable facts. */
   hosts: FailedServiceHost[];
 
-  /** How many hosts were examined, so "3 of 300" is renderable. */
+  /**
+   * How many hosts were examined, so "3 of 300" is renderable.
+   *
+   * Revoked hosts are not in it. They are not part of the fleet this page is about, and counting
+   * them made the denominator include machines somebody had deliberately removed.
+   */
   total: number;
 
   /** The control plane's clock. */
@@ -724,6 +739,40 @@ export interface StoredTemplateVersion {
 
   /** Secret shapes found in the body, with the consequence spelled out. */
   warnings: string[];
+}
+
+/**
+ * One stored revision as the version listing renders it, without its body.
+ *
+ * No body, because the listing is about the shape of a template's history rather than its contents:
+ * bodies are sealed, potentially large, and the one a caller actually wants is fetched by naming its
+ * version — which is also the request that is marked non-cacheable, because that is the one carrying
+ * something worth keeping out of a cache.
+ */
+export interface TemplateRevision {
+  /** This revision's number. */
+  version: number;
+
+  /** Whether it carries an offline signature, and so may be issued to an enrolling host. */
+  signed: boolean;
+
+  /** The key that signed it, absent for an unsigned revision. */
+  signerKeyId?: string;
+
+  /** When it was stored. */
+  createdAt: string;
+
+  /** Which operator stored it. */
+  createdBy: string;
+}
+
+/** The response of `GET /api/v1/templates/{name}/versions`. */
+export interface TemplateVersionsResponse {
+  /** The template these revisions belong to. */
+  name: string;
+
+  /** Every stored revision, newest first. */
+  versions: TemplateRevision[];
 }
 
 /** The body of `POST /api/v1/templates`. */

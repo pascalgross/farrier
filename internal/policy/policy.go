@@ -171,6 +171,25 @@ type Services struct {
 	Watched []string `toml:"watched"`
 }
 
+// Containers is the [containers] section of the policy file.
+type Containers struct {
+	// Report is whether this host reports the containers running on it.
+	//
+	// It ships false, in the same spirit as trusted-signers shipping empty: a fresh host does the
+	// least revealing thing until an administrator decides otherwise. Container state is a genuinely
+	// different disclosure from a unit list — names describe what a business runs, image tags leak
+	// internal registry hostnames, and command lines have a long history of carrying credentials — and
+	// a host that agreed to report its package state has not thereby agreed to report that. Farrier's
+	// own collector reports an executable name rather than a command line for exactly that reason, but
+	// the host still gets to say no.
+	//
+	// It bounds what this host *says*, never what may be done to it, so turning it on is not a
+	// permission change and no signature is involved. Note that the resource figures under it change
+	// on every collection, so a host that turns it on sends a full report on every heartbeat rather
+	// than a digest.
+	Report bool `toml:"report"`
+}
+
 // Limits is the [limits] section of the policy file.
 type Limits struct {
 	// MaxJobAgeSeconds is how long after issue a job may still be executed.
@@ -193,6 +212,9 @@ type Policy struct {
 
 	// Services bounds which units may be acted on.
 	Services Services `toml:"services"`
+
+	// Containers bounds what this host says about the containers running on it.
+	Containers Containers `toml:"containers"`
 
 	// Limits bounds job age.
 	Limits Limits `toml:"limits"`
@@ -220,8 +242,11 @@ func Default() Policy {
 			Reboot:    RebootNever,
 		},
 		Services: Services{Restartable: nil},
-		Limits:   Limits{MaxJobAgeSeconds: 900},
-		source:   "built-in default",
+		// Written out rather than left to the zero value, because a default that matters is one a
+		// reader should be able to find by looking at the defaults.
+		Containers: Containers{Report: false},
+		Limits:     Limits{MaxJobAgeSeconds: 900},
+		source:     "built-in default",
 	}
 	// Validated rather than hand-assembled, so the derived window matches the string beside it. A
 	// zero-valued Window reports itself closed at every instant while Updates.Window says "always",
@@ -240,9 +265,10 @@ func Default() Policy {
 // outage instead of an invisible one.
 func Closed() Policy {
 	p := Policy{
-		Updates: Updates{Allow: AllowNone, AutoApply: false, Timezone: "UTC", Reboot: RebootNever},
-		Limits:  Limits{MaxJobAgeSeconds: 900},
-		source:  "closed (policy could not be loaded)",
+		Updates:    Updates{Allow: AllowNone, AutoApply: false, Timezone: "UTC", Reboot: RebootNever},
+		Containers: Containers{Report: false},
+		Limits:     Limits{MaxJobAgeSeconds: 900},
+		source:     "closed (policy could not be loaded)",
 	}
 	if err := p.validate(); err != nil {
 		panic("policy: the closed policy does not validate: " + err.Error())

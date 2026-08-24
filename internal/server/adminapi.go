@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/provision"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -278,7 +280,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 		ttl = time.Duration(req.TTLSeconds) * time.Second
 	}
 
-	if !checkBootstrapIsIssuable(w, r, who, req.Bootstrap) {
+	if !s.checkBootstrapIsIssuable(w, r, who, req.Bootstrap) {
 		return
 	}
 
@@ -379,7 +381,9 @@ func (s *Server) handleCatalogue(w http.ResponseWriter, _ *http.Request, _ opera
 //
 // Shared by the two places that mint a token, and shared deliberately: the render endpoint mints one
 // too, and a check that lived in only one of them would be a check the other silently skipped.
-func checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request, who operator, name string) bool {
+func (s *Server) checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request,
+	who operator, name string) bool {
+
 	if name == "" {
 		return true
 	}
@@ -399,5 +403,43 @@ func checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request, who operat
 				"Sign it with `farrier sign-template` and store the signed version first.")
 		return false
 	}
-	return true
+
+	body, err := s.cfg.TemplateKey.Open(record.BodySealed)
+	if err != nil {
+		slog.Error("could not decrypt a template to check it for the reserved placeholder",
+			"template", record.Name, "version", record.Version, "error", err)
+		writeError(w, http.StatusInternalServerError, "sealed",
+			"the stored template cannot be decrypted; the control plane's template key does not match "+
+				"this database. See docs/INSTALL.md on backing the key up beside the CA.")
+		return false
+	}
+	return bootstrapDoesNotMintItsOwnToken(w, name, string(body))
+}
+
+// bootstrapDoesNotMintItsOwnToken refuses a bootstrap body that substitutes the reserved placeholder.
+//
+// A bootstrap is handed to a host verbatim — the offline signature covers those exact bytes, so there
+// is nothing on that path that could render it — and {{enrollmentToken}} is minted by the *render*
+// endpoint, which a bootstrap never goes through. So a body carrying it reaches cloud-init with the
+// braces still there and writes the literal string into the machine's configuration, where it enrols
+// nothing. There is no reading of that body under which it works.
+//
+// Only that one name, and the narrowness is the point. Every other brace pair in a verbatim body is
+// ambiguous and usually correct: cloud-init resolves its own `## template: jinja` documents on the
+// machine, and a write_files payload shipping a Go, Helm or consul-template config is *meant* to reach
+// disk with its braces intact. Refusing those would block the templates verbatim delivery exists to
+// carry — and because the body is signed by a key this control plane does not hold, an operator could
+// not edit their way past the refusal without re-signing offline. What a broader check would catch
+// instead is already visible: every save and every read reports the template's placeholders.
+func bootstrapDoesNotMintItsOwnToken(w http.ResponseWriter, name, body string) bool {
+	if !slices.Contains(provision.Placeholders(body), provision.TokenPlaceholder) {
+		return true
+	}
+	writeError(w, http.StatusConflict, "unrendered_template",
+		"the latest version of "+name+" substitutes {{"+provision.TokenPlaceholder+"}}, and a "+
+			"bootstrap template is handed to a host verbatim: the offline signature covers those exact "+
+			"bytes, so nothing renders it on the way and the braces would reach cloud-init intact. That "+
+			"placeholder is minted by the render endpoint, which a bootstrap never goes through. Store "+
+			"a version without it, or use this template through the render endpoint instead.")
+	return false
 }

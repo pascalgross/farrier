@@ -294,7 +294,7 @@ func (a *Agent) cycle(ctx context.Context, wantFull bool) (bool, error) {
 func (a *Agent) buildHeartbeat(ctx context.Context, p policy.Policy, signers *signing.SignerSet,
 	wantFull bool) (protocol.HeartbeatRequest, error) {
 
-	facts, err := collect.Gather(ctx, a.platform, collector.All()...)
+	facts, err := collect.Gather(ctx, a.platform, p, collector.All()...)
 	if err != nil {
 		return protocol.HeartbeatRequest{}, fmt.Errorf("agent: gathering facts: %w", err)
 	}
@@ -350,6 +350,12 @@ func policyView(p policy.Policy) map[string]any {
 		"services": map[string]any{
 			"restartable": append([]string{}, p.Services.Restartable...),
 			"watched":     append([]string{}, p.Services.Watched...),
+		},
+		// Reported even though it bounds nothing the control plane may ask for, because it bounds what
+		// the control plane is told — and a UI that cannot see it has no way to tell an empty container
+		// card from a host that has declined to fill one in.
+		"containers": map[string]any{
+			"report": p.Containers.Report,
 		},
 		"limits": map[string]any{
 			"maxJobAgeSeconds": p.Limits.MaxJobAgeSeconds,

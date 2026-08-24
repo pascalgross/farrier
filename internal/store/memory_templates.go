@@ -82,6 +82,31 @@ func (s *scopedMemory) ListTemplates(_ context.Context) ([]TemplateSummary, erro
 	return out, nil
 }
 
+// ListTemplateVersions returns every stored revision of one template, newest first.
+func (s *scopedMemory) ListTemplateVersions(_ context.Context, name string) ([]TemplateRevision, error) {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+
+	var out []TemplateRevision
+	for key, t := range s.store.templates {
+		if key.tenant != s.tenant || key.name != name {
+			continue
+		}
+		out = append(out, TemplateRevision{
+			Version:     t.Version,
+			CreatedAt:   t.CreatedAt,
+			CreatedBy:   t.CreatedBy,
+			Signed:      t.Signed(),
+			SignerKeyID: t.SignerKeyID,
+		})
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version > out[j].Version })
+	return out, nil
+}
+
 // GetTemplateVersion returns one version of a template, or ErrNotFound. Version 0 means the latest.
 func (s *scopedMemory) GetTemplateVersion(_ context.Context, name string, version int) (TemplateVersion, error) {
 	s.store.mu.Lock()

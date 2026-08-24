@@ -31,7 +31,7 @@ Group=farrier
 # ProtectKernelModules, ProtectClock, RestrictNamespaces, RestrictSUIDSGID, MemoryDenyWriteExecute,
 # LockPersonality and SystemCallFilter, every one of which this unit sets. Every hardening line below
 # therefore stays, and the privilege boundary is a socket the kernel authenticates rather than a setuid
-# binary this sandbox would have to be dismantled to permit. See docs/SECURITY.md section 5.
+# binary this sandbox would have to be dismantled to permit. See docs/SECURITY.md section 6.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -42,6 +42,12 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+# Read-only rather than invisible, and it must stay that way: the containers collector reads the
+# unified cgroup hierarchy, and systemd 256's ProtectControlGroups=private would give this unit its own
+# cgroup namespace, which makes the collector report zero containers with no error at all. The same
+# applies to ProtectProc=, which is deliberately not set here: ProtectProc=invisible would hide every
+# process the agent does not own and produce the same silent zero. Both are the "plausible number
+# rather than an error" failure this project tries hardest not to ship.
 ProtectControlGroups=yes
 ProtectClock=yes
 RestrictNamespaces=yes

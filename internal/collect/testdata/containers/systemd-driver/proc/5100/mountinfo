@@ -1,0 +1,4 @@
+1000 900 0:120 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/AA
+1001 1000 0:121 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+1002 1000 0:122 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755
+1003 1000 0:123 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw

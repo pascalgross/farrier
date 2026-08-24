@@ -1,0 +1,7 @@
+anon 50000000
+file 40000000
+kernel 1000000
+inactive_anon 10000
+active_anon 49990000
+inactive_file 20971520
+active_file 19028480

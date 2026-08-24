@@ -10,6 +10,7 @@ import { catchError, of, startWith, switchMap } from 'rxjs';
 
 import { Host, UnitState, UnitTransition } from '../core/api.models';
 import { ApiService } from '../core/api.service';
+import { describeUnit, isUnloadable } from '../core/unit-state';
 import { formatAge, formatDuration, formatOffset } from '../core/format';
 
 /**
@@ -97,9 +98,29 @@ export class HostDetail {
     { initialValue: null },
   );
 
-  /** The units this host currently reports as failed. */
+  /**
+   * The units this host reports as failed, meaning systemd loaded them and running them went wrong.
+   *
+   * A masked or missing unit is deliberately not in here even when it also reports `failed`. It has
+   * not crashed — somebody pinned it off, or its unit file is gone — and putting it in this list
+   * would send an operator looking for a fault in a service nobody is running.
+   */
   protected readonly failedUnits = computed<UnitState[]>(() =>
-    (this.host()?.facts?.services ?? []).filter((unit) => unit.activeState === 'failed'),
+    (this.host()?.facts?.services ?? []).filter(
+      (unit) => describeUnit(unit).condition === 'failed',
+    ),
+  );
+
+  /**
+   * The units systemd could not load: masked, missing, or with an unreadable unit file.
+   *
+   * Shown beside the failed ones rather than hidden, because "nothing is failed here" is not the
+   * same answer as "the unit you are looking for is masked" — and the second one is what the
+   * operator hunting a service that will not start needs to be told. It is the same distinction
+   * issue #5 makes: a masked unit and a crashed unit are different problems.
+   */
+  protected readonly unloadableUnits = computed<UnitState[]>(() =>
+    (this.host()?.facts?.services ?? []).filter((unit) => isUnloadable(unit)),
   );
 
   /** Renders the host's uptime. */
@@ -152,6 +173,11 @@ export class HostDetail {
       return 'every unit — the host has named none, and reporting is the default';
     }
     return watched.join(', ');
+  }
+
+  /** The word for why a unit could not be loaded: masked, no unit file, or unreadable. */
+  protected unitLabel(unit: UnitState): string {
+    return describeUnit(unit).label;
   }
 
   /** Renders how long ago a transition was, against the control plane's clock. */
