@@ -154,7 +154,7 @@ stable and oldstable.** Ubuntu 20.04 is excluded as ESM-only.
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The guarantee, the three mechanisms, the permanently-refused list, and an honest statement of what Farrier does *not* defend against |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | The agent protocol, specified well enough to reimplement |
 | [`docs/EXTENDING.md`](docs/EXTENDING.md) | The seams that are open, and the ones that are closed on purpose |
-| [`deploy/README.md`](deploy/README.md) | The control plane in containers: the image, the Compose stack, Traefik without terminating TLS, and a streaming replica |
+| [`deploy/README.md`](deploy/README.md) | The control plane in containers: the image, the Compose stack, Traefik without terminating TLS, Let's Encrypt for the interface, and a streaming replica |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | DCO sign-off, English, and the comment rule |
 | [`TRADEMARK.md`](TRADEMARK.md) | What you may call your fork |
 

@@ -1,0 +1,68 @@
+# Optional: a second hostname for the interface, with a certificate a browser trusts.
+#
+#   docker compose -f compose.yaml -f compose.traefik.yaml -f compose.traefik-ui.yaml up -d
+#
+# Stacked on top of compose.traefik.yaml rather than folded into it, because the two answer different
+# questions. That file routes agents, and needs nothing from Traefik but SNI. This one asks Traefik to
+# obtain a certificate and terminate TLS, which needs a certificate resolver and the ServersTransport in
+# traefik/dynamic/farrier.yml — prerequisites that live in your Traefik rather than here.
+#
+# The split that makes this work is that **agents do not need a publicly trusted certificate at all**.
+# An agent verifies the control plane against the CA bundle it was handed at enrolment, so the agent
+# hostname keeps the passthrough router and the server's own certificate, and Let's Encrypt is applied
+# to exactly the audience that benefits from it: browsers.
+#
+#   ${FARRIER_AGENT_HOSTNAME}  TCP router, passthrough    → agents, mTLS end to end
+#   ${FARRIER_UI_HOSTNAME}     HTTP router, ACME          → operators, in a browser
+#
+# The two must be different names. One hostname cannot be both: a TCP router whose HostSNI matches wins
+# the connection before any HTTP router sees it, so the interface would simply never be reached.
+#
+# In your Traefik, once:
+#
+#   docker compose cp farrier-server:/var/lib/farrier-server/ca/ca.crt ./farrier-ca.crt
+#   # then mount ./farrier-ca.crt at /etc/traefik/farrier-ca.crt and traefik/dynamic/farrier.yml into
+#   # the directory Traefik watches. See README.md.
+
+services:
+  farrier-server:
+    labels:
+      traefik.http.routers.farrier-ui.rule: Host(`${FARRIER_UI_HOSTNAME:?set FARRIER_UI_HOSTNAME in .env}`)
+      traefik.http.routers.farrier-ui.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.farrier-ui.tls: "true"
+      # Whatever your Traefik calls its ACME resolver. Traefik obtains and renews the certificate for
+      # this hostname on its own, and nothing about it reaches farrier-server — which is the reason to
+      # prefer this shape over feeding a certificate into the container: the server reads --tls-cert
+      # once, at startup, so a renewal there would need a restart every sixty days.
+      traefik.http.routers.farrier-ui.tls.certresolver: ${FARRIER_CERT_RESOLVER:-letsencrypt}
+      traefik.http.services.farrier-ui.loadbalancer.server.port: "8443"
+      # https, because farrier-server serves nothing else: client certificates require TLS, so it
+      # refuses to start without one rather than offering a plaintext port a proxy could use.
+      traefik.http.services.farrier-ui.loadbalancer.server.scheme: https
+      # Defined in traefik/dynamic/farrier.yml — a label cannot declare a ServersTransport. Without it
+      # this leg is either unverified or fails on the hostname, because the server's certificate names
+      # localhost rather than the public name Traefik was reached at.
+      traefik.http.services.farrier-ui.loadbalancer.serverstransport: farrier@file
+
+      # The agent protocol is refused on this hostname, at the proxy, before it reaches the server.
+      #
+      # It would be refused anyway: these endpoints demand a client certificate, and TLS terminated at
+      # Traefik cannot carry one, so an agent pointed here gets 401 on every request. Making it a 403
+      # from the proxy instead is worth three lines because of what it removes rather than what it
+      # says — this hostname now has no path to the agent API at all, so no future middleware, header
+      # or misconfiguration on it can become one. The agent hostname is unaffected: it is a TCP router
+      # and never sees an HTTP rule.
+      #
+      # A higher priority than the router above, because both match this host and the longer rule does
+      # not win automatically once priorities are in play.
+      traefik.http.routers.farrier-ui-no-agents.rule: Host(`${FARRIER_UI_HOSTNAME:?set FARRIER_UI_HOSTNAME in .env}`) && PathPrefix(`/agent`)
+      traefik.http.routers.farrier-ui-no-agents.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.farrier-ui-no-agents.tls: "true"
+      traefik.http.routers.farrier-ui-no-agents.tls.certresolver: ${FARRIER_CERT_RESOLVER:-letsencrypt}
+      traefik.http.routers.farrier-ui-no-agents.priority: "100"
+      traefik.http.routers.farrier-ui-no-agents.service: farrier-ui
+      traefik.http.routers.farrier-ui-no-agents.middlewares: farrier-no-agents
+      # An allow-list of one address that is never the source of a proxied request. Traefik has no
+      # "deny" middleware, and this is the idiomatic way to spell one: every request through this
+      # router is answered 403 without reaching a back end.
+      traefik.http.middlewares.farrier-no-agents.ipallowlist.sourcerange: 127.0.0.1/32

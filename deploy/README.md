@@ -7,10 +7,12 @@ is optional and in its own file. A streaming replica is optional and in its own 
 ```
 deploy/
 ├─ compose.yaml               postgres + farrier-server; works on its own
-├─ compose.traefik.yaml       optional overlay: TCP router, TLS passthrough
+├─ compose.traefik.yaml       optional overlay: TCP router, TLS passthrough, for agents
+├─ compose.traefik-ui.yaml    optional overlay: the interface on a second hostname, with ACME
 ├─ compose.standby.yaml       optional overlay: a streaming replica of the database
 ├─ .env.example               every value the stack needs, with the reasoning
 ├─ docker-entrypoint.sh       creates the CA on a first start, then serves
+├─ traefik/dynamic/           the ServersTransport the interface overlay needs, for your Traefik
 └─ postgres/
    ├─ farrier.conf            the settings that make replication possible without a restart later
    ├─ initdb/                 the ordinary role, the replication role, the pg_hba line
@@ -66,6 +68,13 @@ permanently unopenable, and the control plane says so rather than pretending the
 **The container's uid is pinned at 65532.** A volume keeps the ownership it was created with, so a uid
 that drifted between image releases would leave a running installation unable to read its own CA.
 
+**The self-issued certificate expires, and a restart is what renews it.** When you pass no
+`--tls-cert`, the server issues itself one from its own CA, valid ninety days, and replaces it on any
+start once it is past sixty (`internal/ca/ca.go`). A container left running for more than ninety days
+therefore serves an expired certificate, and every agent stops trusting it at once. Either give the
+interface its own hostname and certificate as above, or restart the control plane every couple of
+months — `docker compose restart farrier-server` is enough, and agents ride it out on their backoff.
+
 **`archive_mode` is on and archives nothing.** It cannot be turned on without restarting the cluster,
 while the command it runs is a reload — so this is what makes point-in-time recovery a configuration
 change later rather than a maintenance window on a primary with a standby attached. Until you replace
@@ -106,12 +115,54 @@ Three consequences worth knowing before you deploy it:
   port directly. The limiter ignores `X-Forwarded-For` on purpose: a header the client sets is not a
   source address, and trusting one would look like a defence while being none.
 
-If you would rather have Traefik terminate TLS for the interface, the only safe shape is a **second**
-hostname that agents never use: an HTTP router for `ui.example.org` whose service dials the container
-over HTTPS, plus a `serversTransport` naming the Farrier CA so that leg is verified rather than skipped.
-Agent traffic must keep using the passthrough hostname, because those endpoints answer 401 without a
-client certificate — and a `serversTransport` is defined in Traefik's own dynamic configuration, not in
-labels here, so it belongs with your Traefik deployment rather than in this file.
+### Let's Encrypt, on a second hostname
+
+Traefik's certificate resolver is useless on the router above — there is nothing for it to terminate.
+The way to a browser-trusted certificate is therefore not to bring one to that router, but to give the
+interface a hostname of its own where Traefik does terminate:
+
+```
+agents.example.org   TCP router, passthrough   → agents, mTLS end to end, Farrier's own certificate
+farrier.example.org  HTTP router, ACME         → operators, in a browser, Let's Encrypt
+```
+
+What makes this the cheap answer rather than a compromise is that **agents do not need a publicly
+trusted certificate at all.** They verify the control plane against the CA bundle handed to them at
+enrolment, so Let's Encrypt lands on exactly the audience it helps and on nothing else. No certificate
+reaches the container either: Traefik renews on its own, while `farrier-server` reads `--tls-cert` once
+at startup, so a certificate fed to it would need a restart on every renewal.
+
+The two names must be different. One hostname cannot be both, because a TCP router whose `HostSNI`
+matches wins the connection before any HTTP router sees it — the interface would simply never answer.
+
+Three things in your Traefik, once:
+
+```bash
+# 1. Farrier's CA certificate, so the leg from Traefik to the container is verified rather than skipped.
+docker compose cp farrier-server:/var/lib/farrier-server/ca/ca.crt ./farrier-ca.crt
+
+# 2. Mount it at /etc/traefik/farrier-ca.crt, and traefik/dynamic/farrier.yml into the directory
+#    Traefik watches (providers.file.directory). A label cannot declare a ServersTransport.
+
+# 3. Bring the stack up with both overlays.
+docker compose -f compose.yaml -f compose.traefik.yaml -f compose.traefik-ui.yaml up -d
+```
+
+**Copy `ca.crt`; do not mount the `farrier-state` volume into Traefik.** That volume also holds
+`ca.key`, the key that signs routine jobs and the key that seals template bodies. A proxy that could
+read `ca.key` could issue client certificates and impersonate any host to this control plane —
+[`../docs/SECURITY.md`](../docs/SECURITY.md) names the CA key and the database as exactly the pair that
+buys that. `ca.crt` is a public document and is the whole of what Traefik needs.
+
+The `serverName: localhost` in that snippet is not a workaround. The container's certificate is issued
+by Farrier's own CA and names `localhost`, `127.0.0.1` and `::1`; the public name is on Traefik's
+certificate, not on the server's. Overriding the name Traefik expects is what turns that leg into a real
+verification instead of an `insecureSkipVerify`.
+
+The overlay also refuses `/agent` on the interface hostname, with a 403 from the proxy. Those endpoints
+would answer 401 there anyway — terminated TLS carries no client certificate — but a hostname with no
+path to the agent API is one where no later middleware or header can become one. Point agents at the
+passthrough name.
 
 ## Replication
 

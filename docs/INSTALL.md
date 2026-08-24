@@ -80,6 +80,11 @@ that would be to believe a header that anything reaching the proxy's back end ca
 passthrough — which certificate a browser sees, and why enrolling a rack at once through a proxy meets
 the rate limiter — is in [`deploy/README.md`](../deploy/README.md).
 
+A certificate a browser trusts comes from giving the interface a **second** hostname, where Traefik does
+terminate and Let's Encrypt applies normally. Agents keep the passthrough name and need no public
+certificate at all, because they verify against the CA bundle they were handed at enrolment. That is a
+second overlay, and the agent endpoints are refused on the interface name.
+
 A streaming replica is a second overlay. The database is configured for one from its first start, so
 adding it later needs no restart of a primary that is by then serving a fleet.
 

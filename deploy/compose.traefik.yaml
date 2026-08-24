@@ -17,11 +17,13 @@
 # What follows from that:
 #
 #   * The certificate a browser sees is the one farrier-server presents, not one Traefik obtained. On a
-#     default installation that is issued by Farrier's own CA and a browser will say so. Mount a real
-#     certificate and pass --tls-cert/--tls-key — the commented block below — or accept the warning on
-#     an installation only you use.
+#     default installation that is issued by Farrier's own CA and a browser will say so. The answer is
+#     a second hostname for the interface, where Traefik does terminate and can use Let's Encrypt:
+#     compose.traefik-ui.yaml. Feeding a certificate into the container instead — the commented block
+#     below — also works, and costs a restart on every renewal.
 #   * Traefik needs a TCP-capable entry point on 443 (its defaults are fine) and no certificate resolver
-#     for this router. A certificate resolver on a passthrough router does nothing.
+#     for this router. A certificate resolver on a passthrough router does nothing — ACME belongs on the
+#     interface router in compose.traefik-ui.yaml, which is a different hostname.
 #   * Every agent reaches the server from Traefik's address. The enrolment limiter is per source address
 #     — twenty attempts, one returning every three seconds — so bringing up more than twenty hosts at
 #     once through the proxy earns 429s with a Retry-After rather than failures. Provisioning a rack at
@@ -44,16 +46,19 @@ services:
       # of them to dial — and the postgres-facing one is not reachable from Traefik at all.
       traefik.docker.network: traefik
 
-      traefik.tcp.routers.farrier.rule: HostSNI(`${FARRIER_HOSTNAME:?set FARRIER_HOSTNAME in .env}`)
+      traefik.tcp.routers.farrier.rule: HostSNI(`${FARRIER_AGENT_HOSTNAME:?set FARRIER_AGENT_HOSTNAME in .env}`)
       traefik.tcp.routers.farrier.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
       # The line that keeps client certificates working. Without it Traefik terminates, and every
       # enrolled agent gets a 401 that nothing on the agent side explains.
       traefik.tcp.routers.farrier.tls.passthrough: "true"
       traefik.tcp.services.farrier.loadbalancer.server.port: "8443"
 
-    # A certificate a browser trusts, for the operators. Both files are read at startup by a process
-    # running as uid 65532; an agent is unaffected either way, because it verifies against the CA bundle
-    # it was handed at enrolment rather than against the public web of trust.
+    # A certificate a browser trusts, on this hostname rather than on a second one. It is the
+    # alternative to compose.traefik-ui.yaml, not a companion to it: pick one. Both files are read once,
+    # at startup, by a process running as uid 65532 — so every renewal needs a
+    # `docker compose restart farrier-server`, which is the cost the interface overlay does not have. An
+    # agent is unaffected either way: it verifies against the CA bundle it was handed at enrolment
+    # rather than against the public web of trust.
     #
     # volumes:
     #   - ${FARRIER_TLS_DIR:-./tls}:/etc/farrier-server/tls:ro

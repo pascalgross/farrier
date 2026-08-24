@@ -158,7 +158,9 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   own host is a key the control plane holds), and the Compose stack is the same two services the
   architecture claims. Traefik is an optional overlay and does **TLS passthrough**, because terminating
   it would end the connection that carries an agent's client certificate and leave the fingerprint
-  lookup — the whole revocation mechanism — with nothing to look up but a header.
+  lookup — the whole revocation mechanism — with nothing to look up but a header. A browser-trusted
+  certificate is a second overlay and a second hostname, where Traefik does terminate: agents never use
+  that name, need no public certificate, and the agent API is refused on it.
 - `tools/doccheck`, `tools/docsite` — the doc-comment checker and the documentation site generator.
 - `testfleet/` — LXD scenarios; `docs/MAINTAINING.md` covers repository settings and releases.
 

@@ -201,7 +201,7 @@ image: ## Build the farrier-server container image
 # against somebody's actual secrets.
 COMPOSE_CHECK_ENV := POSTGRES_SUPERUSER_PASSWORD=check FARRIER_DB_PASSWORD=check \
 	FARRIER_REPLICATION_PASSWORD=check FARRIER_ADMIN_TOKEN=check \
-	FARRIER_HOSTNAME=farrier.example.invalid
+	FARRIER_AGENT_HOSTNAME=agents.example.invalid FARRIER_UI_HOSTNAME=farrier.example.invalid
 
 .PHONY: compose-check
 compose-check: ## Parse every Compose file, including the optional overlays
@@ -210,6 +210,8 @@ compose-check: ## Parse every Compose file, including the optional overlays
 	# published port would leave the control plane reachable beside the proxy rather than behind it.
 	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml config -q
 	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml -f compose.traefik.yaml config -q
+	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml -f compose.traefik.yaml \
+	  -f compose.traefik-ui.yaml config -q
 	@cd deploy && env $(COMPOSE_CHECK_ENV) docker compose -f compose.yaml -f compose.standby.yaml config -q
 	@echo "compose: every file parses"
 
