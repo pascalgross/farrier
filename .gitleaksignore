@@ -23,3 +23,18 @@
 # find. Looked at, and not a key. The current tree no longer contains it either — pemShape() builds
 # it — so this line covers one published commit and cannot be joined by another.
 7e6f9ebb9fbf5e7282a95ac7f6e6be7c59d28b47:internal/provision/provision_test.go:private-key:81
+
+# The next two are one password, in two files, in a commit that documents the first-start output.
+#
+# It was a real password: `farrier-server serve` generates one when the database holds no accounts, and
+# the example block was pasted from an actual run rather than invented. It belonged to a throwaway
+# PostgreSQL database in a development container, which has since been dropped; it never reached a
+# machine anybody else can connect to, and there is no account left for it to open. gitleaks was right
+# to report it — a generated password has the entropy of a credential because it is one — and the answer
+# to a real finding is to look at the occurrence, which is what this comment is.
+#
+# The current tree carries a placeholder instead, so nothing new can add a literal here; these two lines
+# exist only because the commit is published and rewriting a branch under review to bury a dead password
+# is the more disruptive of the two mistakes.
+17b440646b16d3a9ba4bee27516b49c734486459:docs/INSTALL.md:generic-api-key:85
+17b440646b16d3a9ba4bee27516b49c734486459:deploy/README.md:generic-api-key:52
