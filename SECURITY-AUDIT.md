@@ -27,6 +27,19 @@ exhaust a resource on the control plane grants them nothing they do not already 
 **defense-in-depth, hardening, supply-chain, or information-disclosure** issue; the single medium concerns
 the *release* supply chain — an adversary the project's own documents (§9, `CODEOWNERS`) place outside §1.
 
+One finding touches the guarantee's own text and is worth stating precisely. F-09 concerns the
+apply-once interlock, and "applied **at most once**" is a clause of §1's *second* (enrolment-time)
+paragraph — which ships with the first, always — not merely a §7 implementation detail. The interlock is
+check-then-write rather than an atomic `O_EXCL` create, so two concurrent enrolments could each apply.
+This is still not a §1 break *reachable by the §1 attacker*: winning that race requires two simultaneous
+local `farrier enroll --bootstrap` invocations, and the control-plane / database / administrator attacker
+of §1 has no server-to-host channel with which to start a process on the host — the absence of that
+channel is the product. Each racing application also still passes every §7 guardrail (offline-signed,
+name-matched to `--bootstrap NAME`, shown in full, recorded), so a double-apply re-runs the operator's own
+approved template rather than anything the attacker chose. F-09 is therefore a genuine idempotency defect
+against *operator* concurrency, rated Low, and the "none breaks §1" conclusion holds because the §1
+attacker cannot trigger it — not because bootstrap sits outside §1.
+
 | Severity | Count |
 | --- | --- |
 | Critical (breaks §1) | 0 |
@@ -89,12 +102,17 @@ against the code and **confirmed**:
   always fails closed; the signed payload binds `{jobId, hostId, intent, params, notBefore, notAfter,
   nonce}`, so a signature cannot be transplanted across intents or have its parameters or window altered.
 - **Clock skew fails closed** — the window is checked against the local clock only; a privileged intent
-  refuses beyond five minutes of skew *before* the window check; `serverTime` is display-only.
+  refuses beyond five minutes of skew *before* the window check. `serverTime` feeds only that skew guard
+  (through the derived offset) and the displayed offset; it never enters the window check, so a lying
+  server can at most refuse its own privileged jobs, never widen authorisation.
 - **Replay is refused, and the nonce is recorded only after the signature verifies** and persisted before
   the caller acts (`internal/agent/nonces.go`).
 - **The canonical encoder is unambiguous** — keys sorted by code point, floats rejected, integers bound to
-  `int64`, HTML escaping undone, non-UTF-8 refused. (See F-05 for a doc/code caveat on where it is
-  applied.)
+  `int64`, HTML escaping undone. Its `utf8.ValidString` guard in `writeString` is a defensive check that
+  cannot fire through the public API: both `Marshal` and `Normalize` route input through `encoding/json`
+  first, which coerces invalid UTF-8 to U+FFFD before any string reaches the guard — so non-UTF-8 is
+  deterministically sanitised, not refused, and the canonical form stays unambiguous either way. (See F-05
+  for the related `Normalize`/re-encoding caveat.)
 - **The NoCloud seed injection path is closed** — the only control-plane value in `meta-data` is the host
   id, constrained to `^[0-9A-Za-z]+$` ≤64 bytes, closing the `public-keys` YAML-injection route.
 - **Tenant isolation is enforced by the database** — all ten tenant tables have RLS `ENABLE`d **and**
