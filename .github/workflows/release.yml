@@ -143,10 +143,16 @@ jobs:
     name: Publish
     needs: build
     runs-on: ubuntu-latest
-    # The environment is what gates the signing key: APT_SIGNING_KEY is an environment secret, so a run
-    # that reaches this job waits for the reviewers configured on it. See docs/MAINTAINING.md §5.
+    # An environment of its own, holding APT_SIGNING_KEY, so a run that reaches this job waits for the
+    # reviewers configured on it. Not `github-pages`, for two reasons that both bite. An environment
+    # secret is readable by every job that enters the environment, and `pages.yml` enters `github-pages`
+    # on every push to main — so sharing it would put the archive signing key within reach of each
+    # documentation change, which is exactly what that split exists to prevent. And `github-pages`
+    # carries a deployment rule limiting it to the default branch, which a tag is not: the first release
+    # was rejected before it started, with no runner, no steps and no log to say why.
+    # See docs/MAINTAINING.md §5.
     environment:
-      name: github-pages
+      name: release
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

@@ -219,12 +219,18 @@ gpg --delete-keys <FINGERPRINT>
 In that order. A backup that has never been read back is a belief, not a backup, and the GitHub secret
 cannot be read back to check.
 
-**Store it as an environment secret, not a repository secret.**
+**Store it as an environment secret in an environment of its own, not a repository secret and not
+`github-pages`.**
 
-1. Settings → Environments → `github-pages`.
-2. Add required reviewers (yourself is enough). A release then waits for a human before the job that
-   can use the key runs.
-3. Add the environment secret `APT_SIGNING_KEY` with the armoured private key:
+1. Settings → Environments → **New environment**, named `release`. The name is in `release.yml`; a
+   different one silently creates a second, empty environment rather than failing.
+2. **Required reviewers**: add yourself. A release then waits for a human before the job that can use
+   the key runs. Leave *Prevent self-review* off — with one maintainer it would make every release
+   unapprovable.
+3. **Deployment branches and tags**: *Selected branches and tags*, one rule, ref type **Tag**, pattern
+   `v*`. The release runs from a tag, so the default *All branches* would also admit any branch, and
+   `github-pages`' own default — the default branch only — would admit nothing at all.
+4. Add the environment secret `APT_SIGNING_KEY` with the armoured private key:
 
 ```bash
 gpg --armor --export-secret-keys <KEY-ID>
@@ -236,6 +242,13 @@ before importing, so a paste that arrives CRLF-terminated from a Windows clipboa
 An environment secret with a reviewer means a compromised workflow file on a branch cannot reach the
 key, because the branch's job never gets to the environment without an approval. A repository secret
 has no such gate.
+
+**Why not `github-pages`, which the site already uses.** An environment secret is readable by every job
+that enters the environment, and `pages.yml` enters `github-pages` on every push to `main`. Putting the
+archive signing key there would place it within reach of each documentation change — the precise thing
+the split described in [§3](#3-github-pages) exists to prevent — and required reviewers on it would
+make every documentation push wait for an approval. The `github-pages` environment therefore keeps its
+default deployment rule (the default branch, nothing else) and holds no secrets of ours.
 
 The public half needs no configuration: `mkapt.sh` exports it into the published repository as
 `farrier-archive-keyring.gpg`, which is what hosts install.
