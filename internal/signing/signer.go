@@ -17,15 +17,16 @@ import (
 // is worth stating next to the interface rather than only in docs/EXTENDING.md: everything that runs on
 // a managed host is compile-time closed, and this runs on the operator's own machine.
 //
-// Backends: file is implemented. sshagent, pkcs11, gpgagent and kms are specified in
-// docs/EXTENDING.md and not yet written. The path a signature travels is complete — the control plane
-// accepts one on POST /api/v1/jobs, an agent verifies it against the host's own trusted-signers, and a
-// root helper acts on it — so what these backends lack is not somewhere to go but `farrier sign`, the
-// command that would drive them. They arrive with it, because shipping a backend that cannot be
-// exercised end to end would be shipping untested code into the one path where being wrong is
-// unrecoverable. No token vendor is hard-coded
-// anywhere — pkcs11 will cover YubiKey PIV, Nitrokey and SoftHSM alike, and kms will cover AWS, GCP
-// and Azure.
+// Backends: which ones exist is docs/EXTENDING.md's list, and deliberately not restated here. An
+// interface outlives the state of its implementations, so a set that changes belongs in one place, and
+// this is the wrong one — a comment on the seam is what an editor shows a reader who never opens the
+// document, which makes a stale copy here worse than no copy at all.
+//
+// The rule that governs the set does belong here: a backend ships only when `farrier sign` can exercise
+// it end to end, because untested code in the one path where being wrong is unrecoverable is worse than
+// an absent backend. And no token vendor is hard-coded anywhere — a PKCS#11 key is named by an RFC 7512
+// URI and each cloud gets a scheme — so the set grows without this package ever learning a vendor's
+// name.
 type Signer interface {
 	// KeyID returns the identity that must appear in the host's trusted-signers file.
 	//

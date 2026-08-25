@@ -1,15 +1,14 @@
 // Command farrier is the operator's command-line tool.
 //
-// Its most important job, still unwritten, is `farrier sign`: decoding and rendering a job request
-// offline, without contacting the server, and signing it with a key the control plane does not hold.
-// That the rendering happens locally from the full signed payload is a requirement on the wire format
-// rather than a nicety of this program — if the tool signed an opaque digest handed to it by the
-// server, a compromised control plane could show one operation in the browser and have a different one
-// signed.
+// Its most important job is `farrier sign`: decoding and rendering a job request offline, without
+// contacting the server, and signing it with a key the control plane does not hold. That the rendering
+// happens locally from the full signed payload is a requirement on the wire format rather than a nicety
+// of this program — if the tool signed an opaque digest handed to it by the server, a compromised
+// control plane could show one operation in the browser and have a different one signed.
 //
-// The rest of the path was built first and this closes it: the control plane accepts a signed job on
+// The rest of the path was built first and this closed it: the control plane accepts a signed job on
 // POST /api/v1/jobs, holds a destructive one for release if the fleet asks for that, an agent verifies
-// the signature against the host's own trusted-signers, and a root helper acts on it. What this adds is
+// the signature against the host's own trusted-signers, and a root helper acts on it. What it adds is
 // the end an operator stands at. The other commands are what made that end reachable: enrolling a host,
 // and generating and inspecting signing keys so a trust anchor can be established in advance.
 package main

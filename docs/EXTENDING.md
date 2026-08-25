@@ -111,15 +111,20 @@ type Signer interface {
 
 Implemented today:
 
-| Backend | What holds the key |
-| --- | --- |
-| `file` | A passphrase-protected key file: scrypt over the passphrase, NaCl secretbox over a PKCS#8 key |
-| `pkcs11` | Any PKCS#11 module — YubiKey PIV, Nitrokey and SoftHSM through one implementation |
-| `kms` | AWS KMS, Google Cloud KMS or Azure Key Vault, over their REST APIs and no vendor SDK |
+| Backend | Reference scheme | What holds the key |
+| --- | --- | --- |
+| `file` | `file:`, or any path | A passphrase-protected key file: scrypt over the passphrase, NaCl secretbox over a PKCS#8 key |
+| `pkcs11` | `pkcs11:` | Any PKCS#11 module — YubiKey PIV, Nitrokey and SoftHSM through one implementation |
+| `kms` | `awskms:`, `gcpkms:`, `azurekms:` | AWS KMS, Google Cloud KMS or Azure Key Vault, over their REST APIs and no vendor SDK |
+
+The middle column has more entries than the first on purpose: one backend registers three schemes,
+because `awskms:`, `gcpkms:` and `azurekms:` are what cosign already uses and an operator who has
+signed a container image has seen them. A single `kms:` would put five colons in an AWS reference and
+make the reader count them.
 
 Specified and not yet written: `sshagent` (including FIDO2 `ed25519-sk`) and `gpgagent`. Deliberately
 no vendor is hard-coded: a PKCS#11 key is named with an RFC 7512 URI, which is what every other tool
-that talks to a token already speaks, and each cloud gets a scheme rather than a flag.
+that talks to a token already speaks, and a cloud is named by its own scheme rather than by a flag.
 
 A backend registers itself with `internal/signing/backend` from its `init`, and `farrier` blank-imports
 the ones it ships — the shape `database/sql` uses. `--key` takes a reference, and a reference selects a
@@ -132,6 +137,15 @@ import the verifier, link no backend at all — and after `pkcs11`, which loads 
 operator names, that is asserted rather than reviewed for. See
 `TestGuaranteeNoManagedHostBinaryLoadsASigningBackend`. It is not the plugin loader this document
 refuses below: that refusal is about the agent, and this is the operator's own tool.
+
+**A backend ships only when `farrier sign` can exercise it end to end.** Signing is the one path where
+being wrong is unrecoverable: a signature no host accepts arrives as a trust anchor that has stopped
+working, days later, on machines nobody can easily inspect. An implementation that nothing drives is
+untested code in the worst place to have it, so a backend and the means to use it land together. The
+table above is the only list of which ones exist —
+`TestTheBackendsThisBuildLinksAreTheOnesTheDocumentationLists` holds it to what `farrier` actually
+links, because the same list restated in a doc comment went two releases out of date before anybody
+noticed.
 
 **A backend verifies its own signature before returning it.** Every remote key store gets one encoding
 detail differently — a PKCS#11 token returns ECDSA as a raw `r‖s` pair, Azure returns it base64url and
