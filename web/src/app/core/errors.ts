@@ -49,21 +49,28 @@ export function describeError(err: unknown): string {
 }
 
 /**
- * Describes a credential that authenticated and reaches nothing this interface renders.
+ * Describes a control plane that could not answer, as distinct from one that refused.
  *
- * The control plane answers 403 `not_an_operator` when a platform administrator — who administers
- * fleets and deliberately reaches no fleet's hosts or jobs — reaches a fleet route, and 403
- * `session_required` when an API token reaches the account page. Both messages say exactly what is
- * wrong, and both are worth telling apart from a wrong password: one sends somebody to check what they
- * typed, the other tells them the credential is fine and is for something else.
+ * It exists for one caller and one moment: the identity probe the shell makes on start. That request
+ * has two failure modes and they mean opposite things. A 401 is the ordinary answer for a browser that
+ * has not signed in, and belongs on no screen at all. Anything else — a 500 because the database is
+ * unreachable, or no response because the control plane is not running — is not about the credential,
+ * and presenting it as one puts a sign-in form in front of somebody whose session is fine and whose
+ * password will not help.
  *
- * Everything else is not this function's business, so it returns an empty string and the caller falls
- * back to describeError.
+ * That distinction is the browser half of `auth.ErrUnavailable`, which is what makes the control plane
+ * answer 500 rather than 401 during an outage. Without this, the server's care would end at the wire:
+ * the interface would render every failure as "sign in again" regardless.
+ *
+ * It returns an empty string for a 401, so the caller can treat "no message" as "signed out".
  */
-export function describeRefusedCredential(err: unknown): string {
+export function describeUnavailable(err: unknown): string {
   const carrier = err as StatusCarrier | null;
-  if (carrier?.status !== 403) {
+  if (carrier?.status === 401) {
     return '';
   }
-  return carrier.error?.message ?? '';
+  const message = carrier?.error?.message;
+  return message
+    ? `${message} This is not a refusal — your session may be fine.`
+    : 'The control plane could not say who you are. This is not a refusal: it could not answer at all.';
 }

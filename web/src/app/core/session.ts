@@ -2,7 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 
 import { ApiService } from './api.service';
 import { Whoami } from './api.models';
-import { describeError, describeRefusedCredential } from './errors';
+import { describeError, describeUnavailable } from './errors';
 
 /**
  * Whether this browser is signed in, and as whom.
@@ -37,13 +37,14 @@ export class SessionStore {
   private readonly busy = signal(false);
 
   /**
-   * Why a credential that authenticated cannot be used here, empty when there is no such problem.
+   * Why the control plane could not say who this browser is, empty when it could or when it refused.
    *
-   * It is separate from a sign-in failure because it is a different thing to tell somebody: the
-   * credential worked and reaches nothing this interface renders. Reporting that as "wrong password"
-   * would send them looking for the wrong mistake.
+   * Separate from a sign-in failure because it is the opposite thing to tell somebody. A refusal means
+   * the credential is wrong and typing a password will help; this means the control plane could not
+   * answer, the session in the cookie may be perfectly good, and typing a password will not help at
+   * all. It is the browser half of `auth.ErrUnavailable`.
    */
-  private readonly mismatch = signal('');
+  private readonly trouble = signal('');
 
   /** Who this browser is signed in as, null when nobody. */
   identity(): Whoami | null {
@@ -77,9 +78,9 @@ export class SessionStore {
     return this.failure();
   }
 
-  /** Why a credential that authenticated reaches nothing here, empty when there is no such problem. */
-  unusable(): string {
-    return this.mismatch();
+  /** Why the control plane could not say who this browser is, empty when it could or when it refused. */
+  unavailable(): string {
+    return this.trouble();
   }
 
   /** Whether a sign-in is in flight. */
@@ -92,18 +93,22 @@ export class SessionStore {
    *
    * Called once on start, and after each sign-in. A 401 is not an error to show anybody — it is the
    * ordinary answer for a browser that has not signed in yet — so it clears the identity and settles
-   * the state rather than surfacing a message.
+   * the state rather than surfacing a message. Every other failure is one worth showing, because it
+   * is not about the credential at all.
    */
   probe(): void {
     this.api.whoami().subscribe({
       next: (me) => {
         this.who.set(me);
-        this.mismatch.set('');
+        this.trouble.set('');
         this.checked.set(true);
       },
       error: (err: unknown) => {
+        // A 401 is signed out and says nothing; anything else is the control plane failing to answer,
+        // and the difference has to survive to the screen. Without it, an outage renders as a sign-in
+        // form and every operator concludes their session was invalidated.
         this.who.set(null);
-        this.mismatch.set(describeRefusedCredential(err));
+        this.trouble.set(describeUnavailable(err));
         this.checked.set(true);
       },
     });
@@ -157,7 +162,7 @@ export class SessionStore {
   forget(): void {
     this.who.set(null);
     this.failure.set('');
-    this.mismatch.set('');
+    this.trouble.set('');
     this.checked.set(true);
   }
 }

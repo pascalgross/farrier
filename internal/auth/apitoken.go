@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -81,15 +82,16 @@ func (a *APITokens) Authenticate(ctx context.Context, r *http.Request) (*Identit
 
 	now := a.now()
 	token, account, err := a.store.APITokenByHash(ctx, HashAPIToken(presented))
-	if err != nil {
-		// Not found and an outage are the same answer to the caller; the second is worth a log line,
-		// because it is a control plane that has stopped working rather than a credential that is wrong.
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("could not read an API token", "error", err)
-		}
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// No such token: revoked, mistyped, or invented. A refusal.
 		return nil, ErrUnauthenticated
-	}
-	if !token.Usable(now) {
+	case err != nil:
+		// Nothing was compared, so nothing is known about the token. A script told 401 during an outage
+		// retries with the same credential and eventually stops; one told 500 knows to wait.
+		slog.Error("could not read an API token", "error", err)
+		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	case !token.Usable(now):
 		return nil, ErrUnauthenticated
 	}
 

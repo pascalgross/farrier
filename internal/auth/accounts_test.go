@@ -517,3 +517,126 @@ func TestASignInRecordsWhereItCameFrom(t *testing.T) {
 		t.Errorf("source = %q, want the peer address without its port", held.Source)
 	}
 }
+
+// unreachableStore is the store a control plane has when its database has gone.
+//
+// It fails the three unscoped lookups the two providers make and leaves everything else working, which
+// is exactly the shape of the outage that matters: nothing was compared, so nothing is known about the
+// credential that was presented.
+type unreachableStore struct {
+	// Store is the working store everything else goes through.
+	store.Store
+}
+
+// errDatabaseGone is what an unreachable database looks like from here: unclassified.
+//
+// Not ErrNotFound and not a sentinel of its own, because that is what pgx returns — a wrapped network
+// error. A test that injected a classified error would prove the code handles a case that cannot occur.
+var errDatabaseGone = errors.New("store: dial tcp 127.0.0.1:5432: connect: connection refused")
+
+// AccountByEmail fails the way an unreachable database does.
+func (unreachableStore) AccountByEmail(_ context.Context, _ string) (store.Account, error) {
+	return store.Account{}, errDatabaseGone
+}
+
+// SessionByToken fails the way an unreachable database does.
+func (unreachableStore) SessionByToken(_ context.Context, _ string) (store.Session, store.Account, error) {
+	return store.Session{}, store.Account{}, errDatabaseGone
+}
+
+// APITokenByHash fails the way an unreachable database does.
+func (unreachableStore) APITokenByHash(_ context.Context, _ string) (store.APIToken, store.Account, error) {
+	return store.APIToken{}, store.Account{}, errDatabaseGone
+}
+
+// TestAnOutageIsNotAWrongPassword is the distinction the whole of ErrUnavailable exists for.
+//
+// A provider that cannot reach its store knows *nothing* about the credential it was handed. Reporting
+// that as ErrUnauthenticated makes the control plane answer 401, and a 401 is not a neutral fact: to a
+// browser it is the sign-in form, and to a script it is "your token was revoked". Every operator would
+// be told their credential had been taken away at the moment nobody could check whether it had — and
+// the ones typing a password would spend the outage typing it again.
+//
+// Both paths are asserted together because they fail in the same way and would be fixed separately.
+func TestAnOutageIsNotAWrongPassword(t *testing.T) {
+	f := newAccountFixture(t)
+	broken := NewAccounts(unreachableStore{Store: f.backing}, time.Hour, 24*time.Hour)
+
+	t.Run("signing in", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		_, err := broken.SignIn(context.Background(), w, signInRequest(), f.email, f.password)
+		if errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("an unreachable database was reported as a wrong credential: %v", err)
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want ErrUnavailable", err)
+		}
+		if len(w.Result().Cookies()) != 0 {
+			t.Error("a sign-in that never reached the database still set a cookie")
+		}
+	})
+
+	t.Run("presenting a session", func(t *testing.T) {
+		// A cookie from a working store, presented to a broken one. The value does not matter: what is
+		// asserted is that failing to look it up is not the same as failing to find it.
+		_, cookie := f.signIn(t, f.email, f.password)
+		_, err := broken.Authenticate(context.Background(), authenticated(cookie))
+		if errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("an unreachable database invalidated a live session: %v", err)
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want ErrUnavailable", err)
+		}
+	})
+
+	t.Run("an address that genuinely does not exist is still a refusal", func(t *testing.T) {
+		// The other half, and the one that would be broken by an over-eager fix: a working store that
+		// answers ErrNotFound must still produce one refusal, indistinguishable from a wrong password.
+		w := httptest.NewRecorder()
+		_, err := f.provider.SignIn(context.Background(), w, signInRequest(),
+			"nobody@example.org", "a password long enough")
+		if !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("an unknown address was not a refusal: %v", err)
+		}
+		if errors.Is(err, ErrUnavailable) {
+			t.Fatal("an unknown address was reported as an outage")
+		}
+	})
+}
+
+// TestAnOutageInOneProviderDoesNotRefuseACredentialAnotherAccepts is the ordering inside Chain.
+//
+// Two providers, one broken. A browser holding a valid session must still get in while the token
+// provider's store is unreachable — the alternative is that one failing dependency signs out everybody,
+// including the operator trying to diagnose it. And when nobody authenticates *because* a store was
+// unreachable, that must reach the caller rather than being flattened into a refusal.
+func TestAnOutageInOneProviderDoesNotRefuseACredentialAnotherAccepts(t *testing.T) {
+	f := newAccountFixture(t)
+	_, cookie := f.signIn(t, f.email, f.password)
+
+	working := f.provider
+	broken := NewAPITokens(unreachableStore{Store: f.backing})
+	composed := Chain(broken, working)
+
+	identity, err := composed.Authenticate(context.Background(), authenticated(cookie))
+	if err != nil {
+		t.Fatalf("a valid session was refused because another provider's store was down: %v", err)
+	}
+	if identity == nil || identity.Subject != f.email {
+		t.Fatalf("identity = %+v, want the fixture account", identity)
+	}
+
+	// Nobody authenticates: the request carries a bearer token the broken provider cannot check and no
+	// cookie at all. The outage is what the caller is told about.
+	naked := httptest.NewRequest(http.MethodGet, "/api/v1/hosts", nil)
+	naked.Header.Set("Authorization", "Bearer "+APITokenPrefix+"something")
+	if _, err = composed.Authenticate(context.Background(), naked); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want the outage to survive the chain", err)
+	}
+
+	// And a request with no credential at all is still a plain refusal, because nothing was consulted.
+	bare := httptest.NewRequest(http.MethodGet, "/api/v1/hosts", nil)
+	if _, err = composed.Authenticate(context.Background(), bare); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("err = %v, want ErrUnauthenticated for a request carrying nothing", err)
+	}
+}

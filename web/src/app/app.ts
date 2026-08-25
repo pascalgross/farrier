@@ -18,15 +18,6 @@ import { SessionStore } from './core/session';
 import { ToastStack } from './toasts/toast-stack';
 
 /**
- * Where a platform administrator is allowed to stay.
- *
- * A platform credential is refused by every route that reaches a fleet's hosts or jobs, so landing on
- * one renders a 403 rather than a page — which is why the shell moves them. These two are what it does
- * not move them out of: the fleet administration they exist for, and the account page everybody has.
- */
-const PLATFORM_ROUTES = ['/fleets', '/account'];
-
-/**
  * The application shell: a toolbar, the router outlet, and the sign-in form.
  *
  * The form lives here rather than on a separate route because there is nowhere else to be: every page
@@ -77,11 +68,10 @@ export class App {
   protected readonly session = inject(SessionStore);
 
   /**
-   * Moves a platform credential to the one page it can use.
+   * Asks the router to re-check where we are when the identity settles.
    *
-   * The default route is the fleet list, which a platform credential is refused by design. Landing
-   * there and rendering the refusal would be technically honest and practically the same empty console
-   * this change exists to remove.
+   * The routes decide who may be where; this only re-poses the question. See the effect in the
+   * constructor for why that transition needs re-posing at all.
    */
   private readonly router = inject(Router);
 
@@ -130,12 +120,23 @@ export class App {
       }
     });
     effect(() => {
-      // The account page is the one route both credentials reach, because everybody has an account and
-      // everybody has a password to change — so it is excluded from the redirect rather than being a
-      // page a platform administrator is bounced out of a moment after opening.
-      if (this.session.isPlatform() && !PLATFORM_ROUTES.some((path) => this.router.url.startsWith(path))) {
-        void this.router.navigate(['/fleets']);
+      // Which routes a credential may reach is declared on the routes themselves, in `canMatch` — see
+      // app.routes.ts and core/platform-guard.ts. This effect does not repeat that decision and must
+      // not: it says only that the answer may have changed, and asks the router to put the question
+      // again for wherever we already are.
+      //
+      // That transition is the one case a guard cannot cover on its own. The first navigation happens
+      // before `whoami` has answered, so the guards see "not signed in" and let everything match; when
+      // the identity arrives a moment later, nothing navigates and nothing would ask again. Reading
+      // `router.url` here is honest for exactly that purpose — it is a snapshot of where we are, not a
+      // subscription to where we go.
+      const known = this.session.ready() && this.session.signedIn();
+      // Read unconditionally, so the effect tracks it rather than only tracking it on some paths.
+      this.session.isPlatform();
+      if (!known) {
+        return;
       }
+      void this.router.navigateByUrl(this.router.url, { onSameUrlNavigation: 'reload' });
     });
   }
 

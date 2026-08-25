@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestAPasswordVerifiesAgainstItsOwnHashAndNothingElse is the round trip, and the two ways it must fail.
@@ -144,5 +145,77 @@ func TestARaisedCostIsNoticedAtTheOneMomentItCanBeApplied(t *testing.T) {
 		strings.Repeat("a", 43)
 	if !NeedsRehash(weaker) {
 		t.Error("a hash written at a lower cost was not reported as out of date")
+	}
+}
+
+// TestAMinimumInCharactersIsNotAMinimumInBytes is the difference between the promise and the check.
+//
+// ErrPasswordTooShort says "at least 12 characters" and `len` on a string counts UTF-8 bytes, so before
+// this was a rune count the only length rule this control plane has was satisfied by three emoji. That
+// is not a theoretical input: a password manager asked for a passphrase in a non-Latin script produces
+// exactly this shape, and so does somebody being clever.
+//
+// The ceiling stays in bytes and is asserted here too, because the two units are deliberately different
+// and a later reader is entitled to see that it was a decision rather than an oversight.
+func TestAMinimumInCharactersIsNotAMinimumInBytes(t *testing.T) {
+	for _, c := range []struct {
+		// name says what this password is.
+		name string
+
+		// password is the input.
+		password string
+
+		// accepted is whether HashPassword should take it.
+		accepted bool
+	}{
+		{
+			name:     "three four-byte characters are twelve bytes and three characters",
+			password: "👍👍👍",
+			accepted: false,
+		},
+		{
+			name:     "twelve four-byte characters are twelve characters",
+			password: strings.Repeat("👍", MinPasswordLength),
+			accepted: true,
+		},
+		{
+			name:     "eleven ASCII characters are eleven characters",
+			password: strings.Repeat("a", MinPasswordLength-1),
+			accepted: false,
+		},
+		{
+			name:     "twelve ASCII characters are twelve characters",
+			password: strings.Repeat("a", MinPasswordLength),
+			accepted: true,
+		},
+		{
+			// The ceiling is in bytes: 64 four-byte characters is 256 bytes, which is the bound exactly.
+			name:     "the ceiling counts bytes, so this is at it rather than under it",
+			password: strings.Repeat("👍", MaxPasswordLength/4),
+			accepted: true,
+		},
+		{
+			name:     "one character past the byte ceiling",
+			password: strings.Repeat("a", MaxPasswordLength+1),
+			accepted: false,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hashed, err := HashPassword(c.password)
+			if c.accepted {
+				if err != nil {
+					t.Fatalf("HashPassword refused %d characters / %d bytes: %v",
+						utf8.RuneCountInString(c.password), len(c.password), err)
+				}
+				if !VerifyPassword(hashed, c.password) {
+					t.Error("the password it accepted does not verify against its own hash")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("HashPassword accepted %d characters / %d bytes",
+					utf8.RuneCountInString(c.password), len(c.password))
+			}
+		})
 	}
 }

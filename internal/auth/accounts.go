@@ -146,6 +146,11 @@ func (a *Accounts) Name() string { return "local-account" }
 // account — for the reason ErrUnauthenticated exists: which half of a guess was right is not something
 // this endpoint is entitled to tell anybody.
 //
+// A store that cannot be reached is not a refusal and is reported as ErrUnavailable. The difference is
+// invisible in code and loud in an outage: flattening it would answer 401, and a 401 to a browser is
+// the sign-in form — so every signed-in operator would be told their session had been invalidated at
+// the moment the control plane could not tell whether it had.
+//
 // Both windows are checked against this process's clock rather than the database's, matching every
 // other validity window in Farrier. docs/SECURITY.md treats clock skew as a boundary, and a credential
 // that outlived its window because two machines disagreed is the least visible way for that to matter.
@@ -167,7 +172,16 @@ func (a *Accounts) Authenticate(ctx context.Context, r *http.Request) (*Identity
 	now := a.now()
 	hash := HashSessionToken(cookie.Value)
 	session, account, err := a.store.SessionByToken(ctx, hash)
-	if err != nil || !session.Valid(now) || !a.withinMaxAge(session, now) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// No such session: the cookie is stale, or the row was swept, or somebody guessed. A refusal.
+		return nil, ErrUnauthenticated
+	case err != nil:
+		slog.Error("could not read a session", "error", err)
+		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	case !session.Valid(now) || !a.withinMaxAge(session, now):
+		// The row exists and has run out of one of its two windows. Also a refusal, and deliberately
+		// the same one: which window lapsed is not information a caller is owed.
 		return nil, ErrUnauthenticated
 	}
 
@@ -235,13 +249,17 @@ func (a *Accounts) renew(ctx context.Context, session store.Session, account sto
 func (a *Accounts) SignIn(ctx context.Context, w http.ResponseWriter, r *http.Request, email, password string) (*Identity, error) {
 	account, err := a.store.AccountByEmail(ctx, EmailKey(email))
 	if err != nil {
-		// Not found, and the store failing for any other reason, are the same answer to the caller. The
-		// second is worth a log line, because it is an outage rather than a refusal.
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("could not read an operator account", "error", err)
-		}
+		// The decoy verification happens either way, before the branch. An address nobody holds must
+		// cost what a real one costs, or the response time sorts the addresses that exist from the ones
+		// that do not — and an outage must not become the one condition under which that timing changes.
 		VerifyPassword(decoyHash(), password)
-		return nil, ErrUnauthenticated
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrUnauthenticated
+		}
+		// Not a refusal: nothing was compared, so nothing is known about the credential. Reporting this
+		// as a wrong password is how an operator spends an outage retyping one that is correct.
+		slog.Error("could not read an operator account", "error", err)
+		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	if !VerifyPassword(account.PasswordHash, password) {
 		return nil, ErrUnauthenticated

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -249,10 +250,21 @@ type twoOperators struct {
 // Name identifies the provider.
 func (t *twoOperators) Name() string { return "test" }
 
+// UnavailableToken makes this provider report an outage rather than a refusal.
+//
+// A provider that cannot reach its store knows nothing about the credential it was handed, and the
+// middleware has to answer that differently from a wrong one. Injecting it here rather than breaking
+// the memory store is what keeps the assertion about the middleware: the store is fine, and the
+// provider simply cannot say.
+const UnavailableToken = "the-store-is-unreachable"
+
 // Authenticate resolves a bearer token to one of the two identities.
 func (t *twoOperators) Authenticate(_ context.Context, r *http.Request) (*auth.Identity, error) {
-	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	identity, ok := t.tokens[strings.TrimSpace(raw)]
+	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if raw == UnavailableToken {
+		return nil, fmt.Errorf("%w: the test provider cannot reach its store", auth.ErrUnavailable)
+	}
+	identity, ok := t.tokens[raw]
 	if !ok {
 		return nil, auth.ErrUnauthenticated
 	}

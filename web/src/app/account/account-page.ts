@@ -16,8 +16,26 @@ import { SessionStore } from '../core/session';
 import { describeError } from '../core/errors';
 import { formatAge } from '../core/format';
 
-/** The shortest password the control plane will store, matching `server.MinPasswordLength`. */
+/**
+ * The shortest password the control plane will store, matching `auth.MinPasswordLength`.
+ *
+ * Duplicated here rather than fetched, because a form that has to ask the server how long a password
+ * must be is a form that cannot say so until it has. The cost is that raising it means editing two
+ * files; the server is the authority either way, and this check only exists to save a round trip.
+ */
 const MIN_PASSWORD_LENGTH = 12;
+
+/**
+ * Counts what a person would call characters, which `String.length` does not.
+ *
+ * `length` counts UTF-16 code units, so an emoji outside the basic plane counts as two and a password
+ * of six of them would pass a twelve-character rule the server then refuses — the browser and the
+ * control plane disagreeing about the same sentence. Spreading the string iterates code points, which
+ * is what the server counts with `utf8.RuneCountInString`.
+ */
+function characters(value: string): number {
+  return [...value].length;
+}
 
 /**
  * One choice of how long a token lasts, with the case it is for.
@@ -150,7 +168,7 @@ export class AccountPage {
     () =>
       !this.changing() &&
       this.currentPassword().length > 0 &&
-      this.newPassword().length >= MIN_PASSWORD_LENGTH &&
+      characters(this.newPassword()) >= MIN_PASSWORD_LENGTH &&
       this.newPassword() === this.confirmPassword(),
   );
 
@@ -162,7 +180,7 @@ export class AccountPage {
    */
   protected readonly passwordHint = computed(() => {
     const replacement = this.newPassword();
-    if (replacement.length > 0 && replacement.length < MIN_PASSWORD_LENGTH) {
+    if (replacement.length > 0 && characters(replacement) < MIN_PASSWORD_LENGTH) {
       return `At least ${MIN_PASSWORD_LENGTH} characters. There is no rule about digits or symbols.`;
     }
     if (this.confirmPassword().length > 0 && replacement !== this.confirmPassword()) {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -21,12 +22,50 @@ import (
 // sentence in an error message.
 const MinPasswordLength = 12
 
+// MaxConcurrentDerivations bounds how many Argon2id derivations may be resident at once.
+//
+// Four, which at argonMemory is 256 MiB — an amount a control plane can hold without being pushed into
+// swap or reaped by the kernel, and enough that four people signing in at the same instant do not wait
+// on each other. Everything past it waits rather than being refused: parking a goroutine costs about
+// four kilobytes and running the derivation costs sixty-four megabytes, so waiting is strictly the
+// cheaper failure, and the caller in front of it is already rate limited.
+//
+// It exists because the alternative is a memory bound that depends on how many requests happen to
+// arrive together. That is not a bound, and the route it protects is reachable by an operator with the
+// least privilege the system has: changing your own password verifies the current one, and nothing
+// about being signed in stops you doing it in a loop.
+const MaxConcurrentDerivations = 4
+
+// derivations admits MaxConcurrentDerivations callers to the memory-hard function at a time.
+//
+// A buffered channel rather than a semaphore type, because it is four lines and this package has no
+// other use for the dependency. Acquire and release are always paired by a defer at the two call sites
+// below; there is deliberately no third.
+var derivations = make(chan struct{}, MaxConcurrentDerivations)
+
+// deriveKey runs Argon2id with this build's parameters, under the concurrency bound.
+//
+// Every derivation in this package goes through it, which is the point: a second call to argon2.IDKey
+// that took the parameters but not the bound would restore exactly the property the bound removes, and
+// would look correct.
+func deriveKey(password string, salt []byte, time32, memory uint32, threads uint8, length uint32) []byte {
+	derivations <- struct{}{}
+	defer func() { <-derivations }()
+	return argon2.IDKey([]byte(password), salt, time32, memory, threads, length)
+}
+
 // MaxPasswordLength bounds what is accepted, so a long input cannot become a long computation.
 //
 // Argon2's cost comes from its parameters rather than from the password's length, so this is not a
 // defence against a slow hash; it exists because every other input this server reads is bounded before
 // it is in memory and a password should not be the exception. It is generous: a six-word passphrase is
 // nowhere near it.
+//
+// Bytes, deliberately, where the minimum below counts characters. The two units are not an
+// inconsistency — they measure different things. This one bounds what is copied and hashed, which is
+// bytes; the minimum measures what a person chose, which is characters. A password of 256 four-byte
+// characters is a megabyte-adjacent input by no useful definition and 64 characters by every one, so
+// the ceiling in bytes is the honest bound for what it is protecting.
 const MaxPasswordLength = 256
 
 // The Argon2id cost parameters, which are RFC 9106's SECOND RECOMMENDED option.
@@ -38,8 +77,11 @@ const MaxPasswordLength = 256
 // property that makes it possible to raise them at all.
 //
 // The memory figure is the one to watch when changing them: it is allocated per hash in flight, so it
-// multiplies by however many sign-ins are being attempted at once. That is what the sign-in rate limit
-// in internal/server bounds, and the two numbers should be changed together.
+// multiplies by however many derivations are running at once. What bounds that product is
+// MaxConcurrentDerivations below, and the two numbers should be changed together — a rate limit does
+// not bound it, which is what this comment used to claim. A token bucket meters attempts over time and
+// says nothing about how many are resident simultaneously: ten requests arriving in the same
+// millisecond all pass a burst of ten.
 const (
 	// argonTime is the number of passes over memory.
 	argonTime = 3
@@ -108,7 +150,11 @@ var errMalformedHash = errors.New("auth: the stored password hash is not readabl
 // raised later without a migration and without locking anybody out: a hash written under the old
 // parameters keeps verifying under them.
 func HashPassword(password string) (string, error) {
-	if len(password) < MinPasswordLength {
+	// Characters, not bytes, because that is what ErrPasswordTooShort promises and what the interface
+	// asks for. `len` on a string counts UTF-8 bytes: under it, three four-byte emoji are "twelve
+	// characters" and satisfy the only length rule this control plane has. The ceiling stays in bytes —
+	// see MaxPasswordLength for why the two units are different on purpose.
+	if utf8.RuneCountInString(password) < MinPasswordLength {
 		return "", ErrPasswordTooShort
 	}
 	if len(password) > MaxPasswordLength {
@@ -119,7 +165,7 @@ func HashPassword(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("auth: generating a password salt: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLength)
+	key := deriveKey(password, salt, argonTime, argonMemory, argonThreads, argonKeyLength)
 	return encodePHC(argonMemory, argonTime, argonThreads, salt, key), nil
 }
 
@@ -159,7 +205,7 @@ func VerifyPassword(encoded, password string) bool {
 	// maxArgonKeyLength — 64 bytes. gosec cannot see that across the call, and a length check here
 	// would be a second copy of a rule that is already enforced where the value comes from.
 	//nolint:gosec // len(want) <= maxArgonKeyLength (64), enforced by parsePasswordHash.
-	got := argon2.IDKey([]byte(password), salt, time32, memory, threads, uint32(len(want)))
+	got := deriveKey(password, salt, time32, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 

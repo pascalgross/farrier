@@ -203,8 +203,9 @@ route that reaches a fleet's hosts or jobs. The same thing from a terminal, with
 account issued for itself:
 
 ```bash
+# $FARRIER_TOKEN is an API token that account issued for itself, from its own account page.
 curl -sX POST https://control.example.org/api/v1/tenants \
-  -H "Authorization: Bearer $FARRIER_PLATFORM_TOKEN" \   # that account's own API token
+  -H "Authorization: Bearer $FARRIER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"slug":"acme","displayName":"Acme Ltd","approvalMode":"second_person"}'
 ```

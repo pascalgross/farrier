@@ -1310,6 +1310,34 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 		})
 	}
 
+	// The three credential tables, which have no tenant column to count owners by.
+	//
+	// `sessions` and `api_tokens` carry no tenant at all — migration 0010 moved that answer to the
+	// account they name — and `accounts` carries a nullable one, so the DISTINCT-owner assertion above
+	// cannot be written for any of them. The half that can is the half that matters most here: with no
+	// scope set, nothing may come back. Every disjunct of all three policies compares against a
+	// current_setting that is NULL when unset, and `x = NULL` is NULL rather than true, so a table that
+	// answers anything at all has lost its policy or its FORCE.
+	//
+	// They are checked separately rather than left out, which is what they were. These are the tables
+	// that hold credentials rather than data: a session row is a live login and an api_tokens row is a
+	// live bearer token, and "the guarantee test covers every tenant-owned table" was not true of them.
+	for _, table := range []string{"accounts", "sessions", "api_tokens"} {
+		t.Run(table, func(t *testing.T) {
+			var seeded int
+			if err := pg.pool.QueryRow(ctx,
+				`SELECT count(*) FROM `+table+` WHERE true`).Scan(&seeded); err != nil {
+				// The count itself runs under the same policy, so it is expected to be zero. What is
+				// being ruled out is an error rather than a number.
+				t.Fatalf("counting %s with no scope set: %v", table, err)
+			}
+			if seeded != 0 {
+				t.Errorf("a query against %s with no scope set returned %d rows; the policy is not "+
+					"enabled, or not FORCEd, and the table owner is bypassing it", table, seeded)
+			}
+		})
+	}
+
 	// And the same for a write: the policy's WITH CHECK must refuse a row addressed to somebody else.
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
@@ -1562,4 +1590,119 @@ func TestGuaranteeAnUnusableTokenResolvesToNoTenant(t *testing.T) {
 			t.Errorf("a redeemed token still resolves to its tenant: %v", err)
 		}
 	})
+}
+
+// TestGuaranteeAFleetCannotReachThePlatformsOwnAccounts is the boundary nothing was executing.
+//
+// Migration 0010 makes a platform administrator an account whose tenant is SQL NULL, and argues that
+// `NULL = 'anything'` is NULL rather than true, so such a row is unreachable from any fleet's handle.
+// Every word of that was true and none of it was asserted: `grep -rn "Platform()" --include="*_test.go"`
+// found nothing, so the second disjunct of accounts_tenant_isolation, the branch in withScope, and
+// CreateAccount writing NULL rather than the empty string were all covered by prose alone.
+//
+// The empty string is the specific way this goes wrong. `Store.In("")` reaches the *platform* rows
+// rather than an empty tenant, and the in-memory store compares `TenantID("")` for equality — so a
+// PostgreSQL implementation that wrote `”` instead of NULL would produce a row unreachable from both
+// sides, and every memory-backed test in the suite would still pass.
+//
+// It runs against both implementations, like everything else in this file, because the divergence is
+// what would hide it.
+func TestGuaranteeAFleetCannotReachThePlatformsOwnAccounts(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		alpha, _ := twoTenants(t, s)
+		platform := s.Platform()
+
+		const id = "01JPLATFORM"
+		const email = "installation@example.org"
+		if err := platform.CreateAccount(ctx, Account{
+			ID: id, Email: email, EmailKey: "key-" + email,
+			PasswordHash: "hash", CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("creating the platform account: %v", err)
+		}
+
+		// It is on the platform side and says so, which is the whole of what makes it one.
+		held, err := platform.GetAccount(ctx, id)
+		if err != nil {
+			t.Fatalf("the platform cannot read its own account: %v", err)
+		}
+		if held.TenantID != "" {
+			t.Errorf("the platform account carries the tenant %q; it must carry none", held.TenantID)
+		}
+
+		// And resolving it by address — the path a sign-in takes, before any side is known — finds it.
+		// This is what proves the row was written reachably rather than into a state neither side
+		// admits: an account written with an empty-string tenant would pass every assertion above and
+		// fail this one only in PostgreSQL.
+		resolved, err := s.AccountByEmail(ctx, "key-"+email)
+		if err != nil {
+			t.Fatalf("the platform account cannot be resolved by address, so nobody could sign in as "+
+				"it: %v", err)
+		}
+		if resolved.ID != id || resolved.TenantID != "" {
+			t.Errorf("resolved %+v, want the platform account with no tenant", resolved)
+		}
+
+		// A fleet's handle reaches none of it. Every method that names an account is asked, because a
+		// boundary that holds for reads and not for writes is not a boundary.
+		if _, err := alpha.GetAccount(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a fleet read the installation's own account: %v", err)
+		}
+		if err := alpha.UpdateAccountPassword(ctx, id, "hash-set-by-alpha"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a fleet set the password on the installation's own account: %v", err)
+		}
+		if err := alpha.DeleteAccount(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a fleet deleted the installation's own account: %v", err)
+		}
+		if _, err := alpha.ListSessions(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a fleet listed the installation's administrator's sessions: %v", err)
+		}
+		if err := alpha.CreateAPIToken(ctx, APIToken{
+			Hash: "forged-by-alpha", AccountID: id, Label: "forged", CreatedAt: time.Now().UTC(),
+		}); err == nil {
+			t.Error("a fleet minted an API token acting as the installation's administrator")
+		}
+		for _, a := range mustListAccounts(t, alpha) {
+			if a.ID == id {
+				t.Error("the platform account appears in a fleet's account listing")
+			}
+		}
+
+		// And the other way. The platform side administers fleets and deliberately cannot read what
+		// runs in them, which docs/SECURITY.md §5.3 turns on — an administrator who could mint a
+		// session against a customer's operator could authenticate as that customer.
+		tenantAccount := accountIn(alpha.Tenant())
+		if _, err := platform.GetAccount(ctx, tenantAccount); !errors.Is(err, ErrNotFound) {
+			t.Errorf("the installation's administrator read a fleet's operator account: %v", err)
+		}
+		if err := platform.UpdateAccountPassword(ctx, tenantAccount, "hash-set-by-platform"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("the installation's administrator set a fleet operator's password: %v", err)
+		}
+		if err := platform.CreateSession(ctx, Session{
+			TokenHash: "session-forged-by-platform", AccountID: tenantAccount,
+			CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}); err == nil {
+			t.Error("the installation's administrator minted a session as a fleet's operator")
+		}
+		for _, a := range mustListAccounts(t, platform) {
+			if a.TenantID != "" {
+				t.Errorf("a fleet's account %+v appears in the platform listing", a)
+			}
+		}
+	})
+}
+
+// mustListAccounts reads one side's accounts, failing the test rather than returning an error.
+//
+// A helper because the assertion above makes the same call twice and the error handling is three lines
+// each time, which would bury the two comparisons that are the point.
+func mustListAccounts(t *testing.T, scope AccountScope) []Account {
+	t.Helper()
+
+	accounts, err := scope.ListAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("listing accounts: %v", err)
+	}
+	return accounts
 }

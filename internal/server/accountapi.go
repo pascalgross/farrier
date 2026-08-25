@@ -2,10 +2,13 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/store"
@@ -17,19 +20,26 @@ import (
 // reason every other body limit is: the bound applies before the body is in memory.
 const MaxAccountRequestBytes = 4 << 10
 
-// MinPasswordLength is the shortest password this control plane will store.
-//
-// Twelve, and no composition rule beside it — no digit, no symbol, no capital. Those rules are
-// well-documented as producing worse passwords rather than better ones, because they push people
-// towards `Passw0rd!` and away from the long unmemorable string a password manager would have
-// generated. Length is the one property that is not gamed by a rule, so it is the one that is checked.
-const MinPasswordLength = 12
-
 // MaxAPITokenLabel bounds what an operator may call a token.
 //
 // Bounded because it is stored, returned to a listing and rendered in an audit-trail display name, and
 // an unbounded string that reaches all three is a row that grows with what somebody sends.
 const MaxAPITokenLabel = 100
+
+// The bounds on password changes, per account.
+//
+// Generous, because the honest use is somebody typing their current password wrong once or twice: five
+// at a time and one back every thirty seconds is a limit a person never meets. What it stops is a loop,
+// which at 64 MiB of Argon2id per attempt is a way to spend the control plane's memory from the least
+// privileged credential the system issues — and a way to guess the password of an account whose session
+// cookie somebody has stolen.
+const (
+	// passwordBurst is how many changes one account may attempt at once.
+	passwordBurst = 5
+
+	// passwordRefill is how long one attempt takes to come back.
+	passwordRefill = 30 * time.Second
+)
 
 // MaxAPITokenDays bounds how far ahead a token may be dated.
 //
@@ -74,8 +84,10 @@ func (s *Server) requireAccount(next func(http.ResponseWriter, *http.Request, ac
 			return
 		}
 		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
-		if err != nil || identity == nil {
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "a signed-in session is required")
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a signed-in session is required") {
 			return
 		}
 		if identity.Credential != auth.CredentialSession {
@@ -161,6 +173,14 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, _ *http.Request, who ac
 // device out for it is how people learn not to do it. `POST /api/v1/account/sessions/revoke` is beside
 // it for the case where that is the point.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, who accountCaller) {
+	// Before the body is read and long before anything is hashed: the derivation below is the expensive
+	// part, so a limiter that ran after it would meter the thing it was meant to prevent.
+	if !s.passwordLimiter.allow(who.Account.ID, time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.passwordLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many password changes")
+		return
+	}
+
 	var req struct {
 		// CurrentPassword is what the operator is signing in with today.
 		CurrentPassword string `json:"currentPassword"`
@@ -178,10 +198,20 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, wh
 		writeError(w, http.StatusUnauthorized, "wrong_password", "that is not the current password")
 		return
 	}
-	if len([]rune(req.NewPassword)) < MinPasswordLength {
+	// auth.MinPasswordLength rather than a copy, and characters rather than bytes for the same reason
+	// HashPassword counts them: `len` on a string is UTF-8 bytes, so three four-byte emoji would pass a
+	// twelve-"character" rule. This check exists only to produce a better message than the one
+	// HashPassword's error carries — that call is the authority, and it applies the same rule.
+	if utf8.RuneCountInString(req.NewPassword) < auth.MinPasswordLength {
 		writeError(w, http.StatusBadRequest, "password_too_short",
-			"a password must be at least 12 characters. There is no rule about digits or symbols: "+
-				"length is the property those rules fail to produce.")
+			fmt.Sprintf("a password must be at least %d characters. There is no rule about digits or "+
+				"symbols: length is the property those rules fail to produce.", auth.MinPasswordLength))
+		return
+	}
+	if len(req.NewPassword) > auth.MaxPasswordLength {
+		// In bytes, matching the bound it stands for: this one is about what gets copied and hashed.
+		writeError(w, http.StatusBadRequest, "password_too_long",
+			fmt.Sprintf("a password may be at most %d bytes", auth.MaxPasswordLength))
 		return
 	}
 	if req.NewPassword == req.CurrentPassword {

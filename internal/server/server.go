@@ -151,6 +151,20 @@ type Server struct {
 	// costs this process 64 MiB of Argon2id per attempt.
 	signInLimiter *rateLimiter
 
+	// passwordLimiter bounds password changes, per account.
+	//
+	// The route is behind a signed-in session, which is the least privilege this system has and is not
+	// the same as no privilege: verifying the current password is a 64 MiB Argon2id derivation, and
+	// nothing about being signed in stops somebody driving that in a loop. It is also an online
+	// guessing oracle against the account's own password for anyone holding a stolen cookie — which
+	// matters less than it sounds, since the cookie already authenticates, and matters at all because
+	// people reuse passwords.
+	//
+	// Keyed on the account id rather than the source address, because here the caller is authenticated:
+	// the id is the true identity, is not a value the request chooses, and does not collapse into one
+	// bucket behind a proxy the way an address does.
+	passwordLimiter *rateLimiter
+
 	// accounts is the local-accounts provider, nil when this installation has none.
 	accounts *auth.Accounts
 
@@ -219,15 +233,16 @@ func New(cfg Config) (*Server, error) {
 	_, statErr := fs.Stat(assets, "index.html")
 
 	s := &Server{
-		cfg:           cfg,
-		mux:           http.NewServeMux(),
-		assets:        assets,
-		hasUI:         statErr == nil,
-		enrolLimiter:  newRateLimiter(enrollBurst, enrollRefill),
-		signInLimiter: newRateLimiter(signInBurst, signInRefill),
-		accounts:      cfg.Accounts,
-		paths:         http.NewServeMux(),
-		allow:         map[string][]string{},
+		cfg:             cfg,
+		mux:             http.NewServeMux(),
+		assets:          assets,
+		hasUI:           statErr == nil,
+		enrolLimiter:    newRateLimiter(enrollBurst, enrollRefill),
+		signInLimiter:   newRateLimiter(signInBurst, signInRefill),
+		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
+		accounts:        cfg.Accounts,
+		paths:           http.NewServeMux(),
+		allow:           map[string][]string{},
 	}
 	// Background rather than derived from a request or from ListenAndServe's context: a detached
 	// delivery must outlive the request that caused it, and must still be cancellable as a group.
@@ -634,6 +649,35 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 	})
 }
 
+// refuseOrFail answers an authentication error, telling a wrong credential from an unreachable store.
+//
+// One function for the four middlewares below, because the distinction is easy to state and easy to
+// drop, and dropping it is silent: a control plane whose database is unreachable would answer 401 to
+// every request, which to a browser *is* the sign-in form and to a script is "your token was revoked".
+// Everybody would be told their credential had been taken away, at the moment nobody could check.
+//
+// The 500 says nothing about the credential — not whether the account exists, not which provider
+// failed. It says the control plane could not answer, which is the truth and is what somebody on call
+// needs to see.
+//
+// It returns whether it wrote a response, so a caller can keep the shape of an ordinary guard clause.
+func refuseOrFail(w http.ResponseWriter, err error, refusal string) bool {
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, auth.ErrUnauthenticated) {
+		slog.Error("could not check a credential", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal",
+			"the control plane could not check your credential; this is not a refusal")
+		return true
+	}
+	// One response for missing, malformed and wrong. Telling the caller which half of their guess was
+	// right is free reconnaissance.
+	w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
+	writeError(w, http.StatusUnauthorized, "unauthenticated", refusal)
+	return true
+}
+
 // requireOperator authenticates a human operator and scopes the request to their tenant.
 //
 // The tenant comes from the credential and from nowhere else — not a path segment, not a header, not a
@@ -647,11 +691,10 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 func (s *Server) requireOperator(next func(http.ResponseWriter, *http.Request, operator)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
-		if err != nil || identity == nil {
-			// One response for missing, malformed and wrong. Telling the caller which half of their
-			// guess was right is free reconnaissance.
-			w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid operator credential is required")
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a valid operator credential is required") {
 			return
 		}
 		if identity.Platform || identity.Tenant == "" {
@@ -682,9 +725,10 @@ func (s *Server) requireOperator(next func(http.ResponseWriter, *http.Request, o
 func (s *Server) requireIdentity(next func(http.ResponseWriter, *http.Request, auth.Identity)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
-		if err != nil || identity == nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid credential is required")
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a valid credential is required") {
 			return
 		}
 		next(w, r, *identity)
@@ -699,9 +743,10 @@ func (s *Server) requireIdentity(next func(http.ResponseWriter, *http.Request, a
 func (s *Server) requirePlatform(next func(http.ResponseWriter, *http.Request, auth.Identity)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
-		if err != nil || identity == nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid credential is required")
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a valid credential is required") {
 			return
 		}
 		if !identity.Platform {

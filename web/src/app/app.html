@@ -5,7 +5,14 @@
 -->
 @if (session.signedIn()) {
   <mat-toolbar class="!flex items-center gap-4">
-    <a routerLink="/" class="flex items-center gap-2 no-underline text-inherit">
+    <!--
+      The mark goes where this credential can actually go. It used to be a fixed `/`, which for a
+      platform administrator is the fleet list they are refused by design — one click and they were on
+      a page of 403s. The guards on the routes would now turn them round, but sending somebody
+      somewhere in order to bounce them is not navigation, it is a redirect somebody watches happen.
+    -->
+    <a [routerLink]="session.isPlatform() ? '/fleets' : '/'"
+       class="flex items-center gap-2 no-underline text-inherit">
       <img src="mark.svg" alt="" width="24" height="24" class="h-6 w-6">
       <span class="font-medium">Farrier</span>
     </a>
@@ -104,7 +111,12 @@
 
       <mat-card class="farrier-signin__card" appearance="outlined">
         <mat-card-content class="farrier-signin__fields !py-6">
-          @if (session.unusable(); as note) {
+          <!--
+            The control plane could not answer, which is not the same as refusing. Shown above the
+            fields because it changes what the fields are for: a password will not help, and somebody
+            who is not told that will type theirs three times into a rate limit.
+          -->
+          @if (session.unavailable(); as note) {
             <p class="farrier-signin__note farrier-signin__note--warn">{{ note }}</p>
           }
 

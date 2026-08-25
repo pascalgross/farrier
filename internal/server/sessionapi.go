@@ -46,11 +46,32 @@ const (
 // The response carries the identity rather than the token, because the token is in an HttpOnly cookie
 // the browser will send back on its own. There is nothing here for a script to store, which is the
 // point: a script mints an API token from the account page and uses that instead.
+//
+// It requires auth.SessionHeader even though it authenticates nobody, and that is the least obvious
+// line in this file. Everywhere else the header stops a cross-site request from *using* a cookie; here
+// it stops one from *causing* a cookie. A cross-site HTML form cannot set a header and cannot send
+// JSON — but it can send `enctype="text/plain"`, whose encoding is `name=value`, and a field named
+// `{"email":"a@b","password":"p","x":"` with the value `"}` produces a body that is valid JSON. That
+// content type is CORS-safelisted, so there is no preflight, and a form submission is a top-level
+// navigation, so the response is first-party and the Set-Cookie below is stored. SameSite=Lax does not
+// help: it governs whether a cookie is sent, not whether one may be set.
+//
+// The result is login CSRF, which is quieter than it sounds and worse: the victim is signed in as the
+// *attacker*, and every host they enrol, template they paste and token they mint afterwards lands in
+// the attacker's fleet, under the attacker's principal, for the attacker to read later.
 func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 	if s.accounts == nil {
 		// No accounts provider configured. It is 404 rather than 501 because the route genuinely does
 		// not exist on this installation, and a client that got 501 would keep offering the form.
 		writeError(w, http.StatusNotFound, "not_found", "this control plane has no account sign-in")
+		return
+	}
+	if r.Header.Get(auth.SessionHeader) == "" {
+		// Before the rate limiter on purpose: a cross-site attempt is made by somebody else's browser,
+		// and spending their bucket would let an attacker lock a victim out of signing in for real.
+		writeError(w, http.StatusBadRequest, "missing_header",
+			"a sign-in must carry the "+auth.SessionHeader+" header; this control plane's interface "+
+				"sends it, and a page on another origin cannot")
 		return
 	}
 	if !s.signInLimiter.allow(auth.RequestSource(r), time.Now()) {

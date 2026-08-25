@@ -44,6 +44,20 @@ import (
 // whoever is guessing which half of their guess was right.
 var ErrUnauthenticated = errors.New("auth: unauthenticated")
 
+// ErrUnavailable reports that a credential could not be checked, which is not the same as wrong.
+//
+// The distinction is the whole point and it is easy to lose, because both end a request. A provider
+// that cannot reach its store knows nothing about the credential it was given — so answering 401 tells
+// every signed-in operator that their session has been invalidated and every one signing in that their
+// password is wrong, at the moment none of that is true and none of them can do anything about it. An
+// outage should look like an outage: the browser keeps its cookie, the operator stops retyping, and
+// whoever is on call reads a 500 rather than a support request about passwords.
+//
+// It carries no detail about the credential and never reaches the caller as text. What the caller gets
+// is a 500 and a sentence about the control plane; this exists so that the middleware can tell which
+// of the two answers to give.
+var ErrUnavailable = errors.New("auth: the credential could not be checked")
+
 // Identity is an authenticated operator.
 type Identity struct {
 	// Subject is the stable identifier the provider knows this operator by.
@@ -134,10 +148,10 @@ type Provider interface {
 
 // Chain tries several providers in order and takes the first identity one of them returns.
 //
-// A hosted control plane needs at least two credentials that are not the same kind of thing — the
-// platform administrator's and each tenant's — and the Provider seam authenticates rather than
-// enumerates, so composing is the way to have both without either implementation knowing about the
-// other. Order is the order given; every member is asked, so adding one cannot silently shadow another.
+// A control plane needs at least two credentials that are not the same kind of thing — what a browser
+// holds and what a script holds — and the Provider seam authenticates rather than enumerates, so
+// composing is the way to have both without either implementation knowing about the other. Order is the
+// order given; every member is asked, so adding one cannot silently shadow another.
 func Chain(providers ...Provider) Provider { return chain(providers) }
 
 // chain is the composed provider Chain returns.
@@ -161,18 +175,32 @@ func (c chain) Name() string {
 // returning early on the first ErrUnauthenticated would be correct but would also make the number of
 // comparisons depend on which credential was presented, and the whole reason each member compares in
 // constant time is that this should not be observable.
+//
+// An operational failure is kept and reported only when nobody authenticated, which is the ordering
+// that matters: a browser holding a valid session must still get in while the token provider's store is
+// unreachable, and a request that authenticated nowhere *because* a store was unreachable must not be
+// told its credential was wrong. Refusals are discarded rather than joined — every member refusing is
+// the ordinary case and says nothing worth keeping.
 func (c chain) Authenticate(ctx context.Context, r *http.Request) (*Identity, error) {
 	var found *Identity
+	var unavailable error
 	for _, p := range c {
 		identity, err := p.Authenticate(ctx, r)
 		if err == nil && identity != nil && found == nil {
 			found = identity
+			continue
+		}
+		if err != nil && !errors.Is(err, ErrUnauthenticated) && unavailable == nil {
+			unavailable = err
 		}
 	}
-	if found == nil {
-		return nil, ErrUnauthenticated
+	if found != nil {
+		return found, nil
 	}
-	return found, nil
+	if unavailable != nil {
+		return nil, unavailable
+	}
+	return nil, ErrUnauthenticated
 }
 
 // GenerateToken returns 32 bytes of randomness as hex, for a session token.

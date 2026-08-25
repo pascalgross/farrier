@@ -238,3 +238,49 @@ func TestSigningOutEverywhereEndsEverySessionIncludingThisOne(t *testing.T) {
 		}
 	}
 }
+
+// TestGuaranteeAnOutageIsNotAnswered401 is the middleware half of the distinction internal/auth draws.
+//
+// Every route behind a credential goes through one of four guards, and all four used to answer 401 for
+// any error at all. That is wrong in a way nobody notices until it happens: during a database outage
+// every browser is shown the sign-in form and every script is told its token was revoked, at the moment
+// the control plane cannot tell whether either is true. The operators most likely to be looking are the
+// ones diagnosing the outage, and the first thing they would conclude is that authentication is broken.
+//
+// Every guard is asserted, because they were four copies of the same clause and a fix to one is not a
+// fix to the others.
+func TestGuaranteeAnOutageIsNotAnswered401(t *testing.T) {
+	h := newHarness(t)
+
+	for _, c := range []struct {
+		// name says which guard this route is behind.
+		name string
+
+		// method and path are the request.
+		method string
+		path   string
+	}{
+		{name: "requireOperator", method: http.MethodGet, path: "/api/v1/hosts"},
+		{name: "requireIdentity", method: http.MethodGet, path: "/api/v1/whoami"},
+		{name: "requirePlatform", method: http.MethodGet, path: "/api/v1/tenants"},
+		{name: "requireAccount", method: http.MethodGet, path: "/api/v1/account"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := h.adminJSON(t, UnavailableToken, c.method, c.path, nil)
+			if status != http.StatusInternalServerError {
+				t.Fatalf("%s returned %d during an outage, want 500: %s", c.path, status, body)
+			}
+			// And it says nothing about the credential — not whether the account exists, not which
+			// provider could not answer.
+			if bytes.Contains(body, []byte("unauthenticated")) {
+				t.Errorf("the outage response reads as a refusal: %s", body)
+			}
+
+			// The same route, with a credential that is genuinely wrong, is still one refusal.
+			status, body = h.adminJSON(t, "not-a-token-anybody-issued", c.method, c.path, nil)
+			if status != http.StatusUnauthorized {
+				t.Fatalf("%s returned %d for a wrong credential, want 401: %s", c.path, status, body)
+			}
+		})
+	}
+}

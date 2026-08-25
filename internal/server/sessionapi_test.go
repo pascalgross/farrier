@@ -5,10 +5,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pascalgross/farrier/internal/auth"
@@ -204,5 +206,64 @@ func TestASignInAttemptIsRateLimited(t *testing.T) {
 	}
 	if !limited {
 		t.Fatal("forty sign-in attempts from one source were all answered; the endpoint is unbounded")
+	}
+}
+
+// TestGuaranteeAFormOnAnotherOriginCannotSignThisBrowserIn is login CSRF, which is the quiet one.
+//
+// The familiar attack forges a request from a signed-in victim. This one is the mirror: it signs the
+// victim *in*, as the attacker, and lets them work. Every host they enrol afterwards, every template
+// body they paste, every API token they mint goes into the attacker's fleet under the attacker's
+// principal — and the attacker reads it at their leisure. Nothing looks wrong to the victim beyond a
+// name in a toolbar they have no reason to check.
+//
+// It is reachable without JavaScript and without CORS. A form with enctype="text/plain" encodes as
+// `name=value`, so a field named `{"email":…,"x":"` with the value `"}` posts a body that is valid
+// JSON; that content type is CORS-safelisted, so there is no preflight; and a form submission is a
+// top-level navigation, so the Set-Cookie in the response is stored. SameSite=Lax governs whether a
+// cookie is *sent* cross-site, not whether one may be *set*.
+//
+// The defence is the header the interface already sends and a cross-origin form cannot.
+func TestGuaranteeAFormOnAnotherOriginCannotSignThisBrowserIn(t *testing.T) {
+	h := newHarness(t)
+	client := h.browser(t)
+
+	// Exactly what a cross-site form produces: no header, a text/plain body that happens to be JSON.
+	body := fmt.Sprintf(`{"email":%q,"password":%q,"x":"="}`, h.accountEmail, h.accountPassword)
+	req, err := http.NewRequest(http.MethodPost, h.server.URL+"/api/v1/session", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("posting the forged sign-in: %v", err)
+	}
+	answer, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("a cross-origin form signed this browser in: %s", answer)
+	}
+	// And it set no cookie, which is the half that matters: a refusal that still handed out a session
+	// would be the same attack with an error page in front of it.
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == auth.SessionCookieName && cookie.Value != "" {
+			t.Fatal("a refused sign-in still set a session cookie")
+		}
+	}
+	if status, _ := sessionRequest(t, client, http.MethodGet, h.server.URL+"/api/v1/hosts", nil); status != http.StatusUnauthorized {
+		t.Errorf("the browser reached the fleet after a refused sign-in: %d", status)
+	}
+
+	// The same credential, sent the way the interface sends it, still works — so the defence is the
+	// header rather than anything about the body.
+	if status, answer := sessionRequest(t, client, http.MethodPost, h.server.URL+"/api/v1/session",
+		map[string]string{"email": h.accountEmail, "password": h.accountPassword}); status != http.StatusOK {
+		t.Fatalf("the interface's own sign-in returned %d: %s", status, answer)
 	}
 }

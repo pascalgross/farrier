@@ -25,7 +25,7 @@ function whoami(): Whoami {
   };
 }
 
-/** An HTTP failure of the shape describeError and describeRefusedCredential duck-type. */
+/** An HTTP failure of the shape describeError and describeUnavailable duck-type. */
 function refusal(status: number, message: string): Observable<never> {
   return throwError(() => ({ status, error: { error: 'refused', message } }));
 }
@@ -87,22 +87,31 @@ describe('SessionStore', () => {
     expect(session.signedIn()).toBeFalse();
     expect(session.ready()).toBeTrue();
     expect(session.error()).toBe('');
-    expect(session.unusable()).toBe('');
+    expect(session.unavailable()).toBe('');
   });
 
   /**
-   * A credential that authenticates and reaches nothing the interface renders used to be reported as
-   * a wrong one, which sent people to check what they typed rather than to look for the real problem.
-   * `whoami` answers a platform administrator, so this is the fallback for whatever else 403 could
-   * mean — an API token reaching the account page, say — rather than the platform case itself.
+   * The other failure the probe can meet, and the opposite of a refusal. A 500 means the control plane
+   * could not say who this browser is — the session in the cookie may be perfectly good — so rendering
+   * the sign-in form with no explanation would have every operator conclude, during an outage, that
+   * their session had been invalidated. It is the browser half of `auth.ErrUnavailable`.
    */
-  it('says why a credential that authenticated still reaches nothing here', () => {
-    const note = 'this credential reaches nothing here';
-    const session = build({ whoami: [refusal(403, note)] });
+  it('says when the control plane could not answer, rather than implying a refusal', () => {
+    const note = 'the control plane could not check your credential';
+    const session = build({ whoami: [refusal(500, note)] });
 
     session.probe();
     expect(session.signedIn()).toBeFalse();
-    expect(session.unusable()).toBe(note);
+    expect(session.unavailable()).toContain(note);
+    expect(session.unavailable()).withContext('and says it is not one').toContain('not a refusal');
+  });
+
+  /** A control plane that is not there at all, which produces no document to quote. */
+  it('says something useful when there was no response at all', () => {
+    const session = build({ whoami: [refusal(0, '')] });
+
+    session.probe();
+    expect(session.unavailable()).toContain('not a refusal');
   });
 
   /**
@@ -126,7 +135,7 @@ describe('SessionStore', () => {
     expect(session.signedIn()).withContext('a platform credential is signed in').toBeTrue();
     expect(session.isPlatform()).toBeTrue();
     expect(session.identity()?.tenant).toBeNull();
-    expect(session.unusable()).withContext('nothing is wrong with it').toBe('');
+    expect(session.unavailable()).withContext('nothing is wrong with it').toBe('');
   });
 
   /**
