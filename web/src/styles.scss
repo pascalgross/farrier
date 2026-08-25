@@ -3,6 +3,10 @@
 // Tailwind lives in src/tailwind.css, which is loaded first. The split is not arbitrary: Material
 // supplies the components that benefit from having accessibility, focus management and keyboard
 // behaviour already solved, and Tailwind supplies layout. Neither is asked to do the other's job.
+//
+// One rule below is where that division of labour turns out to need a seam rather than a boundary: the
+// icon font's class. It is documented at length where it appears, because it was a bug that looked
+// like a broken build rather than like a stylesheet.
 
 @use "@angular/material" as mat;
 
@@ -26,6 +30,36 @@ body {
   font-family: Roboto, "Helvetica Neue", system-ui, sans-serif;
   background: var(--mat-sys-surface);
   color: var(--mat-sys-on-surface);
+}
+
+// The class that actually uses the bundled icon font.
+//
+// It has to be written here because @fontsource ships the @font-face and nothing else. Google's hosted
+// stylesheet has a second half — this rule — and taking the font offline meant taking both halves, not
+// one. MatIconRegistry's default font set is `material-icons mat-ligature-font`, so without a rule that
+// matches `.material-icons` nothing ever applies the family: the icon names are ligatures, and a
+// ligature that is not looked up renders as its own letters. That is the failure this fixes, and it is
+// worth naming precisely because it does not look like a missing stylesheet — the application renders,
+// and the toolbar simply says "notifications" and "logout" in words, overflowing whatever is beside it.
+//
+// The declarations are Google's, kept rather than trimmed: `font-feature-settings: "liga"` is the one
+// that turns a name into a glyph, and the rest exist so that an icon inherits nothing from a paragraph
+// it happens to sit in. `.mat-icon-inline` overrides the size on the icons that want to match their
+// text, which works because Material's rule is the more specific of the two.
+.material-icons {
+  font-family: "Material Icons";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
 }
 
 // Numbers compared down a column — update counts, uptimes, clock offsets, identifiers — are set with
