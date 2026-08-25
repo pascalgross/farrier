@@ -160,7 +160,7 @@ func signCommand(argv []string) int {
 	// To stderr, so that stdout is exactly the request body and can be piped into curl.
 	fmt.Fprintf(os.Stderr, "\nSigned. Send it with:\n"+
 		"  curl -X POST \"$FARRIER_URL/api/v1/jobs\" \\\n"+
-		"    -H \"Authorization: Bearer $FARRIER_ADMIN_TOKEN\" \\\n"+
+		"    -H \"Authorization: Bearer $FARRIER_TOKEN\" \\\n"+
 		"    -H 'Content-Type: application/json' -d @-\n")
 	return 0
 }

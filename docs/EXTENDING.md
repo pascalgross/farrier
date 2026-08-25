@@ -224,16 +224,29 @@ Two implementations ship, and they compose through `auth.Chain` rather than repl
 
 | Implementation | The credential | What it is for |
 | --- | --- | --- |
-| `StaticToken` | one bearer token, bound to one fleet | scripts, and getting in before anybody has an account. The platform credential is one of these. |
 | `Accounts` | an address and a password, then a session cookie | people. It is what makes the audit trail name somebody and the two-person approval rule satisfiable. |
+| `APITokens` | a token belonging to one account, `Authorization: Bearer frr_…` | scripts. It authenticates *as* that account, so nothing downstream has to know which of the two a request arrived on. |
 
-`Accounts` reaches `internal/store`, which is why this package does — a property of local accounts
-rather than of the seam, since an OIDC implementation would reach an issuer instead. A third
-implementation adds a type here and an argument to the `auth.Chain` call in `cmd/farrier-server`;
-`Chain` asks every member, so adding one cannot silently shadow another. What it must do is set
-`Identity.Provider`, because `Principal()` is provider-qualified and that string is compared for
-equality by the approval rule. [`SECURITY.md` §4.5](SECURITY.md#45-who-the-operator-is) is the
-specification for what the shipped pair actually do.
+There used to be a third, `StaticToken`: one shared bearer token per fleet, configured with a flag. It
+is gone rather than deprecated, for the reasons [`SECURITY.md`
+§4.5](SECURITY.md#45-who-the-operator-is) gives.
+
+`APITokens` reports the same `Name()` as `Accounts`, which is the one surprising line in the package and
+is load-bearing. `Principal()` is provider-qualified and is compared for equality by the approval rule,
+so a token that called itself something else would make one person look like two. What distinguishes
+them is `Identity.Credential`, which is deliberately *not* part of the principal: who did something and
+what they were holding are two questions, and only the first is an identity. Exactly one group of routes
+reads it — `/api/v1/account`, which refuses a token, because one that could mint another with no expiry
+would survive its own revocation.
+
+Both reach `internal/store`, which is why this package does — a property of local accounts rather than
+of the seam, since an OIDC implementation would reach an issuer instead. A third implementation adds a
+type here and an argument to the `auth.Chain` call in `cmd/farrier-server`; `Chain` asks every member,
+so adding one cannot silently shadow another. What it must do is set `Identity.Provider`, for the reason
+above, and `Identity.Credential` — an OIDC or SAML implementation produces a session like any other,
+because what that field distinguishes is not where the identity came from but whether a person is at the
+other end of the request. [`SECURITY.md` §4.5](SECURITY.md#45-who-the-operator-is) is the specification
+for what the shipped pair actually do.
 
 ### The Angular application
 
@@ -242,9 +255,11 @@ be indirection without a reader, and it can be introduced when there is a second
 Adding a page means a component and a route.
 
 One piece of it is worth knowing before you copy it. The live event feed reads the stream with `fetch`
-and a `ReadableStream`, not with `EventSource`, because `EventSource` cannot set a request header and
-this API authenticates with a bearer token — the usual workaround puts an operator's credential into
-the query string, and from there into every access log and proxy trace it passes. The cost is the
+and a `ReadableStream`, not with `EventSource`, because `EventSource` cannot set a request header —
+and the browser's credential needs one. The cookie itself travels on its own, but the control plane
+refuses a cookie-authenticated request without `X-Farrier-Session`, which is the cross-site request
+forgery defence and is not something `EventSource` can supply. The usual workaround puts a credential
+into the query string, and from there into every access log and proxy trace it passes. The cost is the
 reconnect loop in `core/event-stream.ts`, which `EventSource` would otherwise have supplied.
 
 Whatever it grows into, the UI reads the API and can reach no host directly — it has no credential that

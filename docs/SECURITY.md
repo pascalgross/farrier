@@ -230,8 +230,9 @@ An organisation with more than one operator should turn `second_person` on. It i
 tenant, and it is the setting that makes "nobody reboots production alone" true rather than customary.
 It needs one thing to be true first: the rule compares the approver's principal against the job's
 creator, so every operator has to be a distinct principal. An account is
-([§4.5](#45-who-the-operator-is)); a shared bearer token is not, and under one the rule fails closed and
-nobody can release anything.
+([§4.5](#45-who-the-operator-is)), and so is the API token that account issues, because a token acts as
+its owner. The shared bearer token this control plane used to accept was not, and under one the rule
+failed closed and nobody could release anything — which is one of the reasons it is gone.
 
 **Every destructive intent is offline-signed, in every mode.** No approval setting relaxes that, and
 there is no mode in which a destructive job runs on mTLS alone.
@@ -333,28 +334,52 @@ networks would be a substantially larger backdoor than the remote-exec channel t
 
 ### 4.5 Who the operator is
 
-Two credentials reach the administrative API, and `auth.Provider` is the seam both come through.
+Everybody who reaches the administrative API is an **account**, and `auth.Provider` is the seam. There
+is no shared credential and no way to configure one. `FARRIER_ADMIN_TOKEN` and `FARRIER_PLATFORM_TOKEN`
+were exactly that and have been removed rather than deprecated: one string for a whole fleet names
+nobody in the audit trail, cannot be taken from one person who has left, never expires, is changed only
+by restarting the control plane and telling everybody, and made the second-person rule below
+unsatisfiable by construction.
 
-An **account** is an address and a password, one per person, belonging to one fleet. The password is
-stored as Argon2id with the cost parameters written into the hash beside the digest, so they can be
-raised later without invalidating anybody — and a sign-in rewrites a hash it finds below the current
-cost, because sign-in is the one moment the password is known. Signing in exchanges the password for an
-opaque 256-bit session token in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie; only the token's SHA-256
-is stored, so a database dump is not a set of live sessions. A session lasts twelve hours, is deleted by
-signing out, and goes with the account when the account is deleted. A cookie without the
+An account is an address and a password, and it belongs to one fleet — or, for a platform administrator,
+to none, which is the whole of what makes them one ([§5.3](#53-the-platform-administrator)). The
+password is stored as Argon2id with the cost parameters written into the hash beside the digest, so they
+can be raised later without invalidating anybody; a sign-in rewrites a hash it finds below the current
+cost, because sign-in is the one moment the password is known.
+
+Two ways to present that identity, and they differ in what they are for.
+
+A **session** is what a browser holds. Signing in exchanges the password for an opaque 256-bit token in
+an `HttpOnly`, `Secure`, `SameSite=Lax` cookie; only its SHA-256 is stored, so a database dump is not a
+set of live sessions. Two windows bound it and the credential dies at whichever comes first: twelve
+hours idle, restarting each time it is used, inside seven days absolute, measured from the sign-in and
+never extended. Both are checked against the control plane's own clock, like every other validity window
+in Farrier ([§4.3](#43-clock-skew)). Signing out deletes the row; so does deleting the account; and an operator
+can end every session they hold, from any of them, in one request. A cookie without the
 `X-Farrier-Session` header authenticates nothing, which is the cross-site request forgery defence: a
 cross-site form post cannot set a header, and a cross-site fetch that sets one triggers a preflight this
 server does not answer.
 
-A **bearer token** is the other, and it stays. It is what a script uses, what a fresh control plane
-prints before anybody has an account, and what the platform credential still is. Removing it would put
-a database write between starting the binary and seeing the fleet list.
+An **API token** is what a script holds. An operator issues one for themselves, gives it a label and an
+expiry, and revokes it from the same page in a second; only its SHA-256 is stored, and it is shown once.
+It acts *as that account* — same provider, same subject, therefore the same principal — which is not
+laziness about the audit trail but what keeps the second-person rule honest: a token with a principal of
+its own would let one person queue a job in a browser and release it with their token, and the
+comparison would see two people.
+
+The cost of that is one rule, and it is the only place in this server where *what* the caller was
+holding matters as much as *who* they are. A token presented to `/api/v1/account` — the routes that mint
+and revoke tokens, change a password and end sessions — is refused with 403. A token that could issue
+another, with no expiry, would survive its own revocation.
 
 **Accounts are created on the machine**, with `farrier-server accounts`, and by no API at all. That is
 [§5.3](#53-the-platform-administrator) applied rather than worked around: a platform credential must not
 be able to authenticate as a customer, so it is not given a route that would let it. Creating an account
 from a shell on the control plane adds no power to a role that §5.3 already concedes has the database
 and the process — it makes a power that already existed findable instead of something to write SQL for.
+The exception is the first one: a control plane whose database holds no accounts creates one on start
+and prints its password once, because a control plane with no way in is one that gets abandoned or made
+reachable in a hurry, and the second is much worse.
 
 The fleet is never a field on the sign-in form. It comes from the account row, the way an agent's tenant
 comes from its certificate row, which is what keeps [§5.2](#52-where-the-boundary-is-enforced)'s first
@@ -434,8 +459,16 @@ with the boundary switched off.
 ### 5.3 The platform administrator
 
 Running an installation is a different job from reading what runs on it, and Farrier keeps them
-separate. A platform credential can create, configure and delete tenants through `/api/v1/tenants`. It
-holds no tenant of its own, and every route that reaches a tenant's hosts or jobs refuses it.
+separate. A platform administrator can create, configure and delete tenants through `/api/v1/tenants`.
+They hold no tenant of their own, and every route that reaches a tenant's hosts or jobs refuses them.
+
+They are an account like anybody else — created with `farrier-server accounts add --platform`, signing
+in with an address and a password — and the only thing that distinguishes them is that their account
+row carries no tenant. That is a database fact rather than a flag: the row-level security policy on
+accounts admits a tenant's rows through `farrier.tenant` and the tenantless ones through
+`farrier.platform`, and `NULL = 'anything'` is `NULL` rather than true, so neither side can reach the
+other. A row that claimed to be a platform administrator *and* named a fleet is not a state that exists
+to be refused; it is a state the schema cannot represent.
 
 It also cannot mint an operator credential. Issuing a fleet's credential belongs to the identity
 provider — `auth.Provider` is the seam for it — and a tenant API that handed out tokens would make the
@@ -448,7 +481,8 @@ is no host list on it, no job list and no way to reach one, because there is no 
 would answer — which is the same statement as the paragraph above rather than a second one. `whoami` is
 the single route that answers both credentials, and it hands a platform credential no tenant at all;
 it exists so the interface can say *what this credential is for* instead of rendering an empty console
-to somebody who pasted the wrong one of an installation's two tokens.
+to somebody whose account administers the installation rather than a fleet in it. The one other route
+both reach is `/api/v1/account`: everybody has an account, and everybody has a password to change.
 
 The honest limit: a platform administrator has the database and the process. Nothing here prevents
 somebody with shell access on the control plane from reading a tenant's rows, and this document does

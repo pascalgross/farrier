@@ -39,11 +39,24 @@ docker compose logs -f farrier-server
 
 The first start builds the image, initialises the cluster — the ordinary role, the database it owns,
 the replication role and its `pg_hba.conf` line — then creates the certificate authority, migrates the
-schema, and serves on `https://localhost:8443`. Nothing below is needed to get that far.
+schema, creates the first account, and serves on `https://localhost:8443`. Nothing below is needed to
+get that far.
+
+Open it and sign in. If you left `FARRIER_BOOTSTRAP_PASSWORD` empty, the password was generated and
+printed once — it is in the log you are already tailing:
+
+```
+This control plane had no accounts, so one has been created.
+
+  address:  admin@localhost
+  password: 5QPdLAaQZTTNKHXQJdWLicsL
+```
+
+A script uses an API token instead, issued from the account page in the interface:
 
 ```bash
-# The token is in your .env; the certificate is Farrier's own until you supply one, hence --insecure.
-curl -sk https://localhost:8443/api/v1/hosts -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN"
+# The certificate is Farrier's own until you supply one, hence --insecure.
+curl -sk https://localhost:8443/api/v1/hosts -H "Authorization: Bearer $FARRIER_TOKEN"
 ```
 
 Requires Docker Compose v2.24 or newer, for the `!override` in the Traefik overlay.
