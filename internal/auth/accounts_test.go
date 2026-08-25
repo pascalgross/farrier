@@ -354,3 +354,52 @@ func weakHash(t *testing.T, password string) string {
 	key := argon2.IDKey([]byte(password), salt, passes, memory, lanes, argonKeyLength)
 	return encodePHC(memory, passes, lanes, salt, key)
 }
+
+// storeThatCannotRecordASession is the store a control plane has during a database outage.
+//
+// It embeds a working one and breaks the single write a sign-in makes after the password has already
+// been verified, which is the case the two failure paths have to be told apart in: the credential was
+// correct and the sign-in still cannot complete.
+type storeThatCannotRecordASession struct {
+	// Store is the working store everything else goes through.
+	store.Store
+}
+
+// In returns a handle whose session write fails.
+func (s storeThatCannotRecordASession) In(tenant store.TenantID) store.Scoped {
+	return scopedThatCannotRecordASession{Scoped: s.Store.In(tenant)}
+}
+
+// scopedThatCannotRecordASession is the scoped half of the same fault.
+type scopedThatCannotRecordASession struct {
+	// Scoped is the working handle every other method goes through.
+	store.Scoped
+}
+
+// CreateSession fails the way an unreachable database does.
+func (s scopedThatCannotRecordASession) CreateSession(_ context.Context, _ store.Session) error {
+	return errors.New("store: the database is not reachable")
+}
+
+// TestAStoreFailureIsNotReportedAsAWrongPassword separates the two ways a sign-in can fail.
+//
+// Every wrong credential is one refusal, deliberately. A store that cannot be reached is not a wrong
+// credential, and reporting it as one would tell an operator their password was wrong during an
+// outage — so they would spend the outage typing it again. The caller distinguishes them by
+// ErrUnauthenticated, which is why this asserts on the error's identity rather than on its text.
+func TestAStoreFailureIsNotReportedAsAWrongPassword(t *testing.T) {
+	f := newAccountFixture(t)
+	broken := NewAccounts(storeThatCannotRecordASession{Store: f.backing}, time.Hour)
+
+	w := httptest.NewRecorder()
+	_, err := broken.SignIn(context.Background(), w, f.email, f.password)
+	if err == nil {
+		t.Fatal("a sign-in succeeded against a store that cannot record a session")
+	}
+	if errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("a store failure was reported as a refused credential: %v", err)
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Error("a sign-in that could not be recorded still set a cookie")
+	}
+}

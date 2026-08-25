@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -74,13 +75,22 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 	noStore(w)
 
 	identity, err := s.accounts.SignIn(r.Context(), w, req.Email, req.Password)
-	if err != nil {
-		// One refusal for every cause. The log line carries the address, because an operator locked out
-		// of their own control plane is the commonest reason anybody reads it — and never the password.
+	switch {
+	case errors.Is(err, auth.ErrUnauthenticated):
+		// One refusal for every wrong credential. The log line carries the address, because an operator
+		// locked out of their own control plane is the commonest reason anybody reads it — and never
+		// the password.
 		slog.Info("sign-in refused", "email", auth.NormaliseEmail(req.Email), "source", requestSource(r))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
 		writeError(w, http.StatusUnauthorized, "unauthenticated",
 			"that address and password do not match an account on this control plane")
+		return
+	case err != nil:
+		// Not a refusal: the credential may well have been right and the database was not reachable.
+		// Answering 401 here would tell somebody their password was wrong during an outage, and they
+		// would spend the outage typing it again.
+		slog.Error("could not complete a sign-in", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not complete the sign-in")
 		return
 	}
 

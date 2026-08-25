@@ -110,7 +110,12 @@ func openAccountStore(ctx context.Context, dsn, slug string) (store.Store, store
 	tenants, err := backing.ListTenants(ctx)
 	if err != nil {
 		_ = backing.Close()
-		return nil, store.Tenant{}, fmt.Errorf("reading the tenant list: %w", err)
+		// The commonest way to be here is a database that has never had the control plane pointed at
+		// it, so the schema does not exist yet. Naming that is worth a sentence: the raw error says
+		// "relation tenants does not exist", which is true and is not an instruction.
+		return nil, store.Tenant{}, fmt.Errorf("reading the tenant list: %w\n"+
+			"If this database is new, run `farrier-server serve` once first: it creates the schema and "+
+			"the fleet before there is anything to add an account to", err)
 	}
 	for _, t := range tenants {
 		if t.Slug == slug {
