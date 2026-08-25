@@ -139,17 +139,31 @@ else
 	signed_items=''
 fi
 
-if [ -n "${FARRIER_APT_URL:-}" ]; then
+# Instructions need both halves: a URL to fetch from, and a keyring in the tree to install. An unsigned
+# tree has no keyring, so printing them anyway would send the reader to a 404 on the very first
+# command — the failure this page exists to prevent, reproduced inside it.
+if [ -n "${FARRIER_APT_URL:-}" ] && [ -n "${GPG_KEY_ID:-}" ]; then
 	install_block="<pre><code>curl -fsSL $apt_url_html/farrier-archive-keyring.gpg \\
   | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg &gt; /dev/null
 curl -fsSL $apt_url_html/farrier.sources \\
   | sudo tee /etc/apt/sources.list.d/farrier.sources &gt; /dev/null
 sudo apt-get update &amp;&amp; sudo apt-get install farrier-agent</code></pre>"
-	sources_item='<li><a href="farrier.sources">farrier.sources</a> — the deb822 source, with
-    <code>Signed-By:</code> naming that keyring and nothing wider</li>'
+elif [ -n "${FARRIER_APT_URL:-}" ]; then
+	install_block='<p>This tree is unsigned — built without a signing key, which is what the mechanism
+check on every pull request does. There is no keyring here to install and <code>apt</code> would
+refuse the repository, so the instructions a signed tree carries are omitted rather than printed for
+somebody to follow.</p>'
 else
 	install_block='<p>Built without <code>FARRIER_APT_URL</code>, so this tree carries no
 <code>farrier.sources</code> and no instructions naming a host it may not be served from.</p>'
+fi
+
+# farrier.sources is written whenever the URL is known, signed or not, so it is listed on that
+# condition alone rather than alongside the instructions above.
+if [ -n "${FARRIER_APT_URL:-}" ]; then
+	sources_item='<li><a href="farrier.sources">farrier.sources</a> — the deb822 source, with
+    <code>Signed-By:</code> naming that keyring and nothing wider</li>'
+else
 	sources_item=''
 fi
 

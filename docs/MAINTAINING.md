@@ -227,9 +227,11 @@ cannot be read back to check.
 2. **Required reviewers**: add yourself. A release then waits for a human before the job that can use
    the key runs. Leave *Prevent self-review* off — with one maintainer it would make every release
    unapprovable.
-3. **Deployment branches and tags**: *Selected branches and tags*, one rule, ref type **Tag**, pattern
-   `v*`. The release runs from a tag, so the default *All branches* would also admit any branch, and
-   `github-pages`' own default — the default branch only — would admit nothing at all.
+3. **Deployment branches and tags**: *Selected branches and tags*, with **two** rules — ref type
+   **Tag**, pattern `v*`, which is what a release runs from, and ref type **Branch**, pattern `main`,
+   which is what the `workflow_dispatch` rehearsal in [§6](#6-cutting-a-release) runs from. Leaving the
+   default *All branches* would admit every branch instead of those two; taking only the tag rule would
+   reject the rehearsal before it started, with no runner and no log to say why.
 4. Add the environment secret `APT_SIGNING_KEY` with the armoured private key:
 
 ```bash
@@ -269,8 +271,16 @@ The tag starts `release.yml`, which:
 4. publishes the repository as a release asset and creates the GitHub release;
 5. triggers `pages.yml`, which republishes the site with the new repository under `/apt`.
 
-`workflow_dispatch` accepts a version for a rehearsal. It must look like a version; the input is passed
-through the environment rather than interpolated into a shell, and is checked against a pattern.
+`workflow_dispatch` accepts a version for a rehearsal, run from `main`. It must look like a version;
+the input is passed through the environment rather than interpolated into a shell, and is checked
+against a pattern.
+
+A rehearsal covers steps 1 to 3 and stops: it builds, waits for the same approval, imports the key and
+signs a repository, and then does **not** create a GitHub release, because the release step runs on a
+tag only. That line is where a rehearsal and a release differ, and it is drawn deliberately — signing
+is the part worth rehearsing, publishing is the part that must never happen by accident. So a
+rehearsal proves the key still imports and the repository still signs, and it leaves nothing behind:
+no release, no asset, and nothing for `pages.yml` to pick up.
 
 ## 7. What is deliberately not automated
 

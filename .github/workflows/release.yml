@@ -208,6 +208,13 @@ jobs:
         run: tar -czf apt-repository.tar.gz -C public .
 
       - name: GitHub release
+        # A tag only. This is what separates a rehearsal from a release: `workflow_dispatch` runs from a
+        # branch, and everything above it — the guarantee suite, the reproducible build, the key import,
+        # the signing — is exactly what a rehearsal is for, while publishing is the one step that must
+        # not happen by accident. The action would refuse a branch ref anyway ("GitHub Releases requires
+        # a tag"), so without this the rehearsal ends in a red job that reads like a broken workflow
+        # rather than a rehearsal that finished.
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
