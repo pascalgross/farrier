@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -39,32 +40,59 @@ const SessionCookieName = "farrier_session"
 // distributed, stored and compared, and would add nothing a header name does not already say.
 const SessionHeader = "X-Farrier-Session"
 
-// DefaultSessionTTL is how long a sign-in lasts.
+// The three numbers that decide how long a sign-in lasts.
 //
-// A working day rather than a fortnight. The window is what a stolen laptop or a copied cookie buys,
-// and there is no revocation channel to shorten it after the fact beyond deleting the account — so the
-// number is the answer. Twelve hours means signing in once in the morning, which is friction an
-// operator notices on the first day and never again.
-const DefaultSessionTTL = 12 * time.Hour
+// One number cannot express what is wanted here, and trying to make it was the previous shape's mistake:
+// a fixed twelve hours signs an operator out in the middle of an afternoon they spent working, and
+// stretching it to a fortnight to avoid that hands a stolen cookie a fortnight. So there are two
+// windows, and the credential dies at whichever comes first.
+//
+// DefaultSessionTTL is the *idle* window: how long a session survives without being used. It restarts
+// on use, which is what makes an afternoon's work uninterrupted.
+//
+// DefaultSessionMaxAge is the absolute one, measured from the sign-in and never extended. It is what
+// stops "idle window that restarts" from meaning "forever": a cookie copied off a machine and used
+// once a day would otherwise never expire. A week means signing in on Monday, which is friction an
+// operator notices once.
+//
+// SessionRenewAfter is neither — it is how often the extension is worth a database write. Renewing on
+// every request would put an UPDATE on the path of every page load for a value nothing reads more
+// precisely than this; renewing at most every quarter of an hour costs one write per session per
+// quarter hour, and the only visible effect of the delay is that a session's recorded last use can be
+// fifteen minutes stale.
+const (
+	// DefaultSessionTTL is how long a session survives without being used.
+	DefaultSessionTTL = 12 * time.Hour
+
+	// DefaultSessionMaxAge is how long a session may live however much it is used.
+	DefaultSessionMaxAge = 7 * 24 * time.Hour
+
+	// SessionRenewAfter is how often extending a session is worth a write.
+	SessionRenewAfter = 15 * time.Minute
+)
 
 // Accounts authenticates operators against local accounts: an address, a password, and a session.
 //
 // It is the implementation docs/EXTENDING.md's `auth.Provider` section named first and the package
-// comment promised — "local accounts now, OIDC and SAML later" — and it is added beside StaticToken
-// rather than in place of it. The token stays because it is what a script uses and what a fresh control
-// plane hands whoever started it; requiring an account before the fleet list renders would put a
-// database write between `docker compose up` and anything working.
+// comment promised — "local accounts now, OIDC and SAML later" — and it is now the only way a person
+// signs in. The shared bearer token it was once added beside is gone: a credential held in a flag,
+// naming nobody in the audit trail and withdrawable only by restarting the control plane, is not
+// something an installation should have to be careful with. What a script needs instead is APITokens,
+// beside this file, and what it issues belongs to one of these accounts.
 //
 // It reaches the store directly, which is the one thing about this type worth defending. The Provider
 // seam is an interface so that an implementation can look wherever it needs to, and local accounts need
 // somewhere to keep accounts; the alternative is a second set of record types and an adapter that
 // exists only to avoid an import. Nothing on a managed host links this package.
 type Accounts struct {
-	// store holds the accounts and the sessions.
+	// store holds the accounts, the sessions and the tokens.
 	store store.Store
 
-	// ttl is how long a session issued here lasts.
+	// ttl is the idle window: how long a session survives without being used.
 	ttl time.Duration
+
+	// maxAge is the absolute window, measured from the sign-in and never extended.
+	maxAge time.Duration
 
 	// now is the clock, injectable so that the tests can age a session without sleeping.
 	now func() time.Time
@@ -72,13 +100,36 @@ type Accounts struct {
 
 // NewAccounts returns a provider authenticating against the accounts in a store.
 //
-// The lifetime is a parameter rather than the constant, so that an installation with a different answer
-// changes one call rather than a package constant — and so that a test can make a session expire.
-func NewAccounts(backing store.Store, ttl time.Duration) *Accounts {
+// Both windows are parameters rather than the constants, so that an installation with a different
+// answer changes one call rather than a package constant — and so that a test can age a session without
+// waiting for one. A max age below the idle window would make the idle window unreachable, which is a
+// configuration nobody means, so it is raised rather than honoured.
+func NewAccounts(backing store.Store, ttl, maxAge time.Duration) *Accounts {
 	if ttl <= 0 {
 		ttl = DefaultSessionTTL
 	}
-	return &Accounts{store: backing, ttl: ttl, now: time.Now}
+	if maxAge < ttl {
+		maxAge = max(DefaultSessionMaxAge, ttl)
+	}
+	return &Accounts{store: backing, ttl: ttl, maxAge: maxAge, now: time.Now}
+}
+
+// scopeFor returns the handle through which one account's own rows are reached.
+//
+// The two sides of the tenant boundary are one interface and this is the only place that chooses
+// between them. An account carries its side on the record — an empty tenant is a platform
+// administrator, and that is not a missing value but the whole of what makes them one — so everything
+// downstream is written against store.AccountScope and never learns which it holds.
+//
+// A function rather than a method, because both providers in this package need it and a second copy of
+// this choice is a second place to get it wrong: a platform account reached through In("") would be a
+// handle whose row-level security matches nothing, and the symptom would be an administrator whose
+// sessions silently do not exist.
+func scopeFor(backing store.Store, account store.Account) store.AccountScope {
+	if account.TenantID == "" {
+		return backing.Platform()
+	}
+	return backing.In(account.TenantID)
 }
 
 // Name identifies the implementation, for the audit log and the sign-in form.
@@ -95,9 +146,9 @@ func (a *Accounts) Name() string { return "local-account" }
 // account — for the reason ErrUnauthenticated exists: which half of a guess was right is not something
 // this endpoint is entitled to tell anybody.
 //
-// Expiry is checked against this process's clock rather than the database's, matching every other
-// validity window in Farrier. docs/SECURITY.md treats clock skew as a boundary, and a credential that
-// outlived its window because two machines disagreed is the least visible way for that to matter.
+// Both windows are checked against this process's clock rather than the database's, matching every
+// other validity window in Farrier. docs/SECURITY.md treats clock skew as a boundary, and a credential
+// that outlived its window because two machines disagreed is the least visible way for that to matter.
 func (a *Accounts) Authenticate(ctx context.Context, r *http.Request) (*Identity, error) {
 	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil || cookie.Value == "" {
@@ -109,20 +160,62 @@ func (a *Accounts) Authenticate(ctx context.Context, r *http.Request) (*Identity
 		return nil, ErrUnauthenticated
 	}
 
-	session, err := a.store.SessionByToken(ctx, HashSessionToken(cookie.Value))
-	if err != nil || !session.Valid(a.now()) {
+	// The tenant comes from the account the session names and from nowhere in the request, which is the
+	// same shape the agent side has: a certificate row carries its host's tenant, and nothing an agent
+	// sends names one. It is what makes "there is no field an operator could edit to reach another
+	// fleet" true of the cookie as well.
+	now := a.now()
+	hash := HashSessionToken(cookie.Value)
+	session, account, err := a.store.SessionByToken(ctx, hash)
+	if err != nil || !session.Valid(now) || !a.withinMaxAge(session, now) {
 		return nil, ErrUnauthenticated
 	}
 
-	// The tenant comes from the session row and from nowhere in the request, which is the same shape
-	// the agent side has: a certificate row carries its host's tenant, and nothing an agent sends names
-	// one. It is what makes "there is no field an operator could edit to reach another fleet" true of
-	// the cookie as well as of the token.
-	account, err := a.store.In(session.TenantID).GetAccount(ctx, session.AccountID)
-	if err != nil {
-		return nil, ErrUnauthenticated
-	}
+	a.renew(ctx, session, account, now)
 	return a.identityFor(account), nil
+}
+
+// withinMaxAge reports whether a session is still inside its absolute window.
+//
+// Separate from Session.Valid because the two windows belong to different layers. How long a session
+// may live without being used is written on the row, so the store can answer it; how long it may live
+// at all is this provider's policy, and a store that enforced it would be a store with an opinion about
+// authentication.
+func (a *Accounts) withinMaxAge(session store.Session, now time.Time) bool {
+	return now.Before(session.CreatedAt.Add(a.maxAge))
+}
+
+// renew extends a session that has been used, at most once every SessionRenewAfter.
+//
+// Best-effort by construction: the request has already authenticated, and a database that cannot take
+// the write is a reason to log rather than to refuse somebody holding a valid credential. The worst a
+// lost renewal costs is that the session expires at its original time.
+//
+// The cookie is not rewritten, because there is no ResponseWriter here and adding one to the Provider
+// seam for this would be the tail wagging the dog. It does not need to be: SignIn sets the cookie to
+// expire at the absolute window, and the row is what actually decides — a browser presenting a cookie
+// whose session has gone is refused, which is the same answer it would get from a cookie the browser
+// had already discarded.
+func (a *Accounts) renew(ctx context.Context, session store.Session, account store.Account, now time.Time) {
+	// A session that has never been used is measured from when it was made, not from the zero time.
+	// Otherwise every sign-in would pay for a second write on the first page load it serves, to move an
+	// expiry that is at most a moment old.
+	since := session.LastUsedAt
+	if since.IsZero() {
+		since = session.CreatedAt
+	}
+	if now.Sub(since) < SessionRenewAfter {
+		return
+	}
+	// Never past the absolute window. Without this the idle window would push the expiry beyond the
+	// bound the max-age check enforces, and the row would outlive the credential it stands for.
+	expires := now.Add(a.ttl)
+	if cap := session.CreatedAt.Add(a.maxAge); cap.Before(expires) {
+		expires = cap
+	}
+	if err := scopeFor(a.store, account).TouchSession(ctx, account.ID, session.TokenHash, expires, now); err != nil {
+		slog.Warn("could not extend a session", "error", err, "operator", account.Email)
+	}
 }
 
 // SignIn exchanges an address and a password for a session, and sets the cookie that carries it.
@@ -135,7 +228,11 @@ func (a *Accounts) Authenticate(ctx context.Context, r *http.Request) (*Identity
 // still pays for a password verification against a hash generated for the purpose. Without that, the
 // endpoint answers "no such account" in a millisecond and "wrong password" in a tenth of a second, and
 // the difference is a list of who has an account here.
-func (a *Accounts) SignIn(ctx context.Context, w http.ResponseWriter, email, password string) (*Identity, error) {
+//
+// The whole request is taken rather than two strings because the session row records what the browser
+// called itself and where it came from. Both are advisory and both are the difference between a session
+// list somebody can act on and six rows that all say "a session".
+func (a *Accounts) SignIn(ctx context.Context, w http.ResponseWriter, r *http.Request, email, password string) (*Identity, error) {
 	account, err := a.store.AccountByEmail(ctx, EmailKey(email))
 	if err != nil {
 		// Not found, and the store failing for any other reason, are the same answer to the caller. The
@@ -151,7 +248,7 @@ func (a *Accounts) SignIn(ctx context.Context, w http.ResponseWriter, email, pas
 	}
 
 	now := a.now()
-	scoped := a.store.In(account.TenantID)
+	scoped := scopeFor(a.store, account)
 
 	// The one moment the password is known and the hash can be rewritten. Doing it here is what makes
 	// raising the Argon2id parameters something an installation grows into rather than a migration.
@@ -160,7 +257,7 @@ func (a *Accounts) SignIn(ctx context.Context, w http.ResponseWriter, email, pas
 			if err := scoped.UpdateAccountPassword(ctx, account.ID, rehashed); err != nil {
 				// Not fatal to the sign-in: the credential the operator presented was correct, and a
 				// failure to improve how it is stored is not a reason to refuse them.
-				slog.Warn("could not re-hash a password at sign-in", "error", err, "tenant", account.TenantID)
+				slog.Warn("could not re-hash a password at sign-in", "error", err, "operator", account.Email)
 			}
 		}
 	}
@@ -169,22 +266,27 @@ func (a *Accounts) SignIn(ctx context.Context, w http.ResponseWriter, email, pas
 	if err != nil {
 		return nil, fmt.Errorf("auth: generating a session token: %w", err)
 	}
-	expires := now.Add(a.ttl)
 	if err := scoped.CreateSession(ctx, store.Session{
 		TokenHash: HashSessionToken(token),
 		AccountID: account.ID,
 		CreatedAt: now,
-		ExpiresAt: expires,
+		ExpiresAt: now.Add(a.ttl),
+		UserAgent: describeAgent(r),
+		Source:    RequestSource(r),
 	}); err != nil {
 		return nil, fmt.Errorf("auth: recording a session: %w", err)
 	}
 	if err := scoped.RecordAccountSignIn(ctx, account.ID, now); err != nil {
 		// The sign-in stands. This stamp exists so that a stale account is visible, and losing one is
 		// not worth refusing a correct credential over.
-		slog.Warn("could not stamp a sign-in", "error", err, "tenant", account.TenantID)
+		slog.Warn("could not stamp a sign-in", "error", err, "operator", account.Email)
 	}
 
-	http.SetCookie(w, a.cookie(token, expires))
+	// The cookie is dated to the absolute window rather than to the idle one, because the row decides
+	// and the cookie only has to survive long enough to present it. Dating it to the idle window would
+	// make a browser discard a session the server would still have honoured — a sign-out at twelve
+	// hours that no policy asked for.
+	http.SetCookie(w, a.cookie(token, now.Add(a.maxAge)))
 	return a.identityFor(account), nil
 }
 
@@ -198,17 +300,20 @@ func (a *Accounts) SignOut(ctx context.Context, w http.ResponseWriter, r *http.R
 
 	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil || cookie.Value == "" {
+		// A request with no cookie has nothing to sign out of, which is a success and not a failure —
+		// see the paragraph above on signing out twice.
+		//nolint:nilerr // "no cookie" is the idempotent case, not an error to report.
 		return nil
 	}
 	hash := HashSessionToken(cookie.Value)
-	session, err := a.store.SessionByToken(ctx, hash)
+	session, account, err := a.store.SessionByToken(ctx, hash)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("auth: reading the session to end it: %w", err)
 	}
-	return a.store.In(session.TenantID).DeleteSession(ctx, hash)
+	return scopeFor(a.store, account).DeleteSession(ctx, account.ID, session.TokenHash)
 }
 
 // identityFor renders an account as the identity the rest of the control plane sees.
@@ -218,7 +323,12 @@ func (a *Accounts) SignOut(ctx context.Context, w http.ResponseWriter, r *http.R
 // `local-account:01JABC…` is a lookup they cannot perform once the account is gone. It is also why
 // there is no rename — an address is the principal recorded on every job, so changing one would leave
 // the history naming somebody who no longer exists.
-func (a *Accounts) identityFor(account store.Account) *Identity {
+//
+// An account with no tenant is a platform administrator, and both fields say so: the empty tenant is
+// what every route reaching tenant data refuses, and Platform is what the two platform-only routes
+// require. Deriving them from one field rather than storing a flag is deliberate — a row that claimed
+// to be a platform administrator *and* named a fleet would be a contradiction nothing refuses.
+func identityFor(provider string, account store.Account) *Identity {
 	display := account.DisplayName
 	if display == "" {
 		display = account.Email
@@ -226,9 +336,46 @@ func (a *Accounts) identityFor(account store.Account) *Identity {
 	return &Identity{
 		Subject:  NormaliseEmail(account.Email),
 		Display:  display,
-		Provider: a.Name(),
+		Provider: provider,
 		Tenant:   string(account.TenantID),
+		Platform: account.TenantID == "",
 	}
+}
+
+// identityFor renders one of this provider's accounts as an identity, held as a browser session.
+func (a *Accounts) identityFor(account store.Account) *Identity {
+	identity := identityFor(a.Name(), account)
+	identity.Credential = CredentialSession
+	return identity
+}
+
+// RequestSource identifies where a request came from, for a rate limiter and for a session list.
+//
+// The peer address is used and no forwarded header is consulted. A header is set by whoever is talking
+// to the server, so trusting one would let a single client present a different source on every request
+// and defeat the limiter entirely. Behind a proxy this reports the proxy, which is the honest behaviour
+// for a control plane that has not been told which proxies to trust — and it is why the session list
+// calls the value advisory rather than showing it as a fact.
+func RequestSource(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// describeAgent returns the browser string to record against a session, bounded.
+//
+// Bounded because it is a value a client chooses and this one is stored: a request may send however
+// many kilobytes it likes, and a row that grows with what an attacker sends is a row worth truncating
+// before it is written. A hundred characters is longer than every real user agent's useful prefix.
+func describeAgent(r *http.Request) string {
+	const maxUserAgent = 100
+	agent := strings.TrimSpace(r.UserAgent())
+	if len(agent) > maxUserAgent {
+		return agent[:maxUserAgent]
+	}
+	return agent
 }
 
 // cookie builds the session cookie, set and cleared through the same function.

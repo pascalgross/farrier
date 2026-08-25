@@ -49,10 +49,10 @@ type harness struct {
 
 	// secondToken authenticates a *different* operator in the same tenant.
 	//
-	// A tenant using second-person approval needs two operators, and two operators is something the
-	// shipped auth.StaticToken cannot express: it holds one token and one subject. This stands in for
-	// the multi-operator provider auth.Provider exists as a seam for, so that the approval path can be
-	// exercised at all.
+	// A tenant using second-person approval needs two operators, and reaching that path through the
+	// shipped providers would mean two accounts, two passwords and two sign-ins per test. This stands
+	// in for the multi-operator provider auth.Provider exists as a seam for, so that the approval path
+	// can be exercised without the credential machinery in the way.
 	secondToken string
 
 	// tenant is the fleet both operators act in.
@@ -147,7 +147,12 @@ func newHarness(t *testing.T) *harness {
 	}); err != nil {
 		t.Fatalf("creating the harness account: %v", err)
 	}
-	accounts := auth.NewAccounts(memory, time.Hour)
+	accounts := auth.NewAccounts(memory, time.Hour, 24*time.Hour)
+
+	// The token provider is in the chain because the account routes mint tokens and something has to
+	// accept them afterwards. It is the shipped one rather than a fake: what the round trip is for is
+	// precisely that a token minted through the API authenticates through the provider.
+	apiTokens := auth.NewAPITokens(memory)
 
 	online, err := onlinekey.Ensure(filepath.Join(dir, "ca"))
 	if err != nil {
@@ -163,7 +168,7 @@ func newHarness(t *testing.T) *harness {
 		OnlineKey:        online,
 		TemplateKey:      templateKey,
 		Store:            memory,
-		Auth:             auth.Chain(provider, accounts),
+		Auth:             auth.Chain(provider, accounts, apiTokens),
 		Accounts:         accounts,
 		HeartbeatSeconds: 60,
 		TokenTTL:         time.Hour,
@@ -230,11 +235,12 @@ func makeTenant(t *testing.T, memory *store.Memory, slug string, mode store.Appr
 // twoOperators authenticates a handful of bearer tokens as distinct identities.
 //
 // It exists because a tenant using second-person approval needs two operators, a cross-tenant assertion
-// needs an operator in another fleet, and a platform assertion needs a credential with no fleet at all
-// — and auth.StaticToken holds one token, one subject and one tenant. It is a stand-in for the OIDC or
-// local-accounts provider auth.Provider is a seam for, and it deliberately does nothing else: this is
-// not a boundary the guarantee rests on, and a more elaborate fake would only invite somebody to
-// believe it was testing the authentication rather than what happens after it.
+// needs an operator in another fleet, and a platform assertion needs a credential with no fleet at all.
+// The shipped providers can express all three — they are accounts — but each would cost a password hash
+// and a sign-in per test, and Argon2id is deliberately expensive. It is a stand-in for the provider
+// auth.Provider is a seam for, and it deliberately does nothing else: this is not a boundary the
+// guarantee rests on, and a more elaborate fake would only invite somebody to believe it was testing
+// the authentication rather than what happens after it.
 type twoOperators struct {
 	// tokens maps a bearer token to the identity it authenticates.
 	tokens map[string]auth.Identity

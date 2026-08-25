@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/protocol"
@@ -27,7 +28,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// limiting. A token is 256 bits of uniform randomness, so this defends against the load of guessing
 	// rather than against its success — and against a misconfigured provisioning loop, which is the
 	// case that actually happens.
-	if !s.enrolLimiter.allow(requestSource(r), time.Now()) {
+	if !s.enrolLimiter.allow(auth.RequestSource(r), time.Now()) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(s.enrolLimiter.retryAfter().Seconds())))
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many enrolment attempts")
 		return

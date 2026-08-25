@@ -155,6 +155,10 @@ func VerifyPassword(encoded, password string) bool {
 		// to hash a megabyte by putting one in a sign-in form.
 		return false
 	}
+	// The conversion is bounded by parsePasswordHash, which refuses a key longer than
+	// maxArgonKeyLength — 64 bytes. gosec cannot see that across the call, and a length check here
+	// would be a second copy of a rule that is already enforced where the value comes from.
+	//nolint:gosec // len(want) <= maxArgonKeyLength (64), enforced by parsePasswordHash.
 	got := argon2.IDKey([]byte(password), salt, time32, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
@@ -208,6 +212,10 @@ func parsePasswordHash(encoded string) (memory, time32 uint32, threads uint8, sa
 	if err != nil {
 		return 0, 0, 0, nil, nil, err
 	}
+	// parseParam has already refused anything above maxArgonThreads, which is 16, so this narrowing
+	// cannot lose a bit. It is a narrowing at all only because argon2.IDKey takes the lane count as a
+	// uint8 while the other two costs are uint32.
+	//nolint:gosec // lanes <= maxArgonThreads (16), enforced by parseParam on the line above.
 	threads = uint8(lanes)
 
 	salt, err = base64.RawStdEncoding.DecodeString(parts[4])

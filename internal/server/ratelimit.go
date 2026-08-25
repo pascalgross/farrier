@@ -1,8 +1,6 @@
 package server
 
 import (
-	"net"
-	"net/http"
 	"sync"
 	"time"
 )
@@ -106,18 +104,4 @@ func (l *rateLimiter) sweep(now time.Time) {
 			delete(l.buckets, source)
 		}
 	}
-}
-
-// requestSource identifies the origin of a request for rate-limiting purposes.
-//
-// The peer address is used and no forwarded header is consulted. A header is set by whoever is talking
-// to the server, so trusting one would let a single client present a different source on every request
-// and defeat the limiter entirely. Behind a proxy this limits per proxy, which is the honest behaviour
-// for a control plane that has not been told which proxies to trust.
-func requestSource(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

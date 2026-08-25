@@ -45,7 +45,7 @@ const (
 //
 // The response carries the identity rather than the token, because the token is in an HttpOnly cookie
 // the browser will send back on its own. There is nothing here for a script to store, which is the
-// point: a script uses the bearer token instead.
+// point: a script mints an API token from the account page and uses that instead.
 func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 	if s.accounts == nil {
 		// No accounts provider configured. It is 404 rather than 501 because the route genuinely does
@@ -53,7 +53,7 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "this control plane has no account sign-in")
 		return
 	}
-	if !s.signInLimiter.allow(requestSource(r), time.Now()) {
+	if !s.signInLimiter.allow(auth.RequestSource(r), time.Now()) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(s.signInLimiter.retryAfter().Seconds())))
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
 		return
@@ -74,13 +74,13 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 	// A credential in the response, and a redirect chain in front of a browser: no cache may keep it.
 	noStore(w)
 
-	identity, err := s.accounts.SignIn(r.Context(), w, req.Email, req.Password)
+	identity, err := s.accounts.SignIn(r.Context(), w, r, req.Email, req.Password)
 	switch {
 	case errors.Is(err, auth.ErrUnauthenticated):
 		// One refusal for every wrong credential. The log line carries the address, because an operator
 		// locked out of their own control plane is the commonest reason anybody reads it — and never
 		// the password.
-		slog.Info("sign-in refused", "email", auth.NormaliseEmail(req.Email), "source", requestSource(r))
+		slog.Info("sign-in refused", "email", auth.NormaliseEmail(req.Email), "source", auth.RequestSource(r))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
 		writeError(w, http.StatusUnauthorized, "unauthenticated",
 			"that address and password do not match an account on this control plane")

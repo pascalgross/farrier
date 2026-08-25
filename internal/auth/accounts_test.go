@@ -57,7 +57,7 @@ func newAccountFixture(t *testing.T) *accountFixture {
 	}
 
 	return &accountFixture{
-		provider: NewAccounts(backing, time.Hour),
+		provider: NewAccounts(backing, time.Hour, 24*time.Hour),
 		backing:  backing,
 		tenant:   store.DefaultTenant,
 		email:    email,
@@ -70,7 +70,7 @@ func (f *accountFixture) signIn(t *testing.T, email, password string) (*Identity
 	t.Helper()
 
 	w := httptest.NewRecorder()
-	identity, err := f.provider.SignIn(context.Background(), w, email, password)
+	identity, err := f.provider.SignIn(context.Background(), w, signInRequest(), email, password)
 	if err != nil {
 		return nil, nil
 	}
@@ -81,6 +81,17 @@ func (f *accountFixture) signIn(t *testing.T, email, password string) (*Identity
 	}
 	t.Fatal("a successful sign-in set no session cookie")
 	return nil, nil
+}
+
+// signInRequest builds the request a sign-in arrives on.
+//
+// It carries a user agent and a peer address because the session row records both, and a fixture that
+// left them empty would let a change that stopped recording them pass unnoticed.
+func signInRequest() *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/session", nil)
+	r.RemoteAddr = "203.0.113.7:54321"
+	r.Header.Set("User-Agent", "Mozilla/5.0 (fixture)")
+	return r
 }
 
 // authenticated builds a request carrying a session cookie and the header that goes with it.
@@ -199,7 +210,7 @@ func TestEveryWayToPresentTheWrongCredentialIsTheSameRefusal(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			_, err := f.provider.SignIn(context.Background(), w, c.email, c.password)
+			_, err := f.provider.SignIn(context.Background(), w, signInRequest(), c.email, c.password)
 			if !errors.Is(err, ErrUnauthenticated) {
 				t.Fatalf("SignIn returned %v, want ErrUnauthenticated", err)
 			}
@@ -261,7 +272,7 @@ func TestSigningOutEndsTheSessionRatherThanOnlyTheCookie(t *testing.T) {
 		t.Fatalf("signing out: %v", err)
 	}
 
-	if _, err := f.backing.SessionByToken(context.Background(), HashSessionToken(cookie.Value)); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := f.backing.SessionByToken(context.Background(), HashSessionToken(cookie.Value)); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the session row survived a sign-out: %v", err)
 	}
 	if _, err := f.provider.Authenticate(context.Background(), authenticated(cookie)); !errors.Is(err, ErrUnauthenticated) {
@@ -389,10 +400,10 @@ func (s scopedThatCannotRecordASession) CreateSession(_ context.Context, _ store
 // ErrUnauthenticated, which is why this asserts on the error's identity rather than on its text.
 func TestAStoreFailureIsNotReportedAsAWrongPassword(t *testing.T) {
 	f := newAccountFixture(t)
-	broken := NewAccounts(storeThatCannotRecordASession{Store: f.backing}, time.Hour)
+	broken := NewAccounts(storeThatCannotRecordASession{Store: f.backing}, time.Hour, 24*time.Hour)
 
 	w := httptest.NewRecorder()
-	_, err := broken.SignIn(context.Background(), w, f.email, f.password)
+	_, err := broken.SignIn(context.Background(), w, signInRequest(), f.email, f.password)
 	if err == nil {
 		t.Fatal("a sign-in succeeded against a store that cannot record a session")
 	}
@@ -401,5 +412,108 @@ func TestAStoreFailureIsNotReportedAsAWrongPassword(t *testing.T) {
 	}
 	if len(w.Result().Cookies()) != 0 {
 		t.Error("a sign-in that could not be recorded still set a cookie")
+	}
+}
+
+// TestASessionInUseIsExtendedAndOneLeftAloneIsNot is the whole of what sliding renewal has to do.
+//
+// Two properties, and they are the two halves of the trade the constants describe. A session that keeps
+// being used moves its expiry forward, so an operator working through the afternoon is not signed out
+// in the middle of it; a session that is not used keeps the expiry it had, so a cookie copied off a
+// machine and left alone runs out on schedule.
+//
+// The renewal is not free and the third assertion is about the price: it happens at most once every
+// SessionRenewAfter, so a page that makes six requests in a second costs one write rather than six.
+func TestASessionInUseIsExtendedAndOneLeftAloneIsNot(t *testing.T) {
+	f := newAccountFixture(t)
+
+	start := time.Now().UTC()
+	f.provider.now = func() time.Time { return start }
+	_, cookie := f.signIn(t, f.email, f.password)
+
+	hash := HashSessionToken(cookie.Value)
+	first, _, err := f.backing.SessionByToken(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("reading the session back: %v", err)
+	}
+
+	// A request a minute later: inside SessionRenewAfter, so nothing is written.
+	f.provider.now = func() time.Time { return start.Add(time.Minute) }
+	if _, err := f.provider.Authenticate(context.Background(), authenticated(cookie)); err != nil {
+		t.Fatalf("the session stopped authenticating a minute after it was made: %v", err)
+	}
+	unchanged, _, err := f.backing.SessionByToken(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("reading the session back: %v", err)
+	}
+	if !unchanged.ExpiresAt.Equal(first.ExpiresAt) {
+		t.Errorf("a request %s after the sign-in rewrote the expiry; SessionRenewAfter is %s",
+			time.Minute, SessionRenewAfter)
+	}
+
+	// A request half an hour later: past SessionRenewAfter, so the idle window restarts from now.
+	later := start.Add(30 * time.Minute)
+	f.provider.now = func() time.Time { return later }
+	if _, err := f.provider.Authenticate(context.Background(), authenticated(cookie)); err != nil {
+		t.Fatalf("the session stopped authenticating half an hour in: %v", err)
+	}
+	extended, _, err := f.backing.SessionByToken(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("reading the session back: %v", err)
+	}
+	if !extended.ExpiresAt.After(first.ExpiresAt) {
+		t.Errorf("a session in use was not extended: expiry stayed at %s", first.ExpiresAt)
+	}
+	if !extended.LastUsedAt.Equal(later) {
+		t.Errorf("last use = %s, want %s", extended.LastUsedAt, later)
+	}
+}
+
+// TestASessionPastItsAbsoluteWindowAuthenticatesNobody is what stops "extended on use" meaning forever.
+//
+// Without the absolute window, a cookie copied off a machine and used once an hour would never expire:
+// every use would push the idle window out again. So the age of the session is checked too, and this
+// asserts that the check is on the sign-in rather than on the last use — the session here is used
+// continuously right up to the boundary and is refused the moment it is past it.
+func TestASessionPastItsAbsoluteWindowAuthenticatesNobody(t *testing.T) {
+	f := newAccountFixture(t)
+
+	start := time.Now().UTC()
+	f.provider.now = func() time.Time { return start }
+	_, cookie := f.signIn(t, f.email, f.password)
+
+	// The fixture's windows: an hour idle, a day absolute. Used every half hour, so the idle window
+	// never lapses, right up to the day.
+	for at := time.Duration(0); at < 24*time.Hour; at += 30 * time.Minute {
+		f.provider.now = func() time.Time { return start.Add(at) }
+		if _, err := f.provider.Authenticate(context.Background(), authenticated(cookie)); err != nil {
+			t.Fatalf("the session stopped authenticating %s in, inside its absolute window: %v", at, err)
+		}
+	}
+
+	f.provider.now = func() time.Time { return start.Add(24*time.Hour + time.Second) }
+	if _, err := f.provider.Authenticate(context.Background(), authenticated(cookie)); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("a session a day and a second old still authenticated: %v", err)
+	}
+}
+
+// TestASignInRecordsWhereItCameFrom covers the half of the session list that makes it usable.
+//
+// A list of six sessions that are all just "a session" is a list nobody signs anybody out from. Both
+// values are advisory — a user agent is a string the client chooses and behind a proxy the address is
+// the proxy's — and the point is that they are recorded at all.
+func TestASignInRecordsWhereItCameFrom(t *testing.T) {
+	f := newAccountFixture(t)
+	_, cookie := f.signIn(t, f.email, f.password)
+
+	held, _, err := f.backing.SessionByToken(context.Background(), HashSessionToken(cookie.Value))
+	if err != nil {
+		t.Fatalf("reading the session back: %v", err)
+	}
+	if held.UserAgent != "Mozilla/5.0 (fixture)" {
+		t.Errorf("user agent = %q, want the one the request sent", held.UserAgent)
+	}
+	if held.Source != "203.0.113.7" {
+		t.Errorf("source = %q, want the peer address without its port", held.Source)
 	}
 }

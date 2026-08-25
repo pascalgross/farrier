@@ -268,6 +268,19 @@ func (s *Server) routes() {
 	// otherwise the cookie and its row both stay behind.
 	s.route(http.MethodPost, "/api/v1/session", http.HandlerFunc(s.handleSignIn))
 	s.route(http.MethodDelete, "/api/v1/session", http.HandlerFunc(s.handleSignOut))
+
+	// An account's own credentials: its password, the browsers it is signed in on, and the tokens it
+	// has issued for scripts. Every one is behind requireAccount rather than requireOperator, and the
+	// difference is that requireAccount refuses an API token — a token that could mint another would
+	// outlive its own revocation. It is also the one group of routes both an operator and a platform
+	// administrator reach, because everybody has an account and everybody has a password to change.
+	s.route(http.MethodGet, "/api/v1/account", s.requireAccount(s.handleGetAccount))
+	s.route(http.MethodPost, "/api/v1/account/password", s.requireAccount(s.handleChangePassword))
+	s.route(http.MethodGet, "/api/v1/account/sessions", s.requireAccount(s.handleListSessions))
+	s.route(http.MethodPost, "/api/v1/account/sessions/revoke", s.requireAccount(s.handleRevokeSessions))
+	s.route(http.MethodGet, "/api/v1/account/tokens", s.requireAccount(s.handleListAPITokens))
+	s.route(http.MethodPost, "/api/v1/account/tokens", s.requireAccount(s.handleCreateAPIToken))
+	s.route(http.MethodDelete, "/api/v1/account/tokens/{id}", s.requireAccount(s.handleDeleteAPIToken))
 	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
 	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
 	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))

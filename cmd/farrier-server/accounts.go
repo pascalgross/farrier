@@ -53,10 +53,14 @@ func accountsCommand(argv []string) int {
 // accountsUsage prints the account subcommand list.
 func accountsUsage() {
 	fmt.Fprint(os.Stderr, `usage:
-  farrier-server accounts add    --tenant SLUG --email ADDRESS [--name NAME]
-  farrier-server accounts list   [--tenant SLUG]
-  farrier-server accounts passwd --tenant SLUG --email ADDRESS
-  farrier-server accounts remove --tenant SLUG --email ADDRESS
+  farrier-server accounts add    [--tenant SLUG | --platform] --email ADDRESS [--name NAME]
+  farrier-server accounts list   [--tenant SLUG | --platform]
+  farrier-server accounts passwd [--tenant SLUG | --platform] --email ADDRESS
+  farrier-server accounts remove [--tenant SLUG | --platform] --email ADDRESS
+
+--platform creates an administrator of the installation rather than of a fleet: they can create and
+configure fleets and cannot read any fleet's hosts or jobs. That separation is the point — running
+Farrier for other people should not require being able to see what they run.
 
 The password is asked for on the terminal, never taken as a flag: argv is world-readable in ps.
 Every command needs --database, or FARRIER_DATABASE_URL.
@@ -65,15 +69,18 @@ Every command needs --database, or FARRIER_DATABASE_URL.
 
 // accountFlags are the flags every account subcommand shares.
 //
-// A struct rather than four copies, because the database URL and the tenant are the two things it is
-// easy to get subtly wrong — pointing at the wrong database creates an account nobody can use, and
-// omitting the tenant would create one in a fleet the operator did not mean.
+// A struct rather than four copies, because the database URL and the side are the two things it is easy
+// to get subtly wrong — pointing at the wrong database creates an account nobody can use, and getting
+// the side wrong creates one that can see either nothing or the wrong fleet.
 type accountFlags struct {
 	// dsn is the PostgreSQL connection URL.
 	dsn *string
 
-	// tenant is the fleet slug the account belongs to.
+	// tenant is the fleet slug the account belongs to, ignored when platform is set.
 	tenant *string
+
+	// platform asks for an administrator of the installation rather than of a fleet.
+	platform *bool
 
 	// email is the address the account signs in with.
 	email *string
@@ -89,42 +96,69 @@ func bindAccountFlags(fs *flag.FlagSet) accountFlags {
 			"PostgreSQL connection URL"),
 		tenant: fs.String("tenant", envOr("FARRIER_TENANT", "default"),
 			"the fleet this account signs in to, by slug"),
+		platform: fs.Bool("platform", false,
+			"administer the installation rather than a fleet: create fleets, read none of them"),
 		email: fs.String("email", "", "the address this account signs in with"),
 		name:  fs.String("name", "", "display name, defaulting to the address"),
 	}
 }
 
-// openAccountStore connects to the database and finds the tenant a slug names.
+// accountSide is the side of the tenant boundary a subcommand is acting on.
 //
-// The tenant is resolved to an id here rather than passed through as a slug, because Store.In takes an
-// id and a slug that matched nothing would otherwise produce a handle that silently reaches an empty
-// fleet — an account created into nowhere, discovered at the first failed sign-in.
-func openAccountStore(ctx context.Context, dsn, slug string) (store.Store, store.Tenant, error) {
-	if dsn == "" {
-		return nil, store.Tenant{}, errors.New("a database URL is required: pass --database or set FARRIER_DATABASE_URL")
+// It exists so that every subcommand is written once. A platform administrator's rows and a fleet's are
+// reached through the same interface and differ only in which handle produced it, so the alternative
+// was a `if platform` in four places — and the fourth would eventually be the one that used the wrong
+// handle and created an account nobody could sign in as.
+type accountSide struct {
+	// scope reaches the accounts of this side and of no other.
+	scope store.AccountScope
+
+	// tenant is the fleet, empty for the installation itself.
+	tenant store.TenantID
+
+	// label is how to name this side in a sentence an operator reads.
+	label string
+}
+
+// openAccountStore connects to the database and resolves which side of the boundary to act on.
+//
+// A tenant slug is resolved to an id here rather than passed through, because Store.In takes an id and
+// a slug that matched nothing would otherwise produce a handle that silently reaches an empty fleet —
+// an account created into nowhere, discovered at the first failed sign-in.
+func openAccountStore(ctx context.Context, flags accountFlags) (store.Store, accountSide, error) {
+	if *flags.dsn == "" {
+		return nil, accountSide{}, errors.New("a database URL is required: pass --database or set FARRIER_DATABASE_URL")
 	}
-	backing, err := store.OpenPostgres(ctx, dsn)
+	backing, err := store.OpenPostgres(ctx, *flags.dsn)
 	if err != nil {
-		return nil, store.Tenant{}, err
+		return nil, accountSide{}, err
 	}
+	if *flags.platform {
+		return backing, accountSide{scope: backing.Platform(), label: "this installation"}, nil
+	}
+
 	tenants, err := backing.ListTenants(ctx)
 	if err != nil {
 		_ = backing.Close()
 		// The commonest way to be here is a database that has never had the control plane pointed at
 		// it, so the schema does not exist yet. Naming that is worth a sentence: the raw error says
 		// "relation tenants does not exist", which is true and is not an instruction.
-		return nil, store.Tenant{}, fmt.Errorf("reading the tenant list: %w\n"+
+		return nil, accountSide{}, fmt.Errorf("reading the tenant list: %w\n"+
 			"If this database is new, run `farrier-server serve` once first: it creates the schema and "+
 			"the fleet before there is anything to add an account to", err)
 	}
 	for _, t := range tenants {
-		if t.Slug == slug {
-			return backing, t, nil
+		if t.Slug == *flags.tenant {
+			return backing, accountSide{
+				scope:  backing.In(t.ID),
+				tenant: t.ID,
+				label:  fmt.Sprintf("the fleet %q", t.Slug),
+			}, nil
 		}
 	}
 	_ = backing.Close()
-	return nil, store.Tenant{}, fmt.Errorf("no fleet with the slug %q; run `farrier-server serve` once to "+
-		"create it, or pass --tenant", slug)
+	return nil, accountSide{}, fmt.Errorf("no fleet with the slug %q; run `farrier-server serve` once to "+
+		"create it, or pass --tenant", *flags.tenant)
 }
 
 // accountsAdd creates one operator account.
@@ -143,7 +177,7 @@ func accountsAdd(argv []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backing, tenant, err := openAccountStore(ctx, *flags.dsn, *flags.tenant)
+	backing, side, err := openAccountStore(ctx, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: %v\n", err)
 		return 1
@@ -161,7 +195,7 @@ func accountsAdd(argv []string) int {
 		return 1
 	}
 	address := auth.NormaliseEmail(*flags.email)
-	err = backing.In(tenant.ID).CreateAccount(ctx, store.Account{
+	err = side.scope.CreateAccount(ctx, store.Account{
 		ID:           id,
 		Email:        address,
 		EmailKey:     auth.EmailKey(address),
@@ -180,7 +214,7 @@ func accountsAdd(argv []string) int {
 		return 1
 	}
 
-	fmt.Printf("Created %s in the fleet %q.\n\n", address, tenant.Slug)
+	fmt.Printf("Created %s on %s.\n\n", address, side.label)
 	fmt.Println("They can sign in at this control plane's web interface now. Nothing was mailed and")
 	fmt.Println("nothing was printed: the password is the one you just typed, and only its hash is")
 	fmt.Println("stored, so it cannot be recovered from here or from a database dump.")
@@ -202,31 +236,35 @@ func accountsList(argv []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backing, tenant, err := openAccountStore(ctx, *flags.dsn, *flags.tenant)
+	backing, side, err := openAccountStore(ctx, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: %v\n", err)
 		return 1
 	}
 	defer func() { _ = backing.Close() }()
 
-	accounts, err := backing.In(tenant.ID).ListAccounts(ctx)
+	accounts, err := side.scope.ListAccounts(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: listing accounts: %v\n", err)
 		return 1
 	}
 	if len(accounts) == 0 {
-		fmt.Printf("The fleet %q has no accounts. Everyone signs in with its bearer token.\n", tenant.Slug)
+		fmt.Printf("There are no accounts on %s, so nobody can sign in to it.\n", side.label)
+		fmt.Println("Create one with `farrier-server accounts add`.")
 		return 0
 	}
 
+	// A tabwriter buffers, so a write here cannot fail in a way worth branching on — the error that
+	// matters is the flush's, and flushOrFail is what turns that into an exit code. Discarding these
+	// explicitly says so, rather than leaving errcheck to point out that nobody looked.
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ADDRESS\tNAME\tCREATED\tLAST SIGN-IN")
+	_, _ = fmt.Fprintln(w, "ADDRESS\tNAME\tCREATED\tLAST SIGN-IN")
 	for _, a := range accounts {
 		last := "never"
 		if !a.LastSignedInAt.IsZero() {
 			last = a.LastSignedInAt.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 			a.Email, a.DisplayName, a.CreatedAt.UTC().Format("2006-01-02"), last)
 	}
 	return flushOrFail(w)
@@ -253,14 +291,14 @@ func accountsPasswd(argv []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backing, tenant, err := openAccountStore(ctx, *flags.dsn, *flags.tenant)
+	backing, side, err := openAccountStore(ctx, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: %v\n", err)
 		return 1
 	}
 	defer func() { _ = backing.Close() }()
 
-	account, code := findAccount(ctx, backing, tenant, *flags.email)
+	account, code := findAccount(ctx, backing, side, *flags.email)
 	if code != 0 {
 		return code
 	}
@@ -268,7 +306,7 @@ func accountsPasswd(argv []string) int {
 	if code != 0 {
 		return code
 	}
-	if err := backing.In(tenant.ID).UpdateAccountPassword(ctx, account.ID, hash); err != nil {
+	if err := side.scope.UpdateAccountPassword(ctx, account.ID, hash); err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: changing the password: %v\n", err)
 		return 1
 	}
@@ -297,20 +335,20 @@ func accountsRemove(argv []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backing, tenant, err := openAccountStore(ctx, *flags.dsn, *flags.tenant)
+	backing, side, err := openAccountStore(ctx, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: %v\n", err)
 		return 1
 	}
 	defer func() { _ = backing.Close() }()
 
-	account, code := findAccount(ctx, backing, tenant, *flags.email)
+	account, code := findAccount(ctx, backing, side, *flags.email)
 	if code != 0 {
 		return code
 	}
 	if !*assumeYes {
 		ok, confirmErr := prompt.Confirm(fmt.Sprintf(
-			"Remove %s from the fleet %q, and end their sessions? [y/N] ", account.Email, tenant.Slug))
+			"Remove %s from %s, and end their sessions and tokens? [y/N] ", account.Email, side.label))
 		if confirmErr != nil {
 			fmt.Fprintf(os.Stderr, "farrier-server: %v\n", confirmErr)
 			return 1
@@ -320,23 +358,23 @@ func accountsRemove(argv []string) int {
 			return 3
 		}
 	}
-	if err := backing.In(tenant.ID).DeleteAccount(ctx, account.ID); err != nil {
+	if err := side.scope.DeleteAccount(ctx, account.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "farrier-server: removing the account: %v\n", err)
 		return 1
 	}
 
-	fmt.Printf("Removed %s. Their sessions went with the account.\n\n", account.Email)
+	fmt.Printf("Removed %s. Their sessions and API tokens went with the account.\n\n", account.Email)
 	fmt.Println("The jobs they queued keep naming them, because an audit trail that forgot who did")
 	fmt.Println("something when they left would be an audit trail for exactly the wrong period.")
 	return 0
 }
 
-// findAccount resolves an address to one of a fleet's accounts, or reports why it could not.
+// findAccount resolves an address to one of this side's accounts, or reports why it could not.
 //
-// It goes through the unscoped resolver and then checks the tenant, rather than listing the fleet and
-// searching: that is the same path a sign-in takes, so a mismatch between the two — an address that
-// signs in but that this command cannot find — is impossible rather than merely unlikely.
-func findAccount(ctx context.Context, backing store.Store, tenant store.Tenant, email string) (store.Account, int) {
+// It goes through the unscoped resolver and then checks the side, rather than listing and searching:
+// that is the same path a sign-in takes, so a mismatch between the two — an address that signs in but
+// that this command cannot find — is impossible rather than merely unlikely.
+func findAccount(ctx context.Context, backing store.Store, side accountSide, email string) (store.Account, int) {
 	account, err := backing.AccountByEmail(ctx, auth.EmailKey(email))
 	if errors.Is(err, store.ErrNotFound) {
 		fmt.Fprintf(os.Stderr, "farrier-server: no account for %s\n", auth.NormaliseEmail(email))
@@ -346,11 +384,11 @@ func findAccount(ctx context.Context, backing store.Store, tenant store.Tenant, 
 		fmt.Fprintf(os.Stderr, "farrier-server: reading the account: %v\n", err)
 		return store.Account{}, 1
 	}
-	if account.TenantID != tenant.ID {
+	if account.TenantID != side.tenant {
 		// Named rather than silently operated on. The address resolves across the installation, so a
-		// typo in --tenant would otherwise change an account in a fleet the operator did not name.
-		fmt.Fprintf(os.Stderr, "farrier-server: %s belongs to a different fleet than %q\n",
-			account.Email, tenant.Slug)
+		// typo in --tenant, or a forgotten --platform, would otherwise change an account somewhere the
+		// operator did not name.
+		fmt.Fprintf(os.Stderr, "farrier-server: %s does not belong to %s\n", account.Email, side.label)
 		return store.Account{}, 1
 	}
 	return account, 0

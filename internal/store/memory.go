@@ -151,15 +151,22 @@ type Memory struct {
 	// states are the alert evaluator's memory by tenant, rule and host.
 	states map[stateKey]AlertState
 
-	// accounts are operator accounts by tenant and id, each carrying its own tenant as well.
-	accounts map[accountKey]Account
+	// accounts are accounts by id, each carrying the tenant it belongs to — or none, for a platform one.
+	//
+	// Keyed by the id alone, matching the primary key migration 0010 moved it to: an account id is 128
+	// bits generated here, so it is unique across the installation by construction and a session can
+	// point at one without carrying a tenant it has no business knowing.
+	accounts map[string]Account
 
 	// sessions are signed-in browsers by the SHA-256 of their token.
 	//
-	// Keyed by the hash alone and not by tenant, matching the schema's primary key and matching how the
-	// row is reached: resolving a token is how a request discovers which tenant it belongs to, so a
-	// tenant in the key would be a tenant the caller does not yet have.
+	// Keyed by the hash alone, matching the schema and matching how the row is reached: resolving a
+	// token is how a request discovers whose it is, so anything else in the key would be something the
+	// caller does not yet have.
 	sessions map[string]Session
+
+	// apiTokens are the credentials scripts present, by the SHA-256 of the token.
+	apiTokens map[string]APIToken
 }
 
 // NewMemory returns an in-memory store holding the default tenant and nothing else.
@@ -189,8 +196,9 @@ func NewMemory() *Memory {
 		templates: map[templateKey]TemplateVersion{},
 		rules:     map[ruleKey]AlertRule{},
 		states:    map[stateKey]AlertState{},
-		accounts:  map[accountKey]Account{},
+		accounts:  map[string]Account{},
 		sessions:  map[string]Session{},
+		apiTokens: map[string]APIToken{},
 	}
 }
 
@@ -407,18 +415,25 @@ func (m *Memory) DeleteTenant(_ context.Context, id TenantID) error {
 			delete(m.states, key)
 		}
 	}
-	// Accounts and the sessions they hold. The database performs this from one DELETE through two
-	// ON DELETE CASCADEs; here it is two sweeps, and the session one is keyed on the session's own
-	// tenant rather than on the account it names, so that a session whose account had somehow gone
-	// missing still leaves with its tenant.
-	for key := range m.accounts {
-		if key.tenant == id {
-			delete(m.accounts, key)
+	// Accounts, and the sessions and tokens they hold. The database performs this from one DELETE
+	// through a chain of ON DELETE CASCADEs; here it is three sweeps, and the credentials are swept on
+	// the accounts that were removed rather than on the tenant, because a credential row carries no
+	// tenant of its own since migration 0010.
+	gone := map[string]bool{}
+	for accountID, account := range m.accounts {
+		if account.TenantID == id {
+			gone[accountID] = true
+			delete(m.accounts, accountID)
 		}
 	}
-	for hash, session := range m.sessions {
-		if session.TenantID == id {
+	for hash, held := range m.sessions {
+		if gone[held.AccountID] {
 			delete(m.sessions, hash)
+		}
+	}
+	for hash, held := range m.apiTokens {
+		if gone[held.AccountID] {
+			delete(m.apiTokens, hash)
 		}
 	}
 	return nil

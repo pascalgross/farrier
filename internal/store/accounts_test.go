@@ -76,15 +76,18 @@ func TestASessionOutlivesNothingItShouldNot(t *testing.T) {
 			t.Fatalf("creating the live session: %v", err)
 		}
 
-		if _, err := s.SessionByToken(ctx, "expired"); !errors.Is(err, ErrNotFound) {
+		if _, _, err := s.SessionByToken(ctx, "expired"); !errors.Is(err, ErrNotFound) {
 			t.Errorf("the expired session survived the next sign-in: %v", err)
 		}
-		live, err := s.SessionByToken(ctx, "live")
+		live, owner, err := s.SessionByToken(ctx, "live")
 		if err != nil {
 			t.Fatalf("the live session is not resolvable: %v", err)
 		}
-		if live.TenantID != tenant.Tenant() {
-			t.Errorf("the session resolves to tenant %q, want %q", live.TenantID, tenant.Tenant())
+		if owner.TenantID != tenant.Tenant() {
+			t.Errorf("the session resolves to tenant %q, want %q", owner.TenantID, tenant.Tenant())
+		}
+		if owner.ID != "01JSESSIONS" {
+			t.Errorf("the session resolves to account %q", owner.ID)
 		}
 		if !live.Valid(now) || live.Valid(now.Add(2*time.Hour)) {
 			t.Error("the session's validity window is not what it was created with")
@@ -93,7 +96,7 @@ func TestASessionOutlivesNothingItShouldNot(t *testing.T) {
 		if err := tenant.DeleteAccount(ctx, "01JSESSIONS"); err != nil {
 			t.Fatalf("deleting the account: %v", err)
 		}
-		if _, err := s.SessionByToken(ctx, "live"); !errors.Is(err, ErrNotFound) {
+		if _, _, err := s.SessionByToken(ctx, "live"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("a session survived the account it belonged to: %v", err)
 		}
 	})
