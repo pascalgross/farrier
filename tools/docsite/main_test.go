@@ -120,6 +120,40 @@ func TestLinksToUnpublishedFilesPointAtTheForge(t *testing.T) {
 	}
 }
 
+// TestAnImageIsCopiedIntoTheSiteAndAMissingOneFailsTheBuild covers both halves of image rewriting.
+//
+// One test rather than two, because the halves are the same rule: an image is checked and carried the
+// way a link is checked and rewritten. The site is flat and self-contained, so the copy has to be
+// beside the page — and the mark the README shows lives in brand/, which is not a directory the site
+// otherwise knows about.
+func TestAnImageIsCopiedIntoTheSiteAndAMissingOneFailsTheBuild(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "README.md", "# Farrier\n\n![](brand/mark.svg)\n")
+	write(t, root, "brand/mark.svg", "<svg/>\n")
+
+	saved := pages
+	t.Cleanup(func() { pages = saved })
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+
+	out := filepath.Join(root, "public")
+	if err := build(root, out, "https://example.invalid/r", "v1"); err != nil {
+		t.Fatalf("building: %v", err)
+	}
+	if body := read(t, filepath.Join(out, "index.html")); !strings.Contains(body, `src="brand-mark.svg"`) {
+		t.Error("the image was not pointed at the copy beside the page")
+	}
+	// The whole path is in the name so that two marks called mark.svg cannot become one file.
+	if copied := read(t, filepath.Join(out, "brand-mark.svg")); copied != "<svg/>\n" {
+		t.Errorf("the copied image is %q", copied)
+	}
+
+	write(t, root, "README.md", "# Farrier\n\n![](brand/gone.svg)\n")
+	err := build(root, out, "https://example.invalid/r", "v1")
+	if err == nil || !strings.Contains(err.Error(), "brand/gone.svg") {
+		t.Fatalf("an image that is not in the repository built anyway: %v", err)
+	}
+}
+
 // TestAlertsBecomeCallouts pins the emphasis the documents place deliberately.
 //
 // GitHub renders `> [!IMPORTANT]` as a coloured callout and every other renderer shows the literal

@@ -103,16 +103,14 @@ var outputs = []struct {
 	// content produces the bytes it should hold.
 	content func() []byte
 }{
-	// The master. currentColor rather than a colour, so that anything embedding it inline — a button,
-	// a heading, a README on a dark background — gets a mark in the surrounding text's colour.
-	{"brand/farrier-mark.svg", func() []byte { return svg("currentColor") }},
+	// The master, and what the README shows.
+	{"brand/farrier-mark.svg", svg},
 
-	// The copy the Angular application serves. It is loaded with <img>, which gives the file no colour
-	// to inherit, so this one carries the tone.
-	{"web/public/mark.svg", func() []byte { return svg(markColour()) }},
+	// The copy the Angular application serves; nothing outside web/public reaches the browser.
+	{"web/public/mark.svg", svg},
 
 	// The documentation site's favicon, embedded by tools/docsite and written into public/.
-	{"tools/docsite/favicon.svg", func() []byte { return svg(markColour()) }},
+	{"tools/docsite/favicon.svg", svg},
 
 	// The browser tab of the control plane's own interface.
 	{"web/public/favicon.ico", ico},
@@ -133,17 +131,26 @@ func main() {
 	}
 }
 
-// svg renders the mark as an SVG document filled with one colour.
+// svg renders the mark as an SVG document.
 //
 // One path with fill-rule="evenodd", so the nail holes are subpaths rather than a second element in a
 // second colour: an <img> of this file over any background shows the background through the holes,
 // which is what a hole is.
-func svg(fill string) []byte {
+//
+// It carries the tone rather than currentColor, because every consumer today loads it with <img> —
+// GitHub, the toolbar, a browser tab — and an <img> gives the file no colour to inherit. Inlining it in
+// a component that should follow the surrounding text is a matter of swapping that one fill, and this
+// program would be the wrong place to keep a variant nothing uses.
+//
+// The width and height match the viewBox so that an <img> with no dimensions of its own renders the
+// mark at 64 pixels rather than at whatever the container suggests, which is what Markdown's image
+// syntax produces.
+func svg() []byte {
 	var b strings.Builder
-	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" `)
-	b.WriteString(`aria-label="Farrier">` + "\n")
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" `)
+	b.WriteString(`role="img" aria-label="Farrier">` + "\n")
 	b.WriteString(`  <title>Farrier</title>` + "\n")
-	b.WriteString(`  <path fill="` + fill + `" fill-rule="evenodd" d="`)
+	b.WriteString(`  <path fill="` + markColour() + `" fill-rule="evenodd" d="`)
 	b.WriteString(outline())
 	for _, hole := range nailCentres() {
 		b.WriteString(" " + circle(hole[0], hole[1], nailRadius))

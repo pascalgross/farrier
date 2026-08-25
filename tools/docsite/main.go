@@ -211,7 +211,7 @@ func parsePage(md goldmark.Markdown, root string, p page) (*document, error) {
 // renderPage rewrites one document's links and writes its HTML.
 func renderPage(md goldmark.Markdown, tmpl *template.Template, doc *document, all []*document,
 	root, out, repo, ref string) error {
-	if err := rewriteLinks(doc, all, root, repo, ref); err != nil {
+	if err := rewriteLinks(doc, all, root, out, repo, ref); err != nil {
 		return err
 	}
 
@@ -252,7 +252,11 @@ func renderPage(md goldmark.Markdown, tmpl *template.Template, doc *document, al
 // link to a file that exists but is not published — the licence, a packaging script, a Go source file —
 // becomes a link to that file on the forge, so it still works for a reader who has no checkout; a link
 // to something that is neither is an error, because it is a cross-reference that has already rotted.
-func rewriteLinks(doc *document, all []*document, root, repo, ref string) error {
+//
+// Images are walked here too rather than anywhere else, because the same failure is possible and until
+// this handled them it was not caught: an <img> whose source stopped resolving published a broken image
+// instead of failing the build, which is precisely the quiet rot the paragraph above is about.
+func rewriteLinks(doc *document, all []*document, root, out, repo, ref string) error {
 	byOutput := map[string]*document{}
 	for _, d := range all {
 		byOutput[d.page.Source] = d
@@ -260,6 +264,25 @@ func rewriteLinks(doc *document, all []*document, root, repo, ref string) error 
 
 	var broken []string
 	err := ast.Walk(doc.root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if image, ok := n.(*ast.Image); ok && entering {
+			dest := string(image.Destination)
+			if isExternal(dest) {
+				return ast.WalkContinue, nil
+			}
+			source := path.Clean(path.Join(path.Dir(doc.page.Source), dest))
+			name, err := placeImage(source, root, out)
+			if err != nil {
+				return ast.WalkStop, err
+			}
+			if name == "" {
+				broken = append(broken, fmt.Sprintf("%s shows %s, which does not exist",
+					doc.page.Source, source))
+				return ast.WalkContinue, nil
+			}
+			image.Destination = []byte(name)
+			return ast.WalkContinue, nil
+		}
+
 		link, ok := n.(*ast.Link)
 		if !ok || !entering {
 			return ast.WalkContinue, nil
@@ -316,6 +339,29 @@ func rewriteLinks(doc *document, all []*document, root, repo, ref string) error 
 			len(broken), strings.Join(broken, "\n  "))
 	}
 	return nil
+}
+
+// placeImage copies one image into the site and returns the name a page should point at.
+//
+// Copied rather than linked to the forge the way an unpublished file is: a <img src="https://github…">
+// is a page rather than an image, and a site that fetched its own artwork from somewhere else would
+// stop being browsable over file:// — which is how somebody checks a change locally.
+//
+// The copy keeps its whole path with the separators flattened, because the output directory is flat and
+// two images called logo.svg in two directories would otherwise be one file.
+//
+// An image that is not in the repository returns an empty name rather than an error, so that the walk
+// can collect it beside the broken links and one run can report every one of them.
+func placeImage(source, root, out string) (string, error) {
+	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(source)))
+	if err != nil {
+		return "", nil //nolint:nilerr // a missing image is a finding the caller collects, not a failure.
+	}
+	name := strings.ReplaceAll(source, "/", "-")
+	if err := os.WriteFile(filepath.Join(out, name), content, 0o644); err != nil { //nolint:gosec // G306: a public image.
+		return "", fmt.Errorf("writing %s: %w", name, err)
+	}
+	return name, nil
 }
 
 // withFragment reattaches an anchor to a rewritten destination.
