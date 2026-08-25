@@ -4,9 +4,10 @@
 // supplies the components that benefit from having accessibility, focus management and keyboard
 // behaviour already solved, and Tailwind supplies layout. Neither is asked to do the other's job.
 //
-// One rule below is where that division of labour turns out to need a seam rather than a boundary: the
-// icon font's class. It is documented at length where it appears, because it was a bug that looked
-// like a broken build rather than like a stylesheet.
+// Two rules below are where that division of labour turns out to need a seam rather than a boundary:
+// the icon font's class, and the one place Tailwind's global reset reaches into a Material component.
+// Both are documented at length where they appear, because each was a bug that looked like a broken
+// build rather than like a stylesheet.
 
 @use "@angular/material" as mat;
 
@@ -60,6 +61,28 @@ body {
   direction: ltr;
   font-feature-settings: "liga";
   -webkit-font-smoothing: antialiased;
+}
+
+// The one place Tailwind's reset reaches into a Material component.
+//
+// Material draws an outlined field as three siblings — a leading piece, the notch that holds the
+// floating label, and a trailing piece — and each draws only the sides it owns. The sides it must not
+// draw are left at the browser's default `border-style: none`, which is what makes Material's
+// `border-width: 1px` shorthand on all four sides harmless. Tailwind's Preflight sets `border: 0 solid`
+// on every element, so those sides have a style after all, and the width then has something to draw:
+// a full-height rule down the middle of every input in the application.
+//
+// The fix is this narrow on purpose. Preflight's `border-style: solid` is what makes every Tailwind
+// `border-*` utility work, so it cannot be dropped, and a blanket rule on `.mat-mdc-notch-piece` would
+// lose to Material's own — component styles are injected into the head at run time, after this
+// stylesheet, so equal specificity goes to Material. Nothing in Material sets this property, so this
+// rule has no competition rather than winning a fight.
+//
+// It is the inline-end side in both writing directions: Material puts the transparent seam border on
+// whichever side faces the leading piece and shipped a [dir=rtl] rule that swaps it, so naming the
+// physical side here would draw the line again in Arabic and Hebrew.
+.mdc-notched-outline__notch {
+  border-inline-end-style: none;
 }
 
 // Numbers compared down a column — update counts, uptimes, clock offsets, identifiers — are set with

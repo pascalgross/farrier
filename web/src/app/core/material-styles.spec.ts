@@ -1,19 +1,27 @@
 import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
+import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
 
 /**
  * A host for the Material components whose appearance depends on a global stylesheet.
  *
- * The spec below reads a computed style rather than a class list, because the class was present all
- * along and no rule matched it. Asserting on the markup would have passed while the application
- * rendered the word "notifications" across its own toolbar.
+ * Both specs below read a computed style rather than a class list, because in both cases the markup
+ * was correct all along and no rule matched it. An assertion about the DOM would have passed while
+ * the application rendered the word "notifications" across its own toolbar.
  */
 @Component({
   selector: 'farrier-material-styles-probe',
-  imports: [MatIconModule],
-  template: `<mat-icon>notifications</mat-icon>`,
+  imports: [MatFormFieldModule, MatIconModule, MatInputModule],
+  template: `
+    <mat-icon>notifications</mat-icon>
+    <mat-form-field appearance="outline">
+      <mat-label>Bearer token</mat-label>
+      <input matInput />
+    </mat-form-field>
+  `,
 })
 class Probe {}
 
@@ -39,5 +47,17 @@ describe('the global stylesheet, where it meets Angular Material', () => {
     const style = getComputedStyle(icon as Element);
     expect(style.fontFamily).toContain('Material Icons');
     expect(style.fontFeatureSettings).toContain('liga');
+  });
+
+  it('draws no border down the middle of an outlined field', () => {
+    const notch = render().querySelector('.mdc-notched-outline__notch');
+    expect(notch).not.toBeNull();
+
+    // Material leaves this side at the browser default of `border-style: none` and sets a width on
+    // all four sides, which is harmless until Tailwind's Preflight sets `border: 0 solid` globally
+    // and gives the width something to draw: a full-height rule through the middle of the field.
+    const style = getComputedStyle(notch as Element);
+    expect(style.borderInlineEndStyle).toBe('none');
+    expect(style.borderInlineEndWidth).toBe('0px');
   });
 });
