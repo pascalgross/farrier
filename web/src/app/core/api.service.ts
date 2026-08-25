@@ -3,21 +3,28 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
 import {
+  Account,
   AlertRuleRequest,
   AlertRulesResponse,
+  ApiTokensResponse,
   CatalogueResponse,
+  ChangePasswordRequest,
+  CreateApiTokenRequest,
   CreateReadJobRequest,
   CreateTemplateRequest,
+  CreateTenantRequest,
   EventsResponse,
   FailedServicesResponse,
   FleetResponse,
   Host,
+  IssuedApiToken,
   Job,
   JobsResponse,
   RenderTemplateRequest,
   RenderedTemplate,
-  CreateTenantRequest,
   ServiceHistoryResponse,
+  SessionsResponse,
+  SessionsRevoked,
   SignInRequest,
   SignedIn,
   StoredTemplateVersion,
@@ -29,7 +36,6 @@ import {
   UpdateTenantRequest,
   Whoami,
 } from './api.models';
-import { TokenStore } from './token-store';
 
 /**
  * The header every request to the administrative API carries.
@@ -56,26 +62,21 @@ export class ApiService {
   /** Angular's HTTP client, injected rather than constructed so tests can supply a fake. */
   private readonly http = inject(HttpClient);
 
-  /** Holds the operator's bearer token. */
-  private readonly tokens = inject(TokenStore);
-
   /**
    * Builds the headers for an authenticated request.
    *
-   * Two credentials reach this API and a browser may hold either. A session cookie is sent by the
-   * browser itself and needs nothing here but `SESSION_HEADER`; a bearer token — what a fresh control
-   * plane prints, and what the platform credential still is — goes in `Authorization`. The token is
-   * read on every call rather than captured once, so that entering one takes effect immediately
-   * instead of on the next reload.
+   * One header, and no credential in it. The credential is an HttpOnly session cookie the browser
+   * sends on its own and this application cannot read — which is the whole point: there is nothing here
+   * for a script on this page to steal, and nothing in `localStorage` for the next tab to inherit.
+   * `SESSION_HEADER` is what proves the request came from this origin rather than from a page that
+   * merely caused a browser to make it.
    *
-   * The `Authorization` header is omitted rather than sent empty when there is no token, because an
-   * empty bearer credential is a credential the server has to consider and refuse, and the request it
-   * would refuse is one that a cookie was about to authenticate perfectly well.
+   * A script authenticates with `Authorization: Bearer frr_…`, minted from the account page. That path
+   * deliberately does not exist in this file: a browser that could send one would be a browser that
+   * had a bearer token somewhere a script could reach.
    */
   private headers(): HttpHeaders {
-    const headers = new HttpHeaders({ [SESSION_HEADER]: '1' });
-    const token = this.tokens.token();
-    return token ? headers.set('Authorization', `Bearer ${token}`) : headers;
+    return new HttpHeaders({ [SESSION_HEADER]: '1' });
   }
 
   /**
@@ -98,6 +99,69 @@ export class ApiService {
    */
   signOut(): Observable<unknown> {
     return this.http.delete('/api/v1/session', { headers: this.headers() });
+  }
+
+  /**
+   * Fetches the signed-in account's own record.
+   *
+   * Separate from whoami, which answers "who does this credential authenticate as" and is what the
+   * shell needs before it renders. This is the account behind that answer, and the two differ for one
+   * caller: an API token authenticates as an account and cannot reach this at all.
+   */
+  account(): Observable<Account> {
+    return this.http.get<Account>('/api/v1/account', { headers: this.headers() });
+  }
+
+  /**
+   * Changes the signed-in account's own password.
+   *
+   * The current one goes with it and is verified server-side, even though the request already carries
+   * a session that authenticated: a session is a credential somebody else may be holding, and a
+   * password change is the one operation that locks the owner out of their own account.
+   */
+  changePassword(request: ChangePasswordRequest): Observable<unknown> {
+    return this.http.post('/api/v1/account/password', request, { headers: this.headers() });
+  }
+
+  /** Lists the browsers this account is signed in on. */
+  sessions(): Observable<SessionsResponse> {
+    return this.http.get<SessionsResponse>('/api/v1/account/sessions', { headers: this.headers() });
+  }
+
+  /**
+   * Ends every session this account holds, including the one asking.
+   *
+   * Including it, deliberately — see the handler. The caller's next move is to forget who it was,
+   * because the credential it is holding has just stopped working.
+   */
+  revokeSessions(): Observable<SessionsRevoked> {
+    return this.http.post<SessionsRevoked>('/api/v1/account/sessions/revoke', {}, {
+      headers: this.headers(),
+    });
+  }
+
+  /** Lists this account's API tokens. */
+  apiTokens(): Observable<ApiTokensResponse> {
+    return this.http.get<ApiTokensResponse>('/api/v1/account/tokens', { headers: this.headers() });
+  }
+
+  /**
+   * Mints a token acting as this account, returned exactly once.
+   *
+   * Only its SHA-256 is stored, so the value in the response is the only copy that will ever exist
+   * outside whoever wrote it down. The page renders it accordingly.
+   */
+  createApiToken(request: CreateApiTokenRequest): Observable<IssuedApiToken> {
+    return this.http.post<IssuedApiToken>('/api/v1/account/tokens', request, {
+      headers: this.headers(),
+    });
+  }
+
+  /** Revokes one of this account's tokens, which stops it working immediately. */
+  revokeApiToken(id: string): Observable<unknown> {
+    return this.http.delete(`/api/v1/account/tokens/${encodeURIComponent(id)}`, {
+      headers: this.headers(),
+    });
   }
 
   /**

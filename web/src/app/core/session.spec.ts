@@ -4,7 +4,6 @@ import { Observable, of, throwError } from 'rxjs';
 
 import { ApiService } from './api.service';
 import { SessionStore } from './session';
-import { TokenStore } from './token-store';
 import { Whoami } from './api.models';
 
 /** One identity the control plane can answer `whoami` with. */
@@ -40,17 +39,8 @@ interface Answers {
   signIn?: Observable<unknown>;
 }
 
-/** The store and the token it shares a browser with, which is what every spec below drives. */
-interface Fixture {
-  /** The store under test. */
-  session: SessionStore;
-
-  /** The bearer token store, so a spec can see whether a refused token was kept. */
-  tokens: TokenStore;
-}
-
 /** Builds the store over a fake control plane. */
-function build(answers: Answers): Fixture {
+function build(answers: Answers): SessionStore {
   let asked = 0;
   TestBed.configureTestingModule({
     providers: [
@@ -65,9 +55,7 @@ function build(answers: Answers): Fixture {
       },
     ],
   });
-  const tokens = TestBed.inject(TokenStore);
-  tokens.clear();
-  return { session: TestBed.inject(SessionStore), tokens };
+  return TestBed.inject(SessionStore);
 }
 
 describe('SessionStore', () => {
@@ -77,7 +65,7 @@ describe('SessionStore', () => {
    * that treated it as "signed out" would flash the sign-in form at everybody on every reload.
    */
   it('does not claim to know anything until the control plane has answered', () => {
-    const { session } = build({ whoami: [of(whoami())] });
+    const session = build({ whoami: [of(whoami())] });
 
     expect(session.ready()).withContext('before probe()').toBeFalse();
 
@@ -93,7 +81,7 @@ describe('SessionStore', () => {
    * every first visit.
    */
   it('treats a refusal as signed out rather than as an error', () => {
-    const { session } = build({ whoami: [refusal(401, 'a valid operator credential is required')] });
+    const session = build({ whoami: [refusal(401, 'a valid operator credential is required')] });
 
     session.probe();
     expect(session.signedIn()).toBeFalse();
@@ -104,13 +92,13 @@ describe('SessionStore', () => {
 
   /**
    * A credential that authenticates and reaches nothing the interface renders used to be reported as
-   * a wrong one, which sent people to check what they typed rather than to find their other token.
-   * `whoami` now answers a platform credential, so this is the fallback for whatever else 403 could
-   * mean rather than the platform case itself.
+   * a wrong one, which sent people to check what they typed rather than to look for the real problem.
+   * `whoami` answers a platform administrator, so this is the fallback for whatever else 403 could
+   * mean — an API token reaching the account page, say — rather than the platform case itself.
    */
   it('says why a credential that authenticated still reaches nothing here', () => {
     const note = 'this credential reaches nothing here';
-    const { session } = build({ whoami: [refusal(403, note)] });
+    const session = build({ whoami: [refusal(403, note)] });
 
     session.probe();
     expect(session.signedIn()).toBeFalse();
@@ -118,20 +106,21 @@ describe('SessionStore', () => {
   });
 
   /**
-   * The platform credential administers fleets and is refused by every route that reaches a fleet's
-   * hosts or jobs. It signs in like anybody else and gets a different interface, and this flag is what
-   * the shell reads to decide which — so a tenant of null must never be mistaken for "not signed in".
+   * A platform administrator administers fleets and is refused by every route that reaches a fleet's
+   * hosts or jobs. They sign in with an address and a password like anybody else and get a different
+   * interface, and this flag is what the shell reads to decide which — so a tenant of null must never
+   * be mistaken for "not signed in".
    */
   it('recognises the credential that administers fleets rather than acting in one', () => {
     const platform: Whoami = {
-      subject: 'platform',
-      display: 'Platform',
-      provider: 'platform-token',
-      principal: 'platform-token:platform',
+      subject: 'admin@example.org',
+      display: 'The Administrator',
+      provider: 'local-account',
+      principal: 'local-account:admin@example.org',
       platform: true,
       tenant: null,
     };
-    const { session } = build({ whoami: [of(platform)] });
+    const session = build({ whoami: [of(platform)] });
 
     session.probe();
     expect(session.signedIn()).withContext('a platform credential is signed in').toBeTrue();
@@ -141,34 +130,36 @@ describe('SessionStore', () => {
   });
 
   /**
-   * A token that does not work must not be kept. Left in `localStorage` it is attached to every later
-   * request, and the next reload retries it silently — so the operator sees a sign-in form that
-   * refuses them for a reason that is no longer on screen.
+   * Signing out settles rather than reopening the question. Clearing the identity without settling
+   * `ready` would put the shell back into its checking state, which renders a progress bar — so an
+   * operator who pressed sign out would watch a spinner instead of the form they expected.
    */
-  it('forgets a bearer token the control plane refused', () => {
-    const { session, tokens } = build({ whoami: [refusal(401, 'nope')] });
+  it('settles into signed out rather than back into checking', () => {
+    const session = build({ whoami: [of(whoami())] });
 
-    session.useToken('a-token-that-does-not-work');
-    expect(tokens.hasToken()).toBeFalse();
-    expect(session.signedIn()).toBeFalse();
-    expect(session.error()).not.toBe('');
-  });
-
-  /**
-   * Signing out has to end both credentials. Keeping either one would bring the operator back signed
-   * in on the next reload, for a reason nothing on the page could explain.
-   */
-  it('clears the token as well as the session when signing out', () => {
-    const { session, tokens } = build({ whoami: [of(whoami())] });
-
-    session.useToken('a-token-that-works');
-    expect(tokens.hasToken()).toBeTrue();
+    session.probe();
     expect(session.signedIn()).toBeTrue();
 
     session.signOut();
-    expect(tokens.hasToken()).toBeFalse();
     expect(session.signedIn()).toBeFalse();
     expect(session.ready()).withContext('signing out is an answer, not a question').toBeTrue();
+  });
+
+  /**
+   * "Sign out everywhere" has already ended every session including this one, so the browser's
+   * credential has stopped working before the page hears back. forget() is how the application catches
+   * up without a second request — one that would have nothing to delete and whose failure would look
+   * like the sign-out having failed.
+   */
+  it('can forget who it was without asking the control plane', () => {
+    const session = build({ whoami: [of(whoami())] });
+
+    session.probe();
+    expect(session.signedIn()).toBeTrue();
+
+    session.forget();
+    expect(session.signedIn()).toBeFalse();
+    expect(session.ready()).toBeTrue();
   });
 
   /**
@@ -176,7 +167,7 @@ describe('SessionStore', () => {
    * only `whoami` names the fleet — and the toolbar cannot render "which fleet am I in" without it.
    */
   it('asks who it is after signing in with an address and a password', () => {
-    const { session } = build({ whoami: [of(whoami())], signIn: of({}) });
+    const session = build({ whoami: [of(whoami())], signIn: of({}) });
 
     session.signIn('alice@example.org', 'a password long enough');
     expect(session.signedIn()).toBeTrue();
@@ -189,7 +180,7 @@ describe('SessionStore', () => {
    * explanation", which is what a caller that only cleared the identity would produce.
    */
   it('reports a refused sign-in without signing anybody in', () => {
-    const { session } = build({
+    const session = build({
       whoami: [refusal(401, 'nope')],
       signIn: refusal(401, 'that address and password do not match an account'),
     });

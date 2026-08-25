@@ -4,7 +4,6 @@ import { of } from 'rxjs';
 import { ApiService } from './api.service';
 import { EventStream, mergeEvents } from './event-stream';
 import { EventsResponse, FleetEvent } from './api.models';
-import { TokenStore } from './token-store';
 
 /** A live stream this spec can push frames into, standing in for the control plane's. */
 interface FakeStream {
@@ -89,10 +88,6 @@ describe('EventStream toasts', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: ApiService, useValue: { events: () => of(inbox) } as unknown as ApiService },
-        {
-          provide: TokenStore,
-          useValue: { token: () => 'token', hasToken: () => true } as unknown as TokenStore,
-        },
       ],
     });
     stream = TestBed.inject(EventStream);

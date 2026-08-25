@@ -7,6 +7,7 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -17,13 +18,22 @@ import { SessionStore } from './core/session';
 import { ToastStack } from './toasts/toast-stack';
 
 /**
+ * Where a platform administrator is allowed to stay.
+ *
+ * A platform credential is refused by every route that reaches a fleet's hosts or jobs, so landing on
+ * one renders a 403 rather than a page — which is why the shell moves them. These two are what it does
+ * not move them out of: the fleet administration they exist for, and the account page everybody has.
+ */
+const PLATFORM_ROUTES = ['/fleets', '/account'];
+
+/**
  * The application shell: a toolbar, the router outlet, and the sign-in form.
  *
  * The form lives here rather than on a separate route because there is nowhere else to be: every page
  * needs a credential, so a `/login` route would be a redirect target and a second place for the shell
- * to be half-rendered. It offers an address and a password, which is what an operator has, and keeps a
- * bearer token beside it, which is what a fresh control plane prints before anybody has an account and
- * what the platform credential still is.
+ * to be half-rendered. It offers an address and a password and nothing else. The bearer-token box that
+ * used to sit under a divider is gone with the credential it took: a script now carries an API token
+ * belonging to an account, minted from the account page, and never types anything into this form.
  *
  * Whether somebody is signed in is asked of the control plane rather than read locally, and that is
  * forced rather than chosen: the credential is an HttpOnly cookie no script can see. So the shell has
@@ -50,6 +60,7 @@ import { ToastStack } from './toasts/toast-stack';
     MatFormFieldModule,
     MatIconModule,
     MatInputModule,
+    MatMenuModule,
     MatProgressBarModule,
     MatToolbarModule,
     MatTooltipModule,
@@ -89,20 +100,12 @@ export class App {
   /** The password being typed, held only until it is sent. */
   protected readonly password = signal('');
 
-  /** The bearer token being typed, for the credential that is one. */
-  protected readonly token = signal('');
+  /** Whether the password is being shown, so somebody can check what they typed. */
+  protected readonly passwordShown = signal(false);
 
-  /** Whether the token field is showing, so the account form is what an operator sees first. */
-  protected readonly tokenShown = signal(false);
-
-  /** Whether the account form has enough to submit. */
+  /** Whether the form has enough to submit. */
   protected readonly canSignIn = computed(
     () => !this.session.working() && this.email().trim().length > 0 && this.password().length > 0,
-  );
-
-  /** Whether the token form has enough to submit. */
-  protected readonly canUseToken = computed(
-    () => !this.session.working() && this.token().trim().length > 0,
   );
 
   /**
@@ -127,7 +130,10 @@ export class App {
       }
     });
     effect(() => {
-      if (this.session.isPlatform() && !this.router.url.startsWith('/fleets')) {
+      // The account page is the one route both credentials reach, because everybody has an account and
+      // everybody has a password to change — so it is excluded from the redirect rather than being a
+      // page a platform administrator is bounced out of a moment after opening.
+      if (this.session.isPlatform() && !PLATFORM_ROUTES.some((path) => this.router.url.startsWith(path))) {
         void this.router.navigate(['/fleets']);
       }
     });
@@ -142,20 +148,11 @@ export class App {
     this.password.set('');
   }
 
-  /** Signs in with the bearer token on the form. */
-  protected useToken(): void {
-    if (!this.canUseToken()) {
-      return;
-    }
-    this.session.useToken(this.token());
-    this.token.set('');
-  }
-
-  /** Ends the session and forgets the token. */
+  /** Ends the session. */
   protected signOut(): void {
     this.session.signOut();
     this.email.set('');
     this.password.set('');
-    this.token.set('');
+    this.passwordShown.set(false);
   }
 }

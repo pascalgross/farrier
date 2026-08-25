@@ -2,7 +2,6 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { FleetEvent } from './api.models';
 import { ApiService, SESSION_HEADER } from './api.service';
-import { TokenStore } from './token-store';
 
 /** How many events the in-memory feed keeps, which is what the bell and the inbox page read. */
 const FEED_LIMIT = 200;
@@ -72,9 +71,6 @@ const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 15_000, 30_000];
 export class EventStream {
   /** Talks to the control plane. */
   private readonly api = inject(ApiService);
-
-  /** Holds the operator's bearer token, for the one request that does not go through ApiService. */
-  private readonly tokens = inject(TokenStore);
 
   /** The merged feed, newest first, bounded to FEED_LIMIT. */
   private readonly feed = signal<FleetEvent[]>([]);
@@ -268,21 +264,19 @@ export class EventStream {
   /**
    * Builds the headers for the one request this class makes without going through ApiService.
    *
-   * The session header goes on every request, because the server refuses a cookie-authenticated one
-   * without it; the bearer token goes on only when this browser holds one, because an empty
-   * Authorization header is a credential the server has to refuse. Written here rather than reached
-   * for from ApiService's private helper, and kept beside its one call site so that the two cannot
-   * quietly come to disagree — the constant they share is exported for exactly that reason.
+   * The credential itself is the session cookie, which `fetch` sends on its own for a same-origin
+   * request. This header is what proves the request came from this origin rather than from a page that
+   * merely caused a browser to make it, and the server refuses a cookie-authenticated request without
+   * it. Written here rather than reached for from ApiService's private helper, and kept beside its one
+   * call site so that the two cannot quietly come to disagree — the constant they share is exported
+   * for exactly that reason.
    */
   private headers(): Record<string, string> {
-    const token = this.tokens.token();
-    return token
-      ? { [SESSION_HEADER]: '1', Authorization: `Bearer ${token}` }
-      : { [SESSION_HEADER]: '1' };
+    return { [SESSION_HEADER]: '1' };
   }
 
   /**
-   * Holds one connection open, then reconnects, until stop() or a lost token.
+   * Holds one connection open, then reconnects, until stop().
    *
    * The loop is the reconnect policy: `EventSource` would have supplied one, and this is what
    * replaces it.

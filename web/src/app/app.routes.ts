@@ -53,5 +53,12 @@ export const routes: Routes = [
     loadComponent: () => import('./fleets/fleets-page').then((m) => m.FleetsPage),
     title: 'Fleets — Farrier',
   },
+  {
+    // The one route both credentials reach: everybody has an account and everybody has a password to
+    // change. See App's PLATFORM_ROUTES, which excludes it from the platform redirect for that reason.
+    path: 'account',
+    loadComponent: () => import('./account/account-page').then((m) => m.AccountPage),
+    title: 'Account — Farrier',
+  },
   { path: '**', redirectTo: '' },
 ];

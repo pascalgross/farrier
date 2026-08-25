@@ -923,3 +923,139 @@ export interface RenderedTemplate {
   /** The control plane's own sentence about the output being shown once. */
   note: string;
 }
+
+/** The signed-in account, as `GET /api/v1/account` describes it. */
+export interface Account {
+  /** The address this account signs in with. */
+  email: string;
+
+  /** What to call this person, empty for the address. */
+  displayName: string;
+
+  /** When the account was made. */
+  createdAt: string;
+
+  /** When it last signed in, null for never. */
+  lastSignedIn: string | null;
+
+  /** Whether this administers the installation rather than a fleet. */
+  platform: boolean;
+
+  /** The provider-qualified string recorded as the author of anything this account does. */
+  principal: string;
+}
+
+/** The body of `POST /api/v1/account/password`. */
+export interface ChangePasswordRequest {
+  /** What the operator signs in with today, verified even though the session already authenticated. */
+  currentPassword: string;
+
+  /** What they want instead. */
+  newPassword: string;
+}
+
+/**
+ * One browser this account is signed in on.
+ *
+ * There is no token and no token hash here, which is why `current` is a flag the server computed
+ * rather than an identifier this application compares. Nothing in this shape authenticates anybody.
+ */
+export interface OperatorSession {
+  /** When the sign-in happened. */
+  createdAt: string;
+
+  /** When the session stops authenticating, as it stands — it moves forward while it is used. */
+  expiresAt: string;
+
+  /** When a request last presented it, null for never. */
+  lastUsed: string | null;
+
+  /** What the browser called itself. Advisory: a client chooses this string. */
+  userAgent: string;
+
+  /** Where it was last used from. Advisory: behind a proxy this is the proxy. */
+  source: string;
+
+  /** Whether it has run out, in which case it is a row waiting to be swept rather than a credential. */
+  expired: boolean;
+
+  /** Whether this is the session asking. */
+  current: boolean;
+}
+
+/** The response of `GET /api/v1/account/sessions`. */
+export interface SessionsResponse {
+  /** Every session this account holds, newest first. */
+  sessions: OperatorSession[];
+}
+
+/** The response of `POST /api/v1/account/sessions/revoke`. */
+export interface SessionsRevoked {
+  /** How many sessions were ended, including the one that asked. */
+  ended: number;
+}
+
+/**
+ * One API token this account holds.
+ *
+ * The id is the token's SHA-256, which is what the store keys on. It is not a credential — a hash of
+ * 256 bits of randomness cannot be turned back into one — and returning it is what lets revoking a
+ * token need no second identifier kept in step with the first.
+ */
+export interface ApiToken {
+  /** What names this token in a request to revoke it. */
+  id: string;
+
+  /** What the operator called it. */
+  label: string;
+
+  /** When it was issued. */
+  createdAt: string;
+
+  /** When it stops working, null for never. */
+  expiresAt: string | null;
+
+  /** When a request last presented it, null for never. */
+  lastUsed: string | null;
+
+  /** Whether it would still be accepted. */
+  usable: boolean;
+}
+
+/** The response of `GET /api/v1/account/tokens`. */
+export interface ApiTokensResponse {
+  /** Every token this account holds, newest first. */
+  tokens: ApiToken[];
+}
+
+/** The body of `POST /api/v1/account/tokens`. */
+export interface CreateApiTokenRequest {
+  /** What to call it, so that revoking the right one is possible later. Required. */
+  label: string;
+
+  /** How long it lasts; zero or absent means it does not expire. */
+  expiresInDays?: number;
+}
+
+/**
+ * A token just issued.
+ *
+ * The `token` field is the only time the value exists anywhere but in whoever copied it: only the
+ * SHA-256 is stored, so the page that renders this has to say so.
+ */
+export interface IssuedApiToken {
+  /** What names this token in a request to revoke it. */
+  id: string;
+
+  /** What the operator called it. */
+  label: string;
+
+  /** When it was issued. */
+  createdAt: string;
+
+  /** When it stops working, null for never. */
+  expiresAt: string | null;
+
+  /** The token itself, returned exactly once. */
+  token: string;
+}

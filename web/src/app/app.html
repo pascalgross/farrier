@@ -1,10 +1,15 @@
-<mat-toolbar class="!flex items-center gap-4">
-  <a routerLink="/" class="flex items-center gap-2 no-underline text-inherit">
-    <img src="mark.svg" alt="" width="24" height="24" class="h-6 w-6">
-    <span class="font-medium">Farrier</span>
-  </a>
+<!--
+  The toolbar is rendered only when there is something in it. Signed out, it held the mark and the
+  word "Farrier" above a sign-in screen that says both again, larger — a header bar whose only content
+  is a second copy of the heading underneath it.
+-->
+@if (session.signedIn()) {
+  <mat-toolbar class="!flex items-center gap-4">
+    <a routerLink="/" class="flex items-center gap-2 no-underline text-inherit">
+      <img src="mark.svg" alt="" width="24" height="24" class="h-6 w-6">
+      <span class="font-medium">Farrier</span>
+    </a>
 
-  @if (session.signedIn()) {
     <!--
       Two credentials, two navigations, and no overlap. A platform credential is refused by every route
       that reaches a fleet's hosts or jobs, and an operator credential by the one that administers
@@ -41,19 +46,39 @@
       </a>
     }
 
+    <!--
+      The fleet name and the person, in one control. It is a menu rather than two buttons because what
+      is behind it — the account page and signing out — is not something anybody presses often, and a
+      toolbar that spends its width on them has less for the navigation that is pressed constantly.
+    -->
     @if (session.identity(); as identity) {
-      <span class="text-sm opacity-80 farrier-numeric"
-            [matTooltip]="'Signed in as ' + identity.principal">
-        {{ identity.tenant ? identity.tenant.displayName : 'Platform administrator' }}
-      </span>
-    }
+      <button mat-button [matMenuTriggerFor]="accountMenu" class="farrier-account-button">
+        <mat-icon>account_circle</mat-icon>
+        <span class="hidden sm:inline">
+          {{ identity.tenant ? identity.tenant.displayName : 'Platform' }}
+        </span>
+      </button>
 
-    <button mat-button (click)="signOut()">
-      <mat-icon>logout</mat-icon>
-      Sign out
-    </button>
-  }
-</mat-toolbar>
+      <mat-menu #accountMenu="matMenu">
+        <div class="farrier-account-menu__who">
+          <span class="farrier-account-menu__display">{{ identity.display }}</span>
+          <span class="farrier-account-menu__principal farrier-numeric">{{ identity.principal }}</span>
+        </div>
+
+        <mat-divider />
+
+        <a mat-menu-item routerLink="/account">
+          <mat-icon>manage_accounts</mat-icon>
+          <span>Account and API tokens</span>
+        </a>
+        <button mat-menu-item (click)="signOut()">
+          <mat-icon>logout</mat-icon>
+          <span>Sign out</span>
+        </button>
+      </mat-menu>
+    }
+  </mat-toolbar>
+}
 
 <main class="p-6 max-w-7xl mx-auto">
   @if (session.signedIn()) {
@@ -66,86 +91,74 @@
     -->
     <mat-progress-bar mode="indeterminate" aria-label="Checking whether you are signed in" />
   } @else {
-    <mat-card class="max-w-xl mx-auto mt-12">
-      <mat-card-header>
-        <mat-card-title>Sign in</mat-card-title>
-      </mat-card-header>
+    <!--
+      The sign-in screen. One credential, one form, and the explanation underneath rather than above:
+      somebody who is here to sign in should meet two fields and a button, not four paragraphs.
+    -->
+    <div class="farrier-signin">
+      <div class="farrier-signin__brand">
+        <img src="mark.svg" alt="" width="48" height="48">
+        <h1>Farrier</h1>
+        <p>Fleet management with no remote execution channel.</p>
+      </div>
 
-      <mat-card-content class="flex flex-col gap-4 !pt-4">
-        <p class="text-sm opacity-80">
-          An administrator account is inside Farrier's threat model: somebody signed in here can read
-          the fleet and revoke hosts, and still cannot run code on any enrolled machine. What protects
-          the hosts is each one's own <code>policy.toml</code> and a signing key this control plane does
-          not hold.
-        </p>
-
-        @if (session.unusable(); as note) {
-          <p class="m-0 text-sm text-farrier-warn">{{ note }}</p>
-        }
-
-        <mat-form-field appearance="outline">
-          <mat-label>Email</mat-label>
-          <input matInput type="email" autocomplete="username" spellcheck="false"
-                 [ngModel]="email()" (ngModelChange)="email.set($event)"
-                 (keyup.enter)="signIn()" />
-        </mat-form-field>
-
-        <mat-form-field appearance="outline">
-          <mat-label>Password</mat-label>
-          <input matInput type="password" autocomplete="current-password"
-                 [ngModel]="password()" (ngModelChange)="password.set($event)"
-                 (keyup.enter)="signIn()" />
-        </mat-form-field>
-
-        @if (session.error(); as failure) {
-          <p class="m-0 text-sm text-farrier-bad">{{ failure }}</p>
-        }
-
-        <p class="m-0 text-sm opacity-70">
-          Accounts are created on the control plane with
-          <code>farrier-server accounts add</code>. There is no self-service sign-up: an account
-          reaches one fleet, and who is in that fleet is a decision rather than a form.
-        </p>
-      </mat-card-content>
-
-      <mat-card-actions align="end">
-        <button mat-flat-button [disabled]="!canSignIn()" (click)="signIn()">Sign in</button>
-      </mat-card-actions>
-
-      <mat-divider />
-
-      <mat-card-content class="flex flex-col gap-3 !pt-4">
-        @if (tokenShown()) {
-          <p class="text-sm opacity-80">
-            The control plane prints a token when it starts, or reads one from
-            <code>FARRIER_ADMIN_TOKEN</code>. It is what a script uses, what gets you in before anybody
-            has an account, and what the platform credential that administers fleets still is.
-          </p>
+      <mat-card class="farrier-signin__card" appearance="outlined">
+        <mat-card-content class="farrier-signin__fields !py-6">
+          @if (session.unusable(); as note) {
+            <p class="farrier-signin__note farrier-signin__note--warn">{{ note }}</p>
+          }
 
           <mat-form-field appearance="outline">
-            <mat-label>Bearer token</mat-label>
-            <input matInput type="password" autocomplete="off" spellcheck="false"
-                   [ngModel]="token()" (ngModelChange)="token.set($event)"
-                   (keyup.enter)="useToken()" />
+            <mat-label>Email</mat-label>
+            <input matInput type="email" autocomplete="username" spellcheck="false"
+                   autocapitalize="off" [ngModel]="email()" (ngModelChange)="email.set($event)"
+                   (keyup.enter)="signIn()" />
           </mat-form-field>
 
-          <p class="m-0 text-sm opacity-70">
-            A token is kept in this browser's local storage, which an account's session is not — so
-            prefer an account wherever there is one.
-          </p>
-
-          <div class="flex justify-end">
-            <button mat-stroked-button [disabled]="!canUseToken()" (click)="useToken()">
-              Continue with a token
+          <mat-form-field appearance="outline">
+            <mat-label>Password</mat-label>
+            <input matInput autocomplete="current-password"
+                   [type]="passwordShown() ? 'text' : 'password'"
+                   [ngModel]="password()" (ngModelChange)="password.set($event)"
+                   (keyup.enter)="signIn()" />
+            <!--
+              A reveal button rather than none. The alternative to seeing what you typed is typing it
+              again, and a password field somebody cannot check is how a wrong-password count reaches
+              the rate limit over one transposed character.
+            -->
+            <button matIconSuffix mat-icon-button type="button"
+                    (click)="passwordShown.set(!passwordShown())"
+                    [attr.aria-label]="passwordShown() ? 'Hide the password' : 'Show the password'">
+              <mat-icon>{{ passwordShown() ? 'visibility_off' : 'visibility' }}</mat-icon>
             </button>
-          </div>
-        } @else {
-          <button mat-button class="self-start" (click)="tokenShown.set(true)">
-            Use a bearer token instead
+          </mat-form-field>
+
+          @if (session.error(); as failure) {
+            <p class="farrier-signin__note farrier-signin__note--bad">{{ failure }}</p>
+          }
+
+          <button mat-flat-button class="farrier-signin__submit" [disabled]="!canSignIn()"
+                  (click)="signIn()">
+            {{ session.working() ? 'Signing in…' : 'Sign in' }}
           </button>
-        }
-      </mat-card-content>
-    </mat-card>
+        </mat-card-content>
+      </mat-card>
+
+      <div class="farrier-signin__aside">
+        <p>
+          Accounts are made on the control plane with
+          <code>farrier-server accounts add</code>. There is no sign-up form: an account reaches one
+          fleet, and who is in that fleet is a decision rather than a field. A script does not sign in
+          at all — it carries an API token issued from the account page.
+        </p>
+        <p>
+          An administrator account is inside Farrier's threat model. Somebody signed in here can read
+          the fleet and revoke hosts, and still cannot run code on any enrolled machine: what protects
+          the hosts is each one's own <code>policy.toml</code> and a signing key this control plane
+          does not hold.
+        </p>
+      </div>
+    </div>
   }
 </main>
 

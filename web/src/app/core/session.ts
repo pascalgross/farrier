@@ -1,7 +1,6 @@
 import { Injectable, inject, signal } from '@angular/core';
 
 import { ApiService } from './api.service';
-import { TokenStore } from './token-store';
 import { Whoami } from './api.models';
 import { describeError, describeRefusedCredential } from './errors';
 
@@ -14,17 +13,16 @@ import { describeError, describeRefusedCredential } from './errors';
  * That turns a boolean into a small state machine with a `checking` state, and this is where it lives
  * so that the shell is not the only component that could ever know.
  *
- * The two credentials are deliberately both here. An account is what a person uses; a bearer token is
- * what a fresh control plane prints before anybody has an account, and what the platform credential
- * still is. Signing out clears both, because an operator who pressed it has said what they meant.
+ * There is one credential and it is this. The bearer token that used to sit beside it — pasted into a
+ * box, kept in `localStorage`, readable by any script on this origin — is gone: a shared string that
+ * named nobody in the audit trail is not something an interface should be teaching people to paste.
+ * What a script uses now is an API token belonging to an account, minted from the account page, and it
+ * never touches this application.
  */
 @Injectable({ providedIn: 'root' })
 export class SessionStore {
   /** Talks to the control plane. */
   private readonly api = inject(ApiService);
-
-  /** Holds the bearer token, for the credential that is one. */
-  private readonly tokens = inject(TokenStore);
 
   /** Who the control plane says this browser is, null when nobody. */
   private readonly who = signal<Whoami | null>(null);
@@ -42,9 +40,8 @@ export class SessionStore {
    * Why a credential that authenticated cannot be used here, empty when there is no such problem.
    *
    * It is separate from a sign-in failure because it is a different thing to tell somebody: the
-   * credential worked and reaches nothing this interface renders, which is what happens when a
-   * platform token — which administers fleets and deliberately reaches no fleet's hosts — is pasted
-   * into the box. Reporting that as "wrong password" would send them looking for the wrong mistake.
+   * credential worked and reaches nothing this interface renders. Reporting that as "wrong password"
+   * would send them looking for the wrong mistake.
    */
   private readonly mismatch = signal('');
 
@@ -135,51 +132,29 @@ export class SessionStore {
   }
 
   /**
-   * Signs in with a bearer token, which is what a fresh control plane prints at startup.
+   * Ends the session.
    *
-   * Kept beside the account form rather than removed, because the first person to open a new
-   * installation has no account and the token is how they get one — and because the platform
-   * credential is still a token. It is stored in `localStorage`, with the trade `TokenStore`
-   * describes; an account does not, which is the reason to prefer one.
-   */
-  useToken(token: string): void {
-    this.busy.set(true);
-    this.failure.set('');
-    this.tokens.set(token);
-    this.api.whoami().subscribe({
-      next: (me) => {
-        this.busy.set(false);
-        this.who.set(me);
-        this.mismatch.set('');
-        this.checked.set(true);
-      },
-      error: (err: unknown) => {
-        this.busy.set(false);
-        // The token is forgotten again rather than left behind: a stored credential that does not
-        // work is one every later request pays for and one the next reload silently retries.
-        this.tokens.clear();
-        this.who.set(null);
-        const unusable = describeRefusedCredential(err);
-        this.failure.set(unusable || describeError(err));
-        this.checked.set(true);
-      },
-    });
-  }
-
-  /**
-   * Ends the session and forgets the token.
-   *
-   * Both, unconditionally. An operator who pressed sign out has said what they meant, and a browser
-   * that kept one of the two credentials would come back signed in for a reason nobody could see.
    * The local state is cleared without waiting for the server, because the one thing worse than a
-   * failed sign-out is a sign-out that appears not to have happened.
+   * failed sign-out is a sign-out that appears not to have happened. The server-side row is deleted by
+   * the request either way, which is what makes this mean the credential stops working rather than
+   * merely stops being sent.
    */
   signOut(): void {
     this.api.signOut().subscribe({
       next: () => undefined,
       error: () => undefined,
     });
-    this.tokens.clear();
+    this.forget();
+  }
+
+  /**
+   * Forgets who this browser was, without asking the control plane anything.
+   *
+   * It is what "sign out everywhere" needs: that request has already ended every session including
+   * this one, so calling signOut() after it would be a second request with nothing left to delete —
+   * and one whose failure would look like the sign-out having failed.
+   */
+  forget(): void {
     this.who.set(null);
     this.failure.set('');
     this.mismatch.set('');

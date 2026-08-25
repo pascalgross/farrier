@@ -51,10 +51,11 @@ export function describeError(err: unknown): string {
 /**
  * Describes a credential that authenticated and reaches nothing this interface renders.
  *
- * The control plane answers 403 `not_an_operator` when a platform credential — which administers
- * fleets and deliberately reaches no fleet's hosts or jobs — is used on a fleet route, and its message
- * says exactly that. It is worth showing verbatim and worth telling apart from a wrong password: one
- * sends somebody to check what they typed, and the other sends them to find their other token.
+ * The control plane answers 403 `not_an_operator` when a platform administrator — who administers
+ * fleets and deliberately reaches no fleet's hosts or jobs — reaches a fleet route, and 403
+ * `session_required` when an API token reaches the account page. Both messages say exactly what is
+ * wrong, and both are worth telling apart from a wrong password: one sends somebody to check what they
+ * typed, the other tells them the credential is fine and is for something else.
  *
  * Everything else is not this function's business, so it returns an empty string and the caller falls
  * back to describeError.
