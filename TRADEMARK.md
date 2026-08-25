@@ -46,8 +46,8 @@ this project is built on becomes unverifiable in conversation.
   fine and needs no permission. "Farrier" and "Farrier Enterprise" are not.
 - **Product names that read as ours.** `farrier-pro`, `Farrier Cloud`, `getfarrier.com`,
   `@farrier/anything`, an APT repository at a domain a user would take for the project's own.
-- **Logos and visual identity.** Do not use the Farrier logo for your product, and do not use a
-  confusingly similar one.
+- **Logos and visual identity.** Do not use the Farrier logo — the horseshoe in
+  [`brand/`](brand/farrier-mark.svg) — for your product, and do not use a confusingly similar one.
 - **Implying endorsement.** "Official", "certified", "powered by Pegasus Networks", or anything else a
   reasonable reader would take as us vouching for you.
 

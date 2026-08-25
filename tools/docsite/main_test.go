@@ -120,6 +120,78 @@ func TestLinksToUnpublishedFilesPointAtTheForge(t *testing.T) {
 	}
 }
 
+// TestAnImageIsCopiedIntoTheSiteAndAMissingOneFailsTheBuild covers both halves of image rewriting.
+//
+// One test rather than two, because the halves are the same rule: an image is checked and carried the
+// way a link is checked and rewritten. The site is flat and self-contained, so the copy has to be
+// beside the page — and the mark the README shows lives in brand/, which is not a directory the site
+// otherwise knows about.
+func TestAnImageIsCopiedIntoTheSiteAndAMissingOneFailsTheBuild(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "README.md", "# Farrier\n\n![](brand/mark.svg)\n")
+	write(t, root, "brand/mark.svg", "<svg/>\n")
+
+	saved := pages
+	t.Cleanup(func() { pages = saved })
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+
+	out := filepath.Join(root, "public")
+	if err := build(root, out, "https://example.invalid/r", "v1"); err != nil {
+		t.Fatalf("building: %v", err)
+	}
+	if body := read(t, filepath.Join(out, "index.html")); !strings.Contains(body, `src="brand-mark.svg"`) {
+		t.Error("the image was not pointed at the copy beside the page")
+	}
+	// The whole path is in the name so that two marks called mark.svg cannot become one file.
+	if copied := read(t, filepath.Join(out, "brand-mark.svg")); copied != "<svg/>\n" {
+		t.Errorf("the copied image is %q", copied)
+	}
+
+	write(t, root, "README.md", "# Farrier\n\n![](brand/gone.svg)\n")
+	err := build(root, out, "https://example.invalid/r", "v1")
+	if err == nil || !strings.Contains(err.Error(), "brand/gone.svg") {
+		t.Fatalf("an image that is not in the repository built anyway: %v", err)
+	}
+}
+
+// TestADestinationWithASchemeIsLeftAlone covers everything that is not a path.
+//
+// Copying an image into the site is only right for one that is *in* the repository, and the test for
+// that is whether the destination names a file at all. A data: image and a tel: link name no file and
+// used to be passed through untouched; resolving either as a path would report a working document as
+// one with a reference that had rotted, which is the failure mode this program exists to have none of.
+func TestADestinationWithASchemeIsLeftAlone(t *testing.T) {
+	for _, dest := range []string{
+		"data:image/svg+xml,<svg/>", "https://example.invalid/logo.png", "tel:+441234567890",
+		"//example.invalid/logo.png", "mailto:security@example.invalid",
+	} {
+		if !isExternal(dest) {
+			t.Errorf("%s was taken for a path in this repository", dest)
+		}
+	}
+	for _, dest := range []string{"brand/mark.svg", "docs/SECURITY.md", "./LICENSE", "../README.md"} {
+		if isExternal(dest) {
+			t.Errorf("%s was taken for something outside the repository", dest)
+		}
+	}
+
+	// End to end, because the unit above cannot see whether the walk acts on the answer.
+	root := t.TempDir()
+	write(t, root, "README.md", "# Farrier\n\n![](data:image/svg+xml,<svg/>)\n")
+
+	saved := pages
+	t.Cleanup(func() { pages = saved })
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+
+	out := filepath.Join(root, "public")
+	if err := build(root, out, "https://example.invalid/r", "v1"); err != nil {
+		t.Fatalf("a data: image failed the build: %v", err)
+	}
+	if body := read(t, filepath.Join(out, "index.html")); !strings.Contains(body, "data:image/svg+xml") {
+		t.Error("the data: image did not survive rendering")
+	}
+}
+
 // TestAlertsBecomeCallouts pins the emphasis the documents place deliberately.
 //
 // GitHub renders `> [!IMPORTANT]` as a coloured callout and every other renderer shows the literal

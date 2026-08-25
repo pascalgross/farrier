@@ -517,6 +517,11 @@ the intent catalogue, so `internal/provision` refuses to be a template language 
 saved revision is a new immutable version, because the Tier 2 record below names one and a record that
 resolves to editable bytes is not a record.
 
+Farrier ships no template: what a machine should look like on its first boot is a decision about a
+fleet. One worked body — unattended upgrades left on, a `wheel` group, `su` restricted to it — is in
+[`examples/cloud-init/`](../examples/cloud-init/README.md), as an example to read rather than a default
+to inherit.
+
 **Tier 2 — the exception, implemented.** `farrier enroll --bootstrap NAME` applies a named template
 once, on a host that is being enrolled by hand. The template arrives in the enrolment response carrying
 a signature the control plane stored but cannot mint — it is produced offline by

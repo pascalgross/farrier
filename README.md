@@ -1,3 +1,5 @@
+![](brand/farrier-mark.svg)
+
 # Farrier
 
 **Fleet management for Ubuntu and Debian servers, without a remote shell.** The agent is
