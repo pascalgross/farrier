@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -57,16 +56,18 @@ func TestTheBackendsThisBuildLinksAreTheOnesTheDocumentationLists(t *testing.T) 
 
 // extendingDocument reads docs/EXTENDING.md into lines.
 //
-// The path is derived from this file's own location rather than from the working directory, so that the
-// test behaves the same however `go test` is invoked.
+// The search starts at the working directory, which `go test` sets to the package's source directory,
+// and not at runtime.Caller: under -trimpath — which every binary this project ships is built with, and
+// which somebody will therefore sooner or later put in GOFLAGS — a caller's file name is module-relative
+// and the walk upwards from it finds no go.mod at all. A check that fails on a correct document under a
+// flag the Makefile already uses would be worse than no check.
 func extendingDocument(t *testing.T) []string {
 	t.Helper()
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot determine the path of this test file")
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("cannot determine the working directory: %v", err)
 	}
-	dir := filepath.Dir(thisFile)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			break
