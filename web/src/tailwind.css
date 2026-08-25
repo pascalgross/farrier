@@ -10,7 +10,27 @@
  * are the whole configuration.
  */
 
-@import "tailwindcss";
+/*
+ * `important` is what makes the utilities below actually apply.
+ *
+ * Tailwind puts its utilities in `@layer utilities`. Angular Material injects a component's styles as
+ * an unlayered <style> element when the component first loads, and an unlayered rule beats a layered
+ * one whatever its specificity and whatever the order — so every utility that names a property a
+ * Material component also names loses, always and silently.
+ *
+ * What that looked like: `<mat-card-content class="flex flex-col gap-4">` rendered as
+ * `display: block`, because `.mat-mdc-card-content { display: block }` is unlayered. Nothing errored
+ * and the class was right there in the markup, so the symptom was pages whose form fields sat side by
+ * side and whose hints overlapped the content beneath them. The `!pt-6` prefixes dotted through the
+ * templates are the same collision, worked around one property at a time by whoever hit it — `!` is
+ * the only thing that beat an unlayered rule, and that is why they are there.
+ *
+ * `important` marks every utility instead, which is the answer Tailwind documents for using it beside
+ * a component library. It restores the division of labour the two stylesheets claim: Material supplies
+ * the components, Tailwind supplies the layout, and the layout wins where they disagree — because
+ * where they disagree, the layout is the thing somebody wrote on purpose.
+ */
+@import "tailwindcss" important;
 
 /*
  * The palette is defined once, here, so that a colour used to mean "this host is offline" means the
