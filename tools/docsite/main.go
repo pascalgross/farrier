@@ -372,11 +372,19 @@ func withFragment(dest, fragment string) string {
 	return dest + "#" + fragment
 }
 
-// isExternal reports whether a link destination points outside the repository.
+// isExternal reports whether a link destination points at something other than a file in this
+// repository.
+//
+// Any scheme counts, rather than a list of the ones this repository happens to use today. A
+// repository-relative path has no colon before its first slash, so "scheme:" is the whole test — and
+// the list it replaces was a trap waiting for the first `data:` image or `tel:` link somebody wrote,
+// which would have been resolved as a file name and reported as a reference that had rotted.
 func isExternal(dest string) bool {
-	return strings.HasPrefix(dest, "http://") || strings.HasPrefix(dest, "https://") ||
-		strings.HasPrefix(dest, "mailto:") || strings.HasPrefix(dest, "//")
+	return strings.HasPrefix(dest, "//") || schemePattern.MatchString(dest)
 }
+
+// schemePattern matches a URI scheme at the start of a destination, as RFC 3986 spells one.
+var schemePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 
 // alertPattern matches the first line of a GitHub alert blockquote.
 var alertPattern = regexp.MustCompile(`^> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$`)
