@@ -134,6 +134,14 @@ Three consequences worth knowing before you deploy it:
   enrolments; provisioning more than twenty hosts at once is a reason to enrol against the published
   port directly. The limiter ignores `X-Forwarded-For` on purpose: a header the client sets is not a
   source address, and trusting one would look like a defence while being none.
+- **So does every browser, and for signing in that argument does not hold.** The bullet above is about
+  a provisioning run, which retries. Sign-in is different: the limit is low because verifying a password
+  is a 64 MiB Argon2id derivation, and an unauthenticated client that keeps the one shared bucket empty
+  stops *everybody* signing in, for as long as they care to. That is why browsers belong on the second
+  hostname below, where Traefik terminates and can rate limit on the address it can actually see. If you
+  run this overlay alone and operators reach the interface at the agent hostname, they share one bucket
+  and nothing at the proxy can fix it — a TCP router never parses HTTP — so publish the port for them
+  instead.
 
 ### Let's Encrypt, on a second hostname
 
@@ -183,6 +191,23 @@ The overlay also refuses `/agent` on the interface hostname, with a 403 from the
 would answer 401 there anyway — terminated TLS carries no client certificate — but a hostname with no
 path to the agent API is one where no later middleware or header can become one. Point agents at the
 passthrough name.
+
+And it rate limits this router — twenty in a burst, ten a minute sustained — which is the sign-in limit
+that the control plane cannot apply for itself here. `farrier-server` keys its own limiter on the peer
+address, which on this leg is Traefik, so every operator would share one bucket; the middleware keys on
+the address Traefik sees, which is the client's.
+
+**It is deliberately not solved by teaching `farrier-server` to trust `X-Forwarded-For`**, and the reason
+is specific enough to be worth writing down, because trusting it here would be worse than leaving the
+shared bucket. This overlay stacks on the passthrough one, so the server serves both legs at once and
+both dial the container from the same Traefik address — `RemoteAddr` cannot tell them apart. On the
+passthrough leg Traefik is a byte pump and never parses HTTP, so it cannot strip a header a client set.
+Trusting the header from Traefik's address would therefore trust it from anyone who reached the agent
+hostname: a fresh allowance per forged value, which is not a rate limit but an unauthenticated
+password-guessing channel. The `traefik` network is external and shared, so any sibling container is
+inside that trust regardless of hostname.
+
+If your proxy is not Traefik, the same limit belongs in it, for the same reason.
 
 ## Replication
 
