@@ -337,6 +337,42 @@ jobs:
           sudo apt-get -o APT::Sandbox::User=root install -y --no-install-recommends farrier-agent
           farrier-agent version
 
+      - name: The repository root is a page rather than a 404
+        # The index exists so that pasting the repository URL into a browser does not look like an
+        # outage, which is worth nothing if the page then points at files the tree does not contain.
+        # Both ways of pointing are checked: hyperlinks, and the paths written into the install
+        # commands, because the first version of this check looked only at href= and a keyring named
+        # in a <pre> block went unnoticed.
+        run: |
+          test -f ./public/index.html
+          grep -q 'https://apt.example.invalid/farrier.sources' ./public/index.html
+          missing=0
+          hrefs=$(grep -o 'href="[^"]*"' ./public/index.html | sed 's/href="//; s/"$//')
+          urls=$(grep -o 'https://apt\.example\.invalid/[A-Za-z0-9._/-]*' ./public/index.html \
+            | sed 's|https://apt\.example\.invalid/||')
+          for path in $hrefs $urls; do
+            case "$path" in http*) continue ;; esac
+            [ -f "./public/$path" ] || { echo "index.html points at a missing $path" >&2; missing=1; }
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: An unsigned tree does not print instructions that cannot work
+        # The combination that CI does not otherwise build: a URL is known but no key was given, so the
+        # tree has no keyring. The page must not print the install commands then — their first line
+        # downloads a keyring that was never written, and sending a reader to a 404 is the one thing
+        # this page exists to prevent. It is a regression test: this is what the first version did.
+        run: |
+          # Into RUNNER_TEMP, not the checkout: ./public is the signed tree the previous steps built
+          # and still hold the apt source for, and only /public is gitignored.
+          out="$RUNNER_TEMP/public-unsigned"
+          FARRIER_APT_URL="https://apt.example.invalid" \
+            ./packaging/apt/mkapt.sh dist/packages "$out"
+          if grep -q 'farrier-archive-keyring' "$out/index.html"; then
+            echo "the unsigned tree's index.html names a keyring it does not contain" >&2
+            exit 1
+          fi
+          grep -q 'This tree is unsigned' "$out/index.html"
+
   containers:
     name: Containers
     runs-on: ubuntu-latest

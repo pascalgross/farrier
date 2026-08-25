@@ -158,6 +158,14 @@ FARRIER_APT_URL=https://farrier.tools/apt GPG_KEY_ID=<fingerprint> \
 With `GPG_KEY_ID` unset the tree is built and checksummed but left unsigned, which is what CI does on
 every pull request: it proves the mechanism without needing the release secret.
 
+The tree root also gets an `index.html`. It is not decoration: the repository URL is printed in
+`farrier.sources` and in every set of install instructions, so somebody eventually pastes it into a
+browser — and a static host that does not list directories answers that with a 404, which is
+indistinguishable from a repository that is actually broken. The page is self-contained, with no
+stylesheet or script of its own, because this tree is also published as a release asset and may be
+mirrored somewhere that serves nothing else. It names only what the run actually produced, so an
+unsigned tree does not advertise an `InRelease` it does not have.
+
 One suite, `stable`, covers every supported release. The agent is a static Go binary with no
 distribution-specific dependencies, so per-codename suites would be five copies of the same file and
 five chances for one of them to go stale.

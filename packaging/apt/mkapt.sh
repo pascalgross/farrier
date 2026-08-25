@@ -102,5 +102,151 @@ else
 	echo "mkapt: FARRIER_APT_URL unset; farrier.sources not generated" >&2
 fi
 
+# The tree root gets an index.html, because the repository root is a URL like any other: it is printed
+# in farrier.sources, in the install instructions and in every release, so sooner or later somebody
+# pastes it into a browser. A static host answers that with a 404 — GitHub Pages does not list
+# directories — and a 404 at the root of a package repository is indistinguishable from a repository
+# that is genuinely broken, which is an expensive thing to have to disprove while a fleet is waiting
+# for updates.
+#
+# The page is self-contained: no stylesheet, no script, no font. This tree is also published as a
+# release asset and may be mirrored somewhere that serves nothing else, and a page that renders only
+# when the documentation site happens to be beside it would fail in exactly that case.
+#
+# Written last, so it describes what was built rather than what was intended.
+html_escape() {
+	# Escapes the four characters that change the meaning of HTML text or of an attribute value. What
+	# is interpolated below is a maintainer-set URL and a key fingerprint, neither of which has any
+	# business containing one — which is precisely why an unescaped one would go unnoticed until it
+	# mattered.
+	printf '%s' "${1-}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+
+apt_url_html=$(html_escape "${FARRIER_APT_URL:-}")
+
+# What the page may point at is what was actually written, which is not the same on every run: an
+# unsigned tree has no InRelease and no keyring, and a tree built without a URL has no farrier.sources.
+# A generated page that links to all of them regardless would advertise a repository more complete than
+# the one it sits in — the failure this script already refuses to produce for apt, in HTML.
+if [ -n "${GPG_KEY_ID:-}" ]; then
+	signing_row="<tr><th scope=\"row\">Signing key</th><td><code>$(html_escape "$GPG_KEY_ID")</code></td></tr>"
+	signed_items="<li><a href=\"dists/$SUITE/InRelease\">dists/$SUITE/InRelease</a> — the signed index</li>
+<li><a href=\"dists/$SUITE/Release.gpg\">dists/$SUITE/Release.gpg</a> — the detached signature</li>
+<li><a href=\"farrier-archive-keyring.gpg\">farrier-archive-keyring.gpg</a>
+    (<a href=\"farrier-archive-keyring.asc\">armoured</a>) — the archive signing key</li>"
+else
+	signing_row='<tr><th scope="row">Signing key</th><td>none — this tree was built unsigned</td></tr>'
+	signed_items=''
+fi
+
+# Instructions need both halves: a URL to fetch from, and a keyring in the tree to install. An unsigned
+# tree has no keyring, so printing them anyway would send the reader to a 404 on the very first
+# command — the failure this page exists to prevent, reproduced inside it.
+if [ -n "${FARRIER_APT_URL:-}" ] && [ -n "${GPG_KEY_ID:-}" ]; then
+	install_block="<pre><code>curl -fsSL $apt_url_html/farrier-archive-keyring.gpg \\
+  | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg &gt; /dev/null
+curl -fsSL $apt_url_html/farrier.sources \\
+  | sudo tee /etc/apt/sources.list.d/farrier.sources &gt; /dev/null
+sudo apt-get update &amp;&amp; sudo apt-get install farrier-agent</code></pre>"
+elif [ -n "${FARRIER_APT_URL:-}" ]; then
+	install_block='<p>This tree is unsigned — built without a signing key, which is what the mechanism
+check on every pull request does. There is no keyring here to install and <code>apt</code> would
+refuse the repository, so the instructions a signed tree carries are omitted rather than printed for
+somebody to follow.</p>'
+else
+	install_block='<p>Built without <code>FARRIER_APT_URL</code>, so this tree carries no
+<code>farrier.sources</code> and no instructions naming a host it may not be served from.</p>'
+fi
+
+# farrier.sources is written whenever the URL is known, signed or not, so it is listed on that
+# condition alone rather than alongside the instructions above.
+if [ -n "${FARRIER_APT_URL:-}" ]; then
+	sources_item='<li><a href="farrier.sources">farrier.sources</a> — the deb822 source, with
+    <code>Signed-By:</code> naming that keyring and nothing wider</li>'
+else
+	sources_item=''
+fi
+
+package_items=$(
+	cd "$OUT_DIR"
+	for deb in "pool/$COMPONENT/f/farrier-agent"/*.deb; do
+		printf '<li><a href="%s">%s</a></li>\n' "$deb" "${deb##*/}"
+	done
+)
+
+cat > "$OUT_DIR/index.html" <<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Farrier APT repository</title>
+<style>
+:root { color-scheme: light dark; --bg: #fbfaf8; --ink: #23201c; --soft: #5c554c;
+        --rule: #e3ded6; --sunken: #f2efea; --accent: #9a5b2c; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16150f; --ink: #ece7dd; --soft: #b3aa9c; --rule: #35312a;
+          --sunken: #100f0a; --accent: #e0a06a; }
+}
+body { margin: 0 auto; padding: 2.5rem 1.25rem 4rem; max-width: 46rem; background: var(--bg);
+       color: var(--ink); line-height: 1.65;
+       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.05rem; margin: 2.25rem 0 .5rem; }
+p.lede { color: var(--soft); margin: 0 0 1.5rem; }
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .875rem; }
+pre { background: var(--sunken); border: 1px solid var(--rule); border-radius: 6px;
+      padding: .875rem 1rem; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .4rem .75rem .4rem 0; border-bottom: 1px solid var(--rule);
+         vertical-align: top; }
+th { font-weight: 600; white-space: nowrap; width: 11rem; }
+ul { padding-left: 1.2rem; }
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
+         color: var(--soft); font-size: .875rem; }
+</style>
+</head>
+<body>
+<h1>Farrier APT repository</h1>
+<p class="lede">This is a Debian package repository, not a page to read. Point
+<code>apt</code> at it rather than a browser.</p>
+
+<h2>Installing the agent</h2>
+$install_block
+<p>The agent installs with no keys in <code>/etc/farrier/trusted-signers</code> and a policy that
+permits security updates and nothing else.</p>
+
+<h2>What this repository is</h2>
+<table>
+<tr><th scope="row">Suite</th><td><code>$SUITE</code></td></tr>
+<tr><th scope="row">Component</th><td><code>$COMPONENT</code></td></tr>
+<tr><th scope="row">Architectures</th><td><code>$ARCHES</code></td></tr>
+$signing_row
+</table>
+<p>One suite covers every supported release: the agent is a static Go binary with no
+distribution-specific dependencies, so per-codename suites would be copies of the same file and as
+many chances for one of them to go stale.</p>
+
+<h2>Files</h2>
+<ul>
+$signed_items
+<li><a href="dists/$SUITE/Release">dists/$SUITE/Release</a> — the index itself</li>
+$sources_item
+</ul>
+
+<h2>Packages</h2>
+<ul>
+$package_items
+</ul>
+
+<footer>
+Built by <a href="https://github.com/pascalgross/farrier">Farrier</a>. Fleet management for Ubuntu and
+Debian servers, without a remote shell.
+</footer>
+</body>
+</html>
+HTML
+
 echo "mkapt: repository built in $OUT_DIR"
 find "$OUT_DIR" -type f | sort
