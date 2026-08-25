@@ -182,15 +182,54 @@ type ckInitializeArgs struct {
 
 // tokenInfoBytes is the buffer a CK_TOKEN_INFO is read into.
 //
-// The struct is a little over two hundred bytes and this package needs exactly one field from it — the
-// 32-byte, space-padded label at offset zero. Reading into an over-large opaque buffer rather than
-// declaring a partial struct is deliberate: a struct with the trailing fields omitted is a buffer the
-// module writes past, and a struct with all of them is fifty lines of layout that must stay in step
-// with a specification for no benefit.
+// The struct is a little over two hundred bytes and this package needs two fields from it. Reading into
+// an over-large opaque buffer rather than declaring a partial struct is deliberate: a struct with the
+// trailing fields omitted is a buffer the module writes past, and a struct with all of them is fifty
+// lines of layout that must stay in step with a specification for no benefit.
 const tokenInfoBytes = 1024
 
-// tokenLabelBytes is the width of CK_TOKEN_INFO's label field.
-const tokenLabelBytes = 32
+// The two CK_TOKEN_INFO fields this package reads, by offset and width.
+//
+// The structure opens with four fixed-width, space-padded character arrays — label[32],
+// manufacturerID[32], model[16], serialNumber[16] — and these are the first and the fourth. The two in
+// between are skipped rather than read because they name a product line rather than a physical token,
+// which is the distinction findSlot matches on. Offsets rather than field names for the reason
+// tokenInfoBytes gives: naming them would mean declaring the whole structure.
+const (
+	tokenLabelOffset  = 0
+	tokenLabelBytes   = 32
+	tokenSerialOffset = 80
+	tokenSerialBytes  = 16
+)
+
+// tokenIdentity is what a slot's token calls itself.
+//
+// The two fields travel together because they come out of one C_GetTokenInfo call and because a
+// reference may name either or both: reading the structure once and returning both is cheaper than two
+// accessors that each read it, and it is what lets an error message print the serials beside the labels
+// without a second pass over the slots.
+type tokenIdentity struct {
+	// label is CK_TOKEN_INFO.label, which the reference's token= attribute matches.
+	label string
+
+	// serial is CK_TOKEN_INFO.serialNumber, which the reference's serial= attribute matches.
+	//
+	// Empty when the token reports none. That is not an error: the specification pads the field with
+	// spaces and does not require it to be meaningful, and some tokens ship blank ones.
+	serial string
+}
+
+// String renders a token the way an error message names it.
+//
+// The serial is printed beside the label rather than instead of it, because the commonest cause of a
+// reference that matches nothing is a serial read off the wrong sticker — and an operator comparing
+// what they typed needs to see both halves of what was actually found.
+func (t tokenIdentity) String() string {
+	if t.serial == "" {
+		return fmt.Sprintf("%q (no serial)", t.label)
+	}
+	return fmt.Sprintf("%q (serial %s)", t.label, t.serial)
+}
 
 // module is a loaded PKCS#11 library and the entry points this package calls.
 //
@@ -360,13 +399,16 @@ func (m *module) slots() ([]ckULong, error) {
 	return list, nil
 }
 
-// tokenLabel returns a slot's token label, trimmed of the specification's space padding.
-func (m *module) tokenLabel(slot ckULong) (string, error) {
+// tokenInfo returns what a slot's token calls itself, trimmed of the specification's space padding.
+func (m *module) tokenInfo(slot ckULong) (tokenIdentity, error) {
 	var info [tokenInfoBytes]byte
 	if err := check("C_GetTokenInfo", m.getTokenInfo(slot, unsafe.Pointer(&info[0]))); err != nil {
-		return "", err
+		return tokenIdentity{}, err
 	}
-	return trimTokenField(info[:tokenLabelBytes]), nil
+	return tokenIdentity{
+		label:  trimTokenField(info[tokenLabelOffset : tokenLabelOffset+tokenLabelBytes]),
+		serial: trimTokenField(info[tokenSerialOffset : tokenSerialOffset+tokenSerialBytes]),
+	}, nil
 }
 
 // trimTokenField renders a fixed-width, space-padded PKCS#11 string field.

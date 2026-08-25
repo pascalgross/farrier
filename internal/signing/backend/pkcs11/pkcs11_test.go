@@ -57,6 +57,18 @@ const (
 	fixtureTokenInfoLabelPadded         = 32
 )
 
+// The two CK_TOKEN_INFO fields between the label and the serial, which only the ABI test below reads.
+//
+// They are here rather than in ffi.go because nothing shipped reads them: what they are for is proving
+// that the serial the backend does read is a different field from either of them, which is the one way
+// an offset that is wrong by a whole field could otherwise pass unnoticed.
+const (
+	fixtureManufacturerOffset = 32
+	fixtureManufacturerBytes  = 32
+	fixtureModelOffset        = 64
+	fixtureModelBytes         = 16
+)
+
 // fixture is the token every test in this package signs against.
 //
 // One token for the whole binary rather than one per test. SoftHSM reads SOFTHSM2_CONF when a module
@@ -609,4 +621,144 @@ func TestAReferenceWhoseKeyIDCannotBeWrittenDownIsRefused(t *testing.T) {
 			t.Errorf("%q was refused: %v", ref, err)
 		}
 	}
+}
+
+// TestTheTokenSerialComesFromTheFieldTheSpecificationNames is the ABI half of issue #35.
+//
+// The serial is read at a fixed offset into an opaque buffer, which is the same class of claim as the
+// entry-point indices in ffi.go and carries the same risk: purego checks nothing, and an offset that
+// landed one field early would read the model instead — printable, plausible, and the same for every
+// token of a product line, so a reference that named one physical token would match every one of them.
+// The unit tests cannot catch that, because the fake writes the field at whatever offset the code reads
+// it from.
+//
+// So this reads a real module's structure and asserts what the specification says about it: label,
+// manufacturerID, model and serialNumber are four distinct fixed-width fields, the first is the one the
+// fixture set, the fourth is neither of the two in between, and the run of character fields ends where
+// CK_FLAGS begins. Then it opens the token through the whole path with a reference carrying the serial
+// the backend read, because a serial nothing can match would be a field read correctly and matched
+// wrong.
+//
+// What it catches was measured rather than assumed, by mutating the two constants and running it: a
+// serial read from the model's offset, from the flags', or shifted by eight bytes either way all fail
+// it, and so does a width wrong by half or by half again. What it does not catch is a width off by one,
+// because the byte such a field gains is a zero that the padding trim removes and the byte it loses is
+// one character of a serial that nothing else here knows. Closing that would need a second source of
+// truth for this token's serial, which means vendor tooling CI deliberately does not install — and the
+// failure it would find is not the one that matters, since a serial short by its last character matches
+// no operator's URI and says so at the terminal.
+func TestTheTokenSerialComesFromTheFieldTheSpecificationNames(t *testing.T) {
+	modulePath := tokenFixture(t)
+
+	// The module is loaded, read and finalised before anything else touches it. A PKCS#11 module keeps
+	// one global initialisation for the process, so holding this one open would make the open() below
+	// fail with CKR_CRYPTOKI_ALREADY_INITIALIZED rather than with whatever it is being asked about.
+	identity, manufacturer, model, info := readFixtureTokenInfo(t, modulePath)
+
+	if identity.label != testTokenLabel {
+		t.Fatalf("the label reads %q, expected the fixture's %q; every offset below is relative to it",
+			identity.label, testTokenLabel)
+	}
+
+	if identity.serial == "" {
+		t.Fatal("the serial is empty; a module that reports one would mean the offset points at padding")
+	}
+	for _, r := range identity.serial {
+		if r < 0x20 || r > 0x7E {
+			t.Fatalf("the serial %q holds a byte no character field would; the offset is reaching past "+
+				"the four leading strings into CK_TOKEN_INFO's flags", identity.serial)
+		}
+	}
+	// CK_FLAGS follows serialNumber, and a CK_ULONG of flag bits is not eight printable characters: its
+	// high bytes are zero for every flag word a token sets. Finding a non-character byte immediately
+	// after the field pins where the run of character fields ends, and a 16-byte field ending there
+	// starts where the serial is read from.
+	flags := info[tokenSerialOffset+tokenSerialBytes : tokenSerialOffset+tokenSerialBytes+8]
+	printable := true
+	for _, b := range flags {
+		if b < 0x20 || b > 0x7E {
+			printable = false
+		}
+	}
+	if printable {
+		t.Errorf("the eight bytes after the serial read as text (%q), so the character fields do not "+
+			"end where CK_FLAGS should begin and the serial's offset or width is wrong", flags)
+	}
+
+	for _, other := range []struct {
+		// what names the neighbouring field.
+		what string
+
+		// value is what it holds.
+		value string
+	}{
+		{"label", identity.label},
+		{"manufacturerID", manufacturer},
+		{"model", model},
+	} {
+		if identity.serial == other.value {
+			t.Errorf("the serial and the %s both read %q, so the offset is one field out; a serial that "+
+				"is really the model is the same for every token of a product line and identifies none "+
+				"of them", other.what, identity.serial)
+		}
+	}
+
+	// And the whole path, with a reference carrying what was just read.
+	ref := "token=" + testTokenLabel + ";serial=" + identity.serial +
+		";object=" + testECLabel + "?module-path=" + modulePath
+	signer, err := open(context.Background(), ref, pinPrompt(testUserPIN))
+	if err != nil {
+		t.Fatalf("a reference carrying the token's own serial did not open it: %v", err)
+	}
+	defer func() { _ = signer.Close() }()
+
+	// A serial one digit off must not resolve to the same token, or the match is not a match.
+	wrong := "token=" + testTokenLabel + ";serial=" + identity.serial + "0" +
+		";object=" + testECLabel + "?module-path=" + modulePath
+	if other, err := open(context.Background(), wrong, pinPrompt(testUserPIN)); err == nil {
+		_ = other.Close()
+		t.Error("a reference carrying the wrong serial opened the token anyway")
+	}
+}
+
+// readFixtureTokenInfo reads the fixture token's CK_TOKEN_INFO and decodes four of its fields.
+//
+// It loads and finalises a module of its own rather than taking one, so that the caller can go on to
+// drive the ordinary open path against the same library: a module stays initialised for the process,
+// not for the handle, and a second C_Initialize answers CKR_CRYPTOKI_ALREADY_INITIALIZED.
+func readFixtureTokenInfo(t *testing.T, modulePath string) (tokenIdentity, string, string, []byte) {
+	t.Helper()
+
+	mod, err := openModule(modulePath)
+	if err != nil {
+		t.Fatalf("loading the module: %v", err)
+	}
+	defer finalize(mod)
+
+	args := ckInitializeArgs{flags: ckfOSLockingOK}
+	if err := check("C_Initialize", mod.initialize(pointerTo(&args))); err != nil {
+		t.Fatalf("initialising the module: %v", err)
+	}
+	slots, err := mod.slots()
+	if err != nil {
+		t.Fatalf("listing slots: %v", err)
+	}
+	if len(slots) == 0 {
+		t.Fatal("the fixture token is not present")
+	}
+
+	identity, err := mod.tokenInfo(slots[0])
+	if err != nil {
+		t.Fatalf("reading the token info: %v", err)
+	}
+
+	var info [tokenInfoBytes]byte
+	if err := check("C_GetTokenInfo",
+		mod.getTokenInfo(slots[0], unsafe.Pointer(&info[0]))); err != nil {
+		t.Fatalf("re-reading the token info: %v", err)
+	}
+	return identity,
+		trimTokenField(info[fixtureManufacturerOffset : fixtureManufacturerOffset+fixtureManufacturerBytes]),
+		trimTokenField(info[fixtureModelOffset : fixtureModelOffset+fixtureModelBytes]),
+		info[:]
 }

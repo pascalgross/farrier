@@ -23,11 +23,21 @@ type uri struct {
 	// modulePath is the shared library to load. Required.
 	modulePath string
 
-	// token is the token label to search for, empty to accept the only token present.
+	// token is the token label to search for, empty to match on serial alone or to accept the only
+	// token present.
 	token string
 
 	// slotID names a slot directly, for the tokens whose label is unhelpful. Negative when unset.
 	slotID int64
+
+	// serial is the token serial number to match, empty to match any.
+	//
+	// It is the one RFC 7512 token attribute besides the label that names a physical object rather than
+	// a product line, and it exists here because a label does not have to be unique: two identically
+	// provisioned YubiKeys — the ordinary state of an operator who keeps a spare — carry the same one.
+	// A reference that named only the label would then sign with whichever the module enumerated first,
+	// and nothing would say which that was.
+	serial string
 
 	// object is the CKA_LABEL of the key, and doubles as the identity in trusted-signers.
 	object string
@@ -71,18 +81,24 @@ func parseURI(ref string) (uri, error) {
 			out.object = value
 		case "id":
 			out.id = []byte(value)
+		case "serial":
+			out.serial = value
 		case "slot-id":
 			n, convErr := strconv.ParseInt(value, 10, 64)
 			if convErr != nil || n < 0 {
 				return uri{}, fmt.Errorf("pkcs11: slot-id must be a non-negative number, not %q", value)
 			}
 			out.slotID = n
-		case "model", "manufacturer", "serial", "type", "object-type", "library-manufacturer",
+		case "model", "manufacturer", "type", "object-type", "library-manufacturer",
 			"library-description", "library-version", "slot-manufacturer", "slot-description":
 			// Accepted and ignored: they are legitimate RFC 7512 attributes that narrow a search this
-			// backend narrows by token and label instead. Refusing a URI that carries one would make a
-			// reference that works in every other tool fail here, which is the opposite of the reason
-			// for using the standard syntax at all.
+			// backend narrows by token, serial and label instead. Refusing a URI that carries one would
+			// make a reference that works in every other tool fail here, which is the opposite of the
+			// reason for using the standard syntax at all — p11-kit and GnuTLS print token URLs that
+			// always carry model= and manufacturer=, including for the single-token case where there is
+			// nothing to disambiguate. They are also the wrong things to match on: each names a product
+			// line, so honouring them would add failure modes without adding precision. serial= is the
+			// exception, and is honoured above, because it names one physical token.
 		default:
 			return uri{}, fmt.Errorf("pkcs11: %q is not a PKCS#11 URI path attribute", name)
 		}
@@ -133,6 +149,34 @@ func parseURI(ref string) (uri, error) {
 	}
 	return out, nil
 }
+
+// matches reports whether a token is one this reference names.
+//
+// Every attribute the reference gives, not any of them: token=ops;serial=1234 means "the token labelled
+// ops whose serial is 1234" and has to find nothing when no such token is present, rather than falling
+// back to the first token labelled ops — which is the whole reason for honouring serial= at all. An
+// An attribute the reference leaves out matches anything here, so a reference naming only the label
+// still selects on the label alone — what changes for it is not this function but what findSlot does
+// with two matches.
+//
+// Both comparisons are byte-exact, as CKA_LABEL matching is elsewhere in this backend. A serial that
+// differs only in case is a different string to every other tool that speaks RFC 7512, and a backend
+// that quietly folded it would match a token the operator did not name.
+func (u uri) matches(t tokenIdentity) bool {
+	if u.token != "" && t.label != u.token {
+		return false
+	}
+	if u.serial != "" && t.serial != u.serial {
+		return false
+	}
+	return true
+}
+
+// namesAToken reports whether the reference says anything about which token to use.
+//
+// It exists so that findSlot asks the question once rather than repeating the pair of emptiness checks
+// that would otherwise have to stay in step with matches.
+func (u uri) namesAToken() bool { return u.token != "" || u.serial != "" }
 
 // keyID is the identity this key is recorded under in trusted-signers and in the audit log.
 //
