@@ -337,6 +337,21 @@ jobs:
           sudo apt-get -o APT::Sandbox::User=root install -y --no-install-recommends farrier-agent
           farrier-agent version
 
+      - name: The repository root is a page rather than a 404
+        # The index exists so that pasting the repository URL into a browser does not look like an
+        # outage, which is worth nothing if the page links to files the tree does not contain. Checked
+        # rather than assumed: what it may link to depends on whether the tree was signed and whether a
+        # URL was given, so it is exactly the kind of conditional that rots without a test.
+        run: |
+          test -f ./public/index.html
+          grep -q 'https://apt.example.invalid/farrier.sources' ./public/index.html
+          missing=0
+          for href in $(grep -o 'href="[^"]*"' ./public/index.html | sed 's/href="//; s/"$//'); do
+            case "$href" in http*) continue ;; esac
+            [ -f "./public/$href" ] || { echo "index.html links to a missing $href" >&2; missing=1; }
+          done
+          [ "$missing" -eq 0 ]
+
   containers:
     name: Containers
     runs-on: ubuntu-latest
