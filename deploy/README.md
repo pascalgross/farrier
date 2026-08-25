@@ -49,7 +49,7 @@ printed once — it is in the log you are already tailing:
 This control plane had no accounts, so one has been created.
 
   address:  admin@localhost
-  password: 5QPdLAaQZTTNKHXQJdWLicsL
+  password: <24 characters, printed here and nowhere else>
 ```
 
 A script uses an API token instead, issued from the account page in the interface:

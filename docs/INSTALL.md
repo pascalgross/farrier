@@ -82,7 +82,7 @@ password once:
 This control plane had no accounts, so one has been created.
 
   address:  admin@localhost
-  password: 5QPdLAaQZTTNKHXQJdWLicsL
+  password: <24 characters, printed here and nowhere else>
 ```
 
 Set `FARRIER_BOOTSTRAP_EMAIL`, and `FARRIER_BOOTSTRAP_PASSWORD` or `--bootstrap-password-file`, to
