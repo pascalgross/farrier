@@ -48,5 +48,10 @@ export const routes: Routes = [
     loadComponent: () => import('./templates/templates-page').then((m) => m.TemplatesPage),
     title: 'Templates — Farrier',
   },
+  {
+    path: 'fleets',
+    loadComponent: () => import('./fleets/fleets-page').then((m) => m.FleetsPage),
+    title: 'Fleets — Farrier',
+  },
   { path: '**', redirectTo: '' },
 ];

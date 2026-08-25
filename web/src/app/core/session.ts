@@ -63,6 +63,18 @@ export class SessionStore {
     return this.who() !== null;
   }
 
+  /**
+   * Whether the signed-in credential administers fleets rather than acting in one.
+   *
+   * The two reach disjoint sets of routes — a platform credential is refused by every route that
+   * reaches a fleet's hosts or jobs, and an operator credential by every route that administers
+   * fleets — so this is not a preference about what to show. Rendering the fleet navigation to a
+   * platform administrator would be six links that each answer 403.
+   */
+  isPlatform(): boolean {
+    return this.who()?.platform === true;
+  }
+
   /** Why the last sign-in failed, empty when it did not. */
   error(): string {
     return this.failure();

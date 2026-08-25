@@ -259,25 +259,44 @@ func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request, who 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleWhoami tells an operator who the control plane thinks they are and which fleet they are in.
+// handleWhoami tells a caller who the control plane thinks they are and which fleet they are in.
 //
 // The interface needs it for the same reason a shell prompt shows the hostname: an operator with access
 // to two fleets, in two browser tabs, needs the page itself to say which one they are looking at before
 // they queue a reboot in it.
-func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, who operator) {
-	tenant, err := s.cfg.Store.GetTenant(r.Context(), who.Store.Tenant())
-	if err != nil {
-		slog.Error("could not read the operator's tenant", "error", err, "tenant", who.Store.Tenant())
-		writeError(w, http.StatusInternalServerError, "internal", "could not read the tenant")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
+//
+// It is the one route that answers both credentials, and that is a fix rather than a convenience. It
+// used to be behind requireOperator, so a platform credential got the 403 every fleet route gives it —
+// which left the application able to say only that the credential it had been handed was unusable here,
+// with no way to say what it was for. Somebody who pasted the wrong one of an installation's two tokens
+// saw an empty console and the words "identity unknown".
+//
+// A platform credential still gets no tenant, because it has none. The `platform` flag is what the
+// interface reads to decide which of two interfaces to render, and `tenant` is null beside it rather
+// than an empty object, so a client that forgot to look at the flag fails on the field it needs rather
+// than rendering a fleet called "".
+func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, who auth.Identity) {
+	answer := map[string]any{
 		"subject":   who.Subject,
 		"display":   who.Display,
 		"provider":  who.Provider,
 		"principal": who.Principal(),
-		"tenant":    toTenantView(tenant),
-	})
+		"platform":  who.Platform,
+		"tenant":    nil,
+	}
+	if who.Platform || who.Tenant == "" {
+		writeJSON(w, http.StatusOK, answer)
+		return
+	}
+
+	tenant, err := s.cfg.Store.GetTenant(r.Context(), store.TenantID(who.Tenant))
+	if err != nil {
+		slog.Error("could not read the operator's tenant", "error", err, "tenant", who.Tenant)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the tenant")
+		return
+	}
+	answer["tenant"] = toTenantView(tenant)
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // valueOr returns a pointer's value, or a fallback when it is nil.

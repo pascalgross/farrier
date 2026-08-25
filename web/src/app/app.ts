@@ -10,7 +10,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { EventStream } from './core/event-stream';
 import { SessionStore } from './core/session';
@@ -66,6 +66,15 @@ export class App {
   protected readonly session = inject(SessionStore);
 
   /**
+   * Moves a platform credential to the one page it can use.
+   *
+   * The default route is the fleet list, which a platform credential is refused by design. Landing
+   * there and rendering the refusal would be technically honest and practically the same empty console
+   * this change exists to remove.
+   */
+  private readonly router = inject(Router);
+
+  /**
    * The live event feed, connected here rather than on the events page.
    *
    * The shell is the only component that is always mounted, and the bell has to keep counting while
@@ -108,10 +117,18 @@ export class App {
   constructor() {
     this.session.probe();
     effect(() => {
-      if (this.session.signedIn()) {
+      // The feed is a fleet's events, so it belongs to an operator and to nobody else: a platform
+      // credential is refused by the stream exactly as it is by every other fleet route, and starting
+      // it would be a reconnect loop against a 403.
+      if (this.session.signedIn() && !this.session.isPlatform()) {
         this.events.start();
       } else {
         this.events.stop();
+      }
+    });
+    effect(() => {
+      if (this.session.isPlatform() && !this.router.url.startsWith('/fleets')) {
+        void this.router.navigate(['/fleets']);
       }
     });
   }

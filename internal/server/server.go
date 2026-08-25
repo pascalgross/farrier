@@ -261,7 +261,7 @@ func (s *Server) routes() {
 	s.route(http.MethodPost, "/api/v1/jobs", s.requireOperator(s.handleCreateJob))
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
 	s.route(http.MethodPost, "/api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
-	s.route(http.MethodGet, "/api/v1/whoami", s.requireOperator(s.handleWhoami))
+	s.route(http.MethodGet, "/api/v1/whoami", s.requireIdentity(s.handleWhoami))
 
 	// Signing in and signing out. Both are unauthenticated on purpose: the first is where a credential
 	// comes from, and the second has to work for a session that has already stopped authenticating —
@@ -651,6 +651,30 @@ func (s *Server) requireOperator(next func(http.ResponseWriter, *http.Request, o
 		who := operator{Identity: *identity, Store: s.cfg.Store.In(store.TenantID(identity.Tenant))}
 		ctx := context.WithValue(r.Context(), operatorContextKey{}, who)
 		next(w, r.WithContext(ctx), who)
+	})
+}
+
+// requireIdentity authenticates any operator credential without deciding which kind it is.
+//
+// It exists for exactly one route — GET /api/v1/whoami — and the reason is worth stating, because a
+// middleware that accepts both credentials is otherwise the shape of a mistake. Every other route
+// belongs to one of the two roles and refuses the other, which is the whole of the separation
+// docs/SECURITY.md §5.3 describes. "Who am I" belongs to neither: it is the question a browser asks
+// before it knows which interface to render, and answering a platform credential with 403 meant the
+// application could only report that the credential it had just been given was unusable, without
+// being able to say what it was for.
+//
+// It hands over the identity and no store handle at all. A handler behind it therefore has nothing in
+// reach that could read a tenant's data, which is the property requirePlatform relies on too.
+func (s *Server) requireIdentity(next func(http.ResponseWriter, *http.Request, auth.Identity)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
+		if err != nil || identity == nil {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
+			writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid credential is required")
+			return
+		}
+		next(w, r, *identity)
 	})
 }
 

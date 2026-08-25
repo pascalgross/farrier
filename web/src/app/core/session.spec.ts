@@ -14,6 +14,7 @@ function whoami(): Whoami {
     display: 'Alice',
     provider: 'local-account',
     principal: 'local-account:alice@example.org',
+    platform: false,
     tenant: {
       id: 'tenant-alpha',
       slug: 'alpha',
@@ -102,18 +103,41 @@ describe('SessionStore', () => {
   });
 
   /**
-   * The platform credential administers fleets and reaches no fleet's hosts, so pasting it into the
-   * sign-in box authenticates and then reaches nothing. The control plane's 403 says exactly that, and
-   * showing it beats "wrong password" — which would send somebody to check what they typed rather
-   * than to find their other token.
+   * A credential that authenticates and reaches nothing the interface renders used to be reported as
+   * a wrong one, which sent people to check what they typed rather than to find their other token.
+   * `whoami` now answers a platform credential, so this is the fallback for whatever else 403 could
+   * mean rather than the platform case itself.
    */
   it('says why a credential that authenticated still reaches nothing here', () => {
-    const note = 'this is a platform credential, which administers tenants and reaches no tenant’s hosts';
+    const note = 'this credential reaches nothing here';
     const { session } = build({ whoami: [refusal(403, note)] });
 
     session.probe();
     expect(session.signedIn()).toBeFalse();
     expect(session.unusable()).toBe(note);
+  });
+
+  /**
+   * The platform credential administers fleets and is refused by every route that reaches a fleet's
+   * hosts or jobs. It signs in like anybody else and gets a different interface, and this flag is what
+   * the shell reads to decide which — so a tenant of null must never be mistaken for "not signed in".
+   */
+  it('recognises the credential that administers fleets rather than acting in one', () => {
+    const platform: Whoami = {
+      subject: 'platform',
+      display: 'Platform',
+      provider: 'platform-token',
+      principal: 'platform-token:platform',
+      platform: true,
+      tenant: null,
+    };
+    const { session } = build({ whoami: [of(platform)] });
+
+    session.probe();
+    expect(session.signedIn()).withContext('a platform credential is signed in').toBeTrue();
+    expect(session.isPlatform()).toBeTrue();
+    expect(session.identity()?.tenant).toBeNull();
+    expect(session.unusable()).withContext('nothing is wrong with it').toBe('');
   });
 
   /**
@@ -156,7 +180,7 @@ describe('SessionStore', () => {
 
     session.signIn('alice@example.org', 'a password long enough');
     expect(session.signedIn()).toBeTrue();
-    expect(session.identity()?.tenant.displayName).toBe('Alpha');
+    expect(session.identity()?.tenant?.displayName).toBe('Alpha');
     expect(session.working()).toBeFalse();
   });
 

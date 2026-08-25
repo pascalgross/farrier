@@ -16,6 +16,7 @@ import {
   JobsResponse,
   RenderTemplateRequest,
   RenderedTemplate,
+  CreateTenantRequest,
   ServiceHistoryResponse,
   SignInRequest,
   SignedIn,
@@ -23,6 +24,9 @@ import {
   TemplateVersion,
   TemplateVersionsResponse,
   TemplatesResponse,
+  Tenant,
+  TenantsResponse,
+  UpdateTenantRequest,
   Whoami,
 } from './api.models';
 import { TokenStore } from './token-store';
@@ -105,6 +109,47 @@ export class ApiService {
    */
   whoami(): Observable<Whoami> {
     return this.http.get<Whoami>('/api/v1/whoami', { headers: this.headers() });
+  }
+
+  /**
+   * Fetches every fleet on this installation.
+   *
+   * Behind the platform credential and refused to an operator, which is the same separation from the
+   * other side: a customer's operator must not be able to learn that other customers exist. There is
+   * therefore no method here that takes a tenant id from a fleet page — these four are the whole of
+   * what the platform interface does, and none of them reaches a fleet's hosts, jobs or results.
+   */
+  tenants(): Observable<TenantsResponse> {
+    return this.http.get<TenantsResponse>('/api/v1/tenants', { headers: this.headers() });
+  }
+
+  /**
+   * Creates a fleet.
+   *
+   * It does not also create a credential for it, and cannot: issuing one belongs to whatever
+   * authenticates operators, and a route that handed out credentials would make whoever runs the
+   * installation able to sign in as any customer. The page says what to run instead.
+   */
+  createTenant(request: CreateTenantRequest): Observable<Tenant> {
+    return this.http.post<Tenant>('/api/v1/tenants', request, { headers: this.headers() });
+  }
+
+  /** Changes a fleet's name, approval mode or webhook. Never its slug, which is immutable. */
+  updateTenant(id: string, request: UpdateTenantRequest): Observable<Tenant> {
+    return this.http.patch<Tenant>(`/api/v1/tenants/${encodeURIComponent(id)}`, request, {
+      headers: this.headers(),
+    });
+  }
+
+  /**
+   * Deletes a fleet and everything belonging to it.
+   *
+   * Hosts, certificates, enrolment tokens, jobs, results and accounts. It does not reach the machines
+   * — nothing in Farrier does — so their agents keep running on their own local policy and are refused
+   * at the next request as an unknown certificate.
+   */
+  deleteTenant(id: string): Observable<unknown> {
+    return this.http.delete(`/api/v1/tenants/${encodeURIComponent(id)}`, { headers: this.headers() });
   }
 
   /** Fetches the fleet. */

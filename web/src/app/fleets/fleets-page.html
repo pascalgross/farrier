@@ -1,0 +1,151 @@
+<h1 class="text-2xl font-medium mb-2">Fleets</h1>
+<p class="text-sm opacity-80 max-w-3xl">
+  One control plane, many independent fleets. They share this binary, this database and this
+  certificate authority, and they share nothing else: no fleet can see another's hosts, tokens, jobs or
+  results, and an operator credential reaches exactly one of them.
+</p>
+<p class="text-sm opacity-80 max-w-3xl">
+  This credential administers fleets and reaches no fleet's hosts or jobs — every operator route
+  refuses it. That is the point of having two credentials rather than one: running Farrier for other
+  people should not require being able to read what they run.
+</p>
+
+@if (error()) {
+  <mat-card class="max-w-xl mt-6">
+    <mat-card-content class="!pt-6 flex items-start gap-3">
+      <mat-icon class="text-farrier-bad" aria-hidden="true">error_outline</mat-icon>
+      <p class="m-0">{{ error() }}</p>
+    </mat-card-content>
+  </mat-card>
+}
+
+@if (fleets() === null && !error()) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading the fleets" />
+}
+
+<mat-card class="max-w-3xl mt-6">
+  <mat-card-header>
+    <mat-card-title>New fleet</mat-card-title>
+  </mat-card-header>
+
+  <mat-card-content class="!pt-4 flex flex-col gap-4">
+    <mat-form-field appearance="outline">
+      <mat-label>Slug</mat-label>
+      <input matInput autocomplete="off" spellcheck="false"
+             [ngModel]="newSlug()" (ngModelChange)="newSlug.set($event)" />
+      <mat-hint>
+        Lower-case letters, digits and hyphens. It appears in logs and support tickets and cannot be
+        changed afterwards, because everything that already refers to this fleet refers to it by this.
+      </mat-hint>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline">
+      <mat-label>Display name</mat-label>
+      <input matInput autocomplete="off"
+             [ngModel]="newName()" (ngModelChange)="newName.set($event)" />
+      <mat-hint>What the fleet is called in the interface. Defaults to the slug.</mat-hint>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline">
+      <mat-label>Approval</mat-label>
+      <mat-select [ngModel]="newApproval()" (ngModelChange)="newApproval.set($event)">
+        @for (mode of approvalModes; track mode.value) {
+          <mat-option [value]="mode.value">{{ mode.label }}</mat-option>
+        }
+      </mat-select>
+      <mat-hint>{{ chosenRationale() }}</mat-hint>
+    </mat-form-field>
+
+    @if (actionError()) {
+      <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+    }
+  </mat-card-content>
+
+  <mat-card-actions align="end">
+    <button mat-flat-button [disabled]="!canCreate()" (click)="create()">Create fleet</button>
+  </mat-card-actions>
+</mat-card>
+
+@if (created(); as slug) {
+  <mat-card class="max-w-3xl mt-6">
+    <mat-card-content class="!pt-6 flex flex-col gap-3">
+      <p class="m-0 font-medium">{{ slug }} exists. Nobody can sign in to it yet.</p>
+      <p class="m-0 text-sm opacity-80">
+        Creating a fleet deliberately does not create a credential for it, and there is no control here
+        that could: this credential must not be able to authenticate as a customer, so the route that
+        would allow it does not exist. Give the fleet its first operator on the control plane itself:
+      </p>
+      <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ accountCommand(slug) }}</code></pre>
+      <p class="m-0 text-sm opacity-80">
+        The password is asked for on the terminal. After that they sign in at this address with their
+        own address and password, and this screen never sees their fleet.
+      </p>
+    </mat-card-content>
+  </mat-card>
+}
+
+@if (fleets(); as list) {
+  <h2 class="text-lg font-medium mt-8 mb-2">{{ list.length }} fleet{{ list.length === 1 ? '' : 's' }}</h2>
+
+  @for (fleet of list; track fleet.id) {
+    <mat-card class="max-w-3xl mt-3">
+      <mat-card-content class="!pt-6 flex flex-col gap-3">
+        <div class="flex items-baseline gap-3 flex-wrap">
+          <span class="font-medium">{{ fleet.displayName }}</span>
+          <code class="text-sm opacity-70">{{ fleet.slug }}</code>
+          <span class="flex-1"></span>
+          <span class="text-sm opacity-70">{{ approvalLabel(fleet) }}</span>
+          <button mat-button (click)="toggle(fleet)"
+                  [attr.aria-label]="'Settings for ' + fleet.displayName">
+            {{ open() === fleet.id ? 'Close' : 'Settings' }}
+          </button>
+        </div>
+
+        @if (open() === fleet.id) {
+          <mat-form-field appearance="outline">
+            <mat-label>Display name</mat-label>
+            <input matInput autocomplete="off" [ngModel]="fleet.displayName"
+                   (change)="setName(fleet, $any($event.target).value)" />
+            <mat-hint>Applied when the field loses focus. The slug is not editable.</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Approval</mat-label>
+            <mat-select [ngModel]="fleet.approvalMode"
+                        (ngModelChange)="setApproval(fleet, $event)">
+              @for (mode of approvalModes; track mode.value) {
+                <mat-option [value]="mode.value">{{ mode.label }}</mat-option>
+              }
+            </mat-select>
+            <mat-hint>
+              Applies to jobs created afterwards and to nothing already queued: a job records what it
+              required when it was created, so relaxing this cannot release work queued under a
+              stricter rule.
+            </mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Event webhook</mat-label>
+            <input matInput autocomplete="off" spellcheck="false" [ngModel]="fleet.webhookUrl"
+                   (change)="setWebhook(fleet, $any($event.target).value)" />
+            <mat-hint>
+              Where this fleet's events are posted, empty for nowhere. Sinks send data out; nothing
+              sends anything in.
+            </mat-hint>
+          </mat-form-field>
+
+          <p class="m-0 text-sm opacity-80">
+            Give this fleet an operator on the control plane:
+          </p>
+          <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ accountCommand(fleet.slug) }}</code></pre>
+        }
+      </mat-card-content>
+    </mat-card>
+  } @empty {
+    <mat-card class="max-w-3xl mt-3">
+      <mat-card-content class="!pt-6">
+        <p class="m-0 text-sm opacity-80">No fleets yet. Create one above.</p>
+      </mat-card-content>
+    </mat-card>
+  }
+}

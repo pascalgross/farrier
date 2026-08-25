@@ -435,8 +435,61 @@ export interface Whoami {
   /** The provider-qualified string recorded as the author of anything they do. */
   principal: string;
 
-  /** The fleet this credential acts in. */
-  tenant: Tenant;
+  /**
+   * Whether this is the installation's platform administrator rather than a fleet's operator.
+   *
+   * It decides which of two interfaces to render, and there are two because the credentials reach
+   * disjoint sets of routes: a platform credential administers fleets and is refused by every route
+   * that reaches a fleet's hosts or jobs, and an operator credential is the other way round.
+   */
+  platform: boolean;
+
+  /**
+   * The fleet this credential acts in, null for a platform administrator.
+   *
+   * Null rather than an empty tenant, deliberately: a client that forgot to read `platform` fails on
+   * the field it needs rather than rendering a fleet called "".
+   */
+  tenant: Tenant | null;
+}
+
+/** The response of `GET /api/v1/tenants`. */
+export interface TenantsResponse {
+  /** Every fleet on this installation, oldest first. */
+  tenants: Tenant[];
+}
+
+/** The body of `POST /api/v1/tenants`. */
+export interface CreateTenantRequest {
+  /** The short stable handle. Lower-case letters, digits and hyphens; it cannot be changed later. */
+  slug: string;
+
+  /** What the fleet is called in the interface, defaulting to the slug. */
+  displayName?: string;
+
+  /** How this fleet releases a destructive job: "none", "self" or "second_person". */
+  approvalMode?: string;
+
+  /** Where this fleet's events are posted, empty for nowhere. */
+  webhookUrl?: string;
+}
+
+/**
+ * The body of `PATCH /api/v1/tenants/{id}`.
+ *
+ * Every field is optional and one that is not sent is left alone, which is what makes this a patch: an
+ * administrator changing an approval mode must not silently erase a webhook they never mentioned. The
+ * slug is absent because it cannot be changed — it is what logs and support tickets refer to.
+ */
+export interface UpdateTenantRequest {
+  /** What the fleet is called in the interface. */
+  displayName?: string;
+
+  /** How this fleet releases a destructive job. */
+  approvalMode?: string;
+
+  /** Where this fleet's events are posted, empty for nowhere. */
+  webhookUrl?: string;
 }
 
 /** The body of `POST /api/v1/session`. */

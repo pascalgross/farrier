@@ -443,6 +443,13 @@ platform administrator able to authenticate as any customer, which is precisely 
 exists to keep. This is why a fleet's accounts are created with `farrier-server accounts`, on the
 machine, and by no route: see [§4.5](#45-who-the-operator-is).
 
+The interface it reaches is one screen: the fleets, and their names, approval modes and webhooks. There
+is no host list on it, no job list and no way to reach one, because there is no route behind it that
+would answer — which is the same statement as the paragraph above rather than a second one. `whoami` is
+the single route that answers both credentials, and it hands a platform credential no tenant at all;
+it exists so the interface can say *what this credential is for* instead of rendering an empty console
+to somebody who pasted the wrong one of an installation's two tokens.
+
 The honest limit: a platform administrator has the database and the process. Nothing here prevents
 somebody with shell access on the control plane from reading a tenant's rows, and this document does
 not claim otherwise. What it prevents is *the product* offering that as a feature, and a bug offering

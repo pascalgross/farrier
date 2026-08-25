@@ -156,7 +156,10 @@ certificate authority, and they share nothing else: no fleet can see another's h
 results, and an operator credential reaches exactly one of them. There is no fleet in any URL, so there
 is nothing an operator could edit to be somewhere else.
 
-Provisioning one is a separate credential's job:
+Provisioning one is a separate credential's job. Sign in to the web interface with the platform token
+and you get a fleets screen — create, rename, retire, and set each fleet's approval mode and webhook —
+and nothing else, because a platform credential is refused by every route that reaches a fleet's hosts
+or jobs. The same thing from a terminal:
 
 ```bash
 export FARRIER_PLATFORM_TOKEN="$(openssl rand -hex 32)"
