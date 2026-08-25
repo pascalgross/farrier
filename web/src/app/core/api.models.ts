@@ -439,6 +439,37 @@ export interface Whoami {
   tenant: Tenant;
 }
 
+/** The body of `POST /api/v1/session`. */
+export interface SignInRequest {
+  /** The address the operator signs in with, matched without regard to case or surrounding space. */
+  email: string;
+
+  /** What they typed. It is sent once, over TLS, and is never stored by this application. */
+  password: string;
+}
+
+/**
+ * The response of `POST /api/v1/session`.
+ *
+ * There is deliberately no token in it. The credential is an HttpOnly cookie the browser keeps and
+ * this application cannot read, which is the point of signing in this way rather than pasting a bearer
+ * token into `localStorage`. What comes back is who signed in, so the shell can render a name without
+ * a second round trip.
+ */
+export interface SignedIn {
+  /** The identifier the provider knows this operator by, which for an account is their address. */
+  subject: string;
+
+  /** A human-readable name. */
+  display: string;
+
+  /** Which provider authenticated them. */
+  provider: string;
+
+  /** The provider-qualified string recorded as the author of anything they do. */
+  principal: string;
+}
+
 /**
  * One event as the inbox and the live stream render it.
  *

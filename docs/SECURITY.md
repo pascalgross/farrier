@@ -228,6 +228,10 @@ nobody could use rather than a tier everybody used carefully.
 
 An organisation with more than one operator should turn `second_person` on. It is one field on the
 tenant, and it is the setting that makes "nobody reboots production alone" true rather than customary.
+It needs one thing to be true first: the rule compares the approver's principal against the job's
+creator, so every operator has to be a distinct principal. An account is
+([§4.5](#45-who-the-operator-is)); a shared bearer token is not, and under one the rule fails closed and
+nobody can release anything.
 
 **Every destructive intent is offline-signed, in every mode.** No approval setting relaxes that, and
 there is no mode in which a destructive job runs on mTLS alone.
@@ -327,6 +331,42 @@ networks would be a substantially larger backdoor than the remote-exec channel t
 
 ---
 
+### 4.5 Who the operator is
+
+Two credentials reach the administrative API, and `auth.Provider` is the seam both come through.
+
+An **account** is an address and a password, one per person, belonging to one fleet. The password is
+stored as Argon2id with the cost parameters written into the hash beside the digest, so they can be
+raised later without invalidating anybody — and a sign-in rewrites a hash it finds below the current
+cost, because sign-in is the one moment the password is known. Signing in exchanges the password for an
+opaque 256-bit session token in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie; only the token's SHA-256
+is stored, so a database dump is not a set of live sessions. A session lasts twelve hours, is deleted by
+signing out, and goes with the account when the account is deleted. A cookie without the
+`X-Farrier-Session` header authenticates nothing, which is the cross-site request forgery defence: a
+cross-site form post cannot set a header, and a cross-site fetch that sets one triggers a preflight this
+server does not answer.
+
+A **bearer token** is the other, and it stays. It is what a script uses, what a fresh control plane
+prints before anybody has an account, and what the platform credential still is. Removing it would put
+a database write between starting the binary and seeing the fleet list.
+
+**Accounts are created on the machine**, with `farrier-server accounts`, and by no API at all. That is
+[§5.3](#53-the-platform-administrator) applied rather than worked around: a platform credential must not
+be able to authenticate as a customer, so it is not given a route that would let it. Creating an account
+from a shell on the control plane adds no power to a role that §5.3 already concedes has the database
+and the process — it makes a power that already existed findable instead of something to write SQL for.
+
+The fleet is never a field on the sign-in form. It comes from the account row, the way an agent's tenant
+comes from its certificate row, which is what keeps [§5.2](#52-where-the-boundary-is-enforced)'s first
+layer true of a browser as well as of an agent.
+
+**None of this is a boundary the guarantee in [§1](#1-the-guarantee) rests on.** A compromised
+administrator account is inside that threat model by construction, and better operator authentication
+does not move that line. What it buys is narrower and worth naming: an audit trail that records *which
+person* queued a job rather than the word "operator"; a second-person approval rule that can actually be
+satisfied, because it compares two principals and a shared token makes them equal; and the ability to
+withdraw one person's access without rotating everybody's.
+
 ## 5. Tenants
 
 One control plane can serve many independent fleets. That is what makes hosting Farrier for other
@@ -400,7 +440,8 @@ holds no tenant of its own, and every route that reaches a tenant's hosts or job
 It also cannot mint an operator credential. Issuing a fleet's credential belongs to the identity
 provider — `auth.Provider` is the seam for it — and a tenant API that handed out tokens would make the
 platform administrator able to authenticate as any customer, which is precisely the separation the role
-exists to keep.
+exists to keep. This is why a fleet's accounts are created with `farrier-server accounts`, on the
+machine, and by no route: see [§4.5](#45-who-the-operator-is).
 
 The honest limit: a platform administrator has the database and the process. Nothing here prevents
 somebody with shell access on the control plane from reading a tenant's rows, and this document does

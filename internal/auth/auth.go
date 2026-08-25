@@ -3,6 +3,17 @@
 // It is a seam: local accounts now, OIDC and SAML later, added by writing an implementation rather than
 // by editing a switch. See docs/EXTENDING.md.
 //
+// Two implementations ship. StaticToken is one bearer token bound to one fleet — what a script uses,
+// and what a control plane hands whoever started it before anybody has an account. Accounts is an
+// address and a password per person, with a session in an HttpOnly cookie, and it is what makes the
+// audit trail name somebody and makes second-person approval reachable: that rule compares the
+// approver's principal against the job's creator, and under one shared token those two strings are
+// always equal. They compose through Chain, so an installation has both.
+//
+// Accounts reaches internal/store, which is why this package does. That is a property of local accounts
+// rather than of the seam — an OIDC implementation would reach an issuer instead — and nothing on a
+// managed host links any of it: only cmd/farrier-server and internal/server import this package.
+//
 // It is worth being explicit that this is **not** a boundary the guarantee in docs/SECURITY.md rests
 // on. A compromised administrator account is inside that threat model by construction — the guarantee
 // says an attacker who owns the control plane, its database *and* an administrator account still cannot

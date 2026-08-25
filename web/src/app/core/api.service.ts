@@ -17,6 +17,8 @@ import {
   RenderTemplateRequest,
   RenderedTemplate,
   ServiceHistoryResponse,
+  SignInRequest,
+  SignedIn,
   StoredTemplateVersion,
   TemplateVersion,
   TemplateVersionsResponse,
@@ -24,6 +26,19 @@ import {
   Whoami,
 } from './api.models';
 import { TokenStore } from './token-store';
+
+/**
+ * The header every request to the administrative API carries.
+ *
+ * It is the cross-site request forgery defence for the session cookie, and it works because of what a
+ * browser will not do: a cross-site form post cannot set a header at all, and a cross-site fetch that
+ * sets one triggers a CORS preflight the control plane does not answer. The server refuses a
+ * cookie-authenticated request without it — see `internal/auth`, which is where the rule lives.
+ *
+ * It is exported because the live event feed reads its stream with `fetch` rather than through this
+ * service, and a header written twice is a header that will one day be written differently.
+ */
+export const SESSION_HEADER = 'X-Farrier-Session';
 
 /**
  * Talks to the Farrier control plane's administrative API.
@@ -43,11 +58,42 @@ export class ApiService {
   /**
    * Builds the headers for an authenticated request.
    *
-   * The token is read on every call rather than captured once, so that entering a token takes effect
-   * immediately instead of on the next reload.
+   * Two credentials reach this API and a browser may hold either. A session cookie is sent by the
+   * browser itself and needs nothing here but `SESSION_HEADER`; a bearer token — what a fresh control
+   * plane prints, and what the platform credential still is — goes in `Authorization`. The token is
+   * read on every call rather than captured once, so that entering one takes effect immediately
+   * instead of on the next reload.
+   *
+   * The `Authorization` header is omitted rather than sent empty when there is no token, because an
+   * empty bearer credential is a credential the server has to consider and refuse, and the request it
+   * would refuse is one that a cookie was about to authenticate perfectly well.
    */
   private headers(): HttpHeaders {
-    return new HttpHeaders({ Authorization: `Bearer ${this.tokens.token()}` });
+    const headers = new HttpHeaders({ [SESSION_HEADER]: '1' });
+    const token = this.tokens.token();
+    return token ? headers.set('Authorization', `Bearer ${token}`) : headers;
+  }
+
+  /**
+   * Exchanges an address and a password for a session.
+   *
+   * Nothing useful comes back for a client to store: the credential is an HttpOnly cookie the browser
+   * keeps and this application cannot read, which is the whole point of the change. The response says
+   * who signed in so that the shell can render a name without a second round trip.
+   */
+  signIn(request: SignInRequest): Observable<SignedIn> {
+    return this.http.post<SignedIn>('/api/v1/session', request, { headers: this.headers() });
+  }
+
+  /**
+   * Ends the session this browser holds.
+   *
+   * It deletes the row as well as the cookie, which is what makes "sign out" mean the credential stops
+   * working rather than merely stops being sent. It is safe to call with no session — an operator whose
+   * session expired in another tab still has a cookie to be rid of.
+   */
+  signOut(): Observable<unknown> {
+    return this.http.delete('/api/v1/session', { headers: this.headers() });
   }
 
   /**

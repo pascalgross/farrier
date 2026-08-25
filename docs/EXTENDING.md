@@ -220,6 +220,21 @@ that it is not a security boundary for the guarantee: a compromised administrato
 explicitly inside the threat model of [`SECURITY.md` §1](SECURITY.md#1-the-guarantee) and still cannot
 run code on a host.
 
+Two implementations ship, and they compose through `auth.Chain` rather than replacing one another:
+
+| Implementation | The credential | What it is for |
+| --- | --- | --- |
+| `StaticToken` | one bearer token, bound to one fleet | scripts, and getting in before anybody has an account. The platform credential is one of these. |
+| `Accounts` | an address and a password, then a session cookie | people. It is what makes the audit trail name somebody and the two-person approval rule satisfiable. |
+
+`Accounts` reaches `internal/store`, which is why this package does — a property of local accounts
+rather than of the seam, since an OIDC implementation would reach an issuer instead. A third
+implementation adds a type here and an argument to the `auth.Chain` call in `cmd/farrier-server`;
+`Chain` asks every member, so adding one cannot silently shadow another. What it must do is set
+`Identity.Provider`, because `Principal()` is provider-qualified and that string is compared for
+equality by the approval rule. [`SECURITY.md` §4.5](SECURITY.md#45-who-the-operator-is) is the
+specification for what the shipped pair actually do.
+
 ### The Angular application
 
 Standalone components and lazily loaded routes, in `web/src/app`. There is no panel registry: it would

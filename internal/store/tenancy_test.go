@@ -123,6 +123,41 @@ func twoTenants(t *testing.T, s Store) (alpha, beta Scoped) {
 		}); err != nil {
 			t.Fatalf("recording a state for %s: %v", tenant.scoped.Tenant(), err)
 		}
+
+		// An operator account and a live session in each fleet. The id collides and the address does
+		// not, because the schema is that way round: an account id is per tenant and an address
+		// identifies a person across the installation. Every field carries the tenant's name, so a row
+		// that leaked would be recognisably somebody else's rather than plausibly the caller's.
+		if err := tenant.scoped.CreateAccount(ctx, Account{
+			ID:           sharedAccountID,
+			Email:        string(tenant.scoped.Tenant()) + "@example.org",
+			EmailKey:     "email-key-" + string(tenant.scoped.Tenant()),
+			DisplayName:  "operator-for-" + string(tenant.scoped.Tenant()),
+			PasswordHash: "hash-for-" + string(tenant.scoped.Tenant()),
+			CreatedAt:    time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("creating an account for %s: %v", tenant.scoped.Tenant(), err)
+		}
+		if err := tenant.scoped.CreateSession(ctx, Session{
+			TokenHash: "session-hash-" + string(tenant.scoped.Tenant()),
+			AccountID: sharedAccountID,
+			CreatedAt: time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("creating a session for %s: %v", tenant.scoped.Tenant(), err)
+		}
+	}
+
+	// The account only beta holds, so that the delete probe has something it must fail to reach.
+	if err := beta.CreateAccount(ctx, Account{
+		ID:           betaOnlyAccountID,
+		Email:        "beta-only@example.org",
+		EmailKey:     "email-key-beta-only",
+		DisplayName:  "operator-for-beta-only",
+		PasswordHash: "hash-for-beta-only",
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("creating beta's second account: %v", err)
 	}
 	return alpha, beta
 }
@@ -162,6 +197,20 @@ const (
 
 	// betaOnlyRuleID is a rule only beta holds, for the delete and upsert probes that must miss.
 	betaOnlyRuleID = "01JBETARULE"
+
+	// sharedAccountID is the operator-account id both tenants hold, because the schema permits it.
+	//
+	// The primary key is (tenant_id, id), so two fleets holding an account under the same id is
+	// ordinary rather than a collision — and it is exactly the shape that makes a scoped read reaching
+	// by id alone return the wrong person's credential.
+	sharedAccountID = "01JSHAREDACCOUNT"
+
+	// betaOnlyAccountID is an account only beta holds, for the delete probe that must miss.
+	//
+	// A separate id rather than the shared one because deleting the shared id from alpha would succeed
+	// legitimately — on alpha's own row — and leave the probes that run after it in map order without a
+	// fixture. What has to be unreachable is beta's, so beta gets one of its own.
+	betaOnlyAccountID = "01JBETAACCOUNT"
 )
 
 // deliveryStamp is the fixed time the delivery-report probe writes.
@@ -817,6 +866,132 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					if st.RuleID == betaOnlyRuleID && st.Firing {
 						t.Fatal("the refused upsert still landed in beta's states")
 					}
+				}
+			},
+
+			// Operator accounts and sessions. These are credentials rather than data, so the failure a
+			// leak would produce is not "alpha saw beta's fleet" but "alpha could sign in as beta's
+			// operator", and every probe below is written against that.
+			"CreateAccount": func(t *testing.T) {
+				// A fresh account of alpha's own must not disturb beta's, and an address beta already
+				// holds must be refused — the unique index on email_key is installation-wide, which is
+				// what makes an address resolve to exactly one fleet at sign-in.
+				if err := alpha.CreateAccount(ctx, Account{
+					ID: "01JALPHAEXTRA", Email: "extra@example.org", EmailKey: "email-key-alpha-extra",
+					DisplayName: "extra", PasswordHash: "hash", CreatedAt: time.Now().UTC(),
+				}); err != nil {
+					t.Fatalf("alpha cannot create an account of its own: %v", err)
+				}
+				err := alpha.CreateAccount(ctx, Account{
+					ID: "01JALPHACLASH", Email: string(beta.Tenant()) + "@example.org",
+					EmailKey:    "email-key-" + string(beta.Tenant()),
+					DisplayName: "clash", PasswordHash: "hash", CreatedAt: time.Now().UTC(),
+				})
+				if !errors.Is(err, ErrConflict) {
+					t.Fatalf("alpha claimed an address beta holds: %v", err)
+				}
+				held, err := beta.GetAccount(ctx, sharedAccountID)
+				if err != nil {
+					t.Fatalf("reading beta's account back: %v", err)
+				}
+				if held.DisplayName != "operator-for-"+string(beta.Tenant()) {
+					t.Fatalf("beta's account is now %+v", held)
+				}
+			},
+			"GetAccount": func(t *testing.T) {
+				account, err := alpha.GetAccount(ctx, sharedAccountID)
+				if err != nil {
+					t.Fatalf("alpha cannot read its own account: %v", err)
+				}
+				if account.DisplayName != "operator-for-"+string(alpha.Tenant()) {
+					t.Fatalf("alpha read %+v, which is not its own operator", account)
+				}
+				if _, err := alpha.GetAccount(ctx, betaOnlyAccountID); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha read an account only beta holds: %v", err)
+				}
+			},
+			"ListAccounts": func(t *testing.T) {
+				accounts, err := alpha.ListAccounts(ctx)
+				if err != nil {
+					t.Fatalf("listing: %v", err)
+				}
+				// By content rather than by count: the probes run in map order, so the create probe may
+				// already have added one of alpha's. What must never appear is beta's.
+				var mine bool
+				for _, account := range accounts {
+					if strings.HasSuffix(account.DisplayName, string(beta.Tenant())) ||
+						strings.HasSuffix(account.EmailKey, string(beta.Tenant())) {
+						t.Errorf("alpha's account listing contains %+v", account)
+					}
+					if account.DisplayName == "operator-for-"+string(alpha.Tenant()) {
+						mine = true
+					}
+				}
+				if !mine {
+					t.Error("alpha's account listing does not contain alpha's own operator")
+				}
+			},
+			"UpdateAccountPassword": func(t *testing.T) {
+				// The id is the same in both fleets, so this is the probe that would catch a WHERE
+				// clause missing its tenant: it would overwrite beta's operator's password with a hash
+				// alpha chose, which is a cross-tenant write that hands over an account.
+				if err := alpha.UpdateAccountPassword(ctx, sharedAccountID, "hash-set-by-alpha"); err != nil {
+					t.Fatalf("alpha cannot change its own operator's password: %v", err)
+				}
+				held, err := beta.GetAccount(ctx, sharedAccountID)
+				if err != nil {
+					t.Fatalf("reading beta's account back: %v", err)
+				}
+				if held.PasswordHash != "hash-for-"+string(beta.Tenant()) {
+					t.Fatalf("alpha changed beta's operator's password: it is now %q", held.PasswordHash)
+				}
+				if err := alpha.UpdateAccountPassword(ctx, betaOnlyAccountID, "hash-set-by-alpha"); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha changed the password of an account only beta holds: %v", err)
+				}
+			},
+			"RecordAccountSignIn": func(t *testing.T) {
+				if err := alpha.RecordAccountSignIn(ctx, sharedAccountID, deliveryStamp); err != nil {
+					t.Fatalf("alpha cannot stamp its own operator's sign-in: %v", err)
+				}
+				held, err := beta.GetAccount(ctx, sharedAccountID)
+				if err != nil {
+					t.Fatalf("reading beta's account back: %v", err)
+				}
+				if held.LastSignedInAt.Equal(deliveryStamp) {
+					t.Fatal("alpha's sign-in was stamped on beta's operator")
+				}
+			},
+			"DeleteAccount": func(t *testing.T) {
+				if err := alpha.DeleteAccount(ctx, betaOnlyAccountID); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("alpha deleted an account only beta holds: %v", err)
+				}
+				if _, err := beta.GetAccount(ctx, betaOnlyAccountID); err != nil {
+					t.Fatalf("beta's second account is gone: %v", err)
+				}
+			},
+			"CreateSession": func(t *testing.T) {
+				// A session naming an account this fleet does not hold must be refused, or a fleet
+				// could mint a live credential against somebody else's operator.
+				err := alpha.CreateSession(ctx, Session{
+					TokenHash: "session-hash-forged", AccountID: betaOnlyAccountID,
+					CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+				})
+				if err == nil {
+					t.Fatal("alpha minted a session against an account belonging to beta")
+				}
+				if _, err := s.SessionByToken(ctx, "session-hash-forged"); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("the refused session was written anyway: %v", err)
+				}
+			},
+			"DeleteSession": func(t *testing.T) {
+				// Signing somebody else out is a denial rather than a disclosure, and it is still a
+				// cross-tenant write: the token hash is the primary key, so a DELETE without its tenant
+				// would end beta's operator's session from alpha's request.
+				if err := alpha.DeleteSession(ctx, "session-hash-"+string(beta.Tenant())); err != nil {
+					t.Fatalf("deleting a token alpha does not hold should be a no-op: %v", err)
+				}
+				if _, err := s.SessionByToken(ctx, "session-hash-"+string(beta.Tenant())); err != nil {
+					t.Fatalf("alpha ended beta's session: %v", err)
 				}
 			},
 		}

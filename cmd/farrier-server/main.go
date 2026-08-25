@@ -44,6 +44,7 @@ func usage() {
 usage:
   farrier-server serve       run the control plane
   farrier-server ca init     create the private CA that issues agent certificates
+  farrier-server accounts    create and manage the accounts operators sign in with
   farrier-server catalogue   print the intent catalogue this build knows
   farrier-server version     print the version
 
@@ -67,6 +68,8 @@ func main() {
 		os.Exit(serve(args[1:]))
 	case "ca":
 		os.Exit(caCommand(args[1:]))
+	case "accounts":
+		os.Exit(accountsCommand(args[1:]))
 	case "catalogue":
 		printCatalogue()
 	case "version":
@@ -195,6 +198,18 @@ func serve(argv []string) int {
 		slog.Info("tenant administration is enabled", "route", "/api/v1/tenants")
 	}
 
+	// Local accounts, chained beside the tokens rather than replacing them.
+	//
+	// Always configured, because there is nothing to configure: the accounts are rows, and an
+	// installation with none simply has a provider that never recognises anybody. That is deliberately
+	// not the same as switching the feature off — an operator who runs `farrier-server accounts add`
+	// must not also have to restart the control plane with a flag before the account works.
+	//
+	// It is chained last, and the order carries no meaning beyond readability: auth.Chain asks every
+	// member, so a credential cannot be shadowed by whichever provider happens to come first.
+	accounts := auth.NewAccounts(backing, auth.DefaultSessionTTL)
+	provider = auth.Chain(provider, accounts)
+
 	// The key that signs routine jobs. Beside the CA, generated on first start, and its public half is
 	// handed to every agent at enrolment and on every heartbeat. It authorises one tier and cannot
 	// authorise the destructive one: an agent verifies those against its own trusted-signers, which
@@ -247,6 +262,7 @@ func serve(argv []string) int {
 		Authority:        authority,
 		Store:            backing,
 		Auth:             provider,
+		Accounts:         accounts,
 		OnlineKey:        online,
 		TemplateKey:      templateKey,
 		HeartbeatSeconds: *heartbeat,

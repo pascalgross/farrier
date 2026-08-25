@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { FleetEvent } from './api.models';
-import { ApiService } from './api.service';
+import { ApiService, SESSION_HEADER } from './api.service';
 import { TokenStore } from './token-store';
 
 /** How many events the in-memory feed keeps, which is what the bell and the inbox page read. */
@@ -73,7 +73,7 @@ export class EventStream {
   /** Talks to the control plane. */
   private readonly api = inject(ApiService);
 
-  /** Holds the operator's bearer token, and decides whether there is anything to connect with. */
+  /** Holds the operator's bearer token, for the one request that does not go through ApiService. */
   private readonly tokens = inject(TokenStore);
 
   /** The merged feed, newest first, bounded to FEED_LIMIT. */
@@ -158,9 +158,16 @@ export class EventStream {
    *
    * Idempotent, because the shell and the inbox page both want the feed and neither should have to
    * know whether the other got there first.
+   *
+   * Whether there is a credential is the caller's question rather than this one's. It used to be
+   * asked here, as "is there a bearer token", and that stopped being the same question the moment a
+   * session cookie became the usual credential: a cookie is one this application cannot read, so a
+   * feed gated on a token it could see would simply never connect for anybody signed in with an
+   * address and a password. The shell starts the feed when somebody is signed in and stops it when
+   * they are not, which is the only place that is actually known.
    */
   start(): void {
-    if (this.started || !this.tokens.hasToken()) {
+    if (this.started) {
       return;
     }
     this.started = true;
@@ -259,6 +266,22 @@ export class EventStream {
   }
 
   /**
+   * Builds the headers for the one request this class makes without going through ApiService.
+   *
+   * The session header goes on every request, because the server refuses a cookie-authenticated one
+   * without it; the bearer token goes on only when this browser holds one, because an empty
+   * Authorization header is a credential the server has to refuse. Written here rather than reached
+   * for from ApiService's private helper, and kept beside its one call site so that the two cannot
+   * quietly come to disagree — the constant they share is exported for exactly that reason.
+   */
+  private headers(): Record<string, string> {
+    const token = this.tokens.token();
+    return token
+      ? { [SESSION_HEADER]: '1', Authorization: `Bearer ${token}` }
+      : { [SESSION_HEADER]: '1' };
+  }
+
+  /**
    * Holds one connection open, then reconnects, until stop() or a lost token.
    *
    * The loop is the reconnect policy: `EventSource` would have supplied one, and this is what
@@ -272,7 +295,7 @@ export class EventStream {
    * the overlap is a duplicate the feed's de-duplication already absorbs.
    */
   private async connect(generation: number): Promise<void> {
-    while (this.started && this.generation === generation && this.tokens.hasToken()) {
+    while (this.started && this.generation === generation) {
       const clean = await this.readStream(() => this.refresh());
       if (!this.started || this.generation !== generation) {
         return;
@@ -302,7 +325,10 @@ export class EventStream {
 
     try {
       const response = await fetch('/api/v1/events/stream', {
-        headers: { Authorization: `Bearer ${this.tokens.token()}` },
+        // The same two credentials ApiService sends, spelled out here because this one request does
+        // not go through it: the session header on every request, and the bearer token only when
+        // there is one. The cookie, when that is what this browser holds, the browser adds itself.
+        headers: this.headers(),
         signal: controller.signal,
         // The stream is a credentialed read of control-plane state; a shared cache holding one would
         // be one customer's incidents replayed to whoever asked next. The server says no-store too.

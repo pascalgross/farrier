@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/prompt"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/provision"
 	"github.com/pascalgross/farrier/internal/signing"
@@ -77,7 +78,7 @@ func signTemplateCommand(argv []string) int {
 
 	fmt.Fprint(os.Stderr, describeTemplate(bootstrap, signer))
 	if !*assumeYes {
-		ok, err := confirm("Sign this template? [y/N] ")
+		ok, err := prompt.Confirm("Sign this template? [y/N] ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
 			return 1

@@ -150,6 +150,16 @@ type Memory struct {
 
 	// states are the alert evaluator's memory by tenant, rule and host.
 	states map[stateKey]AlertState
+
+	// accounts are operator accounts by tenant and id, each carrying its own tenant as well.
+	accounts map[accountKey]Account
+
+	// sessions are signed-in browsers by the SHA-256 of their token.
+	//
+	// Keyed by the hash alone and not by tenant, matching the schema's primary key and matching how the
+	// row is reached: resolving a token is how a request discovers which tenant it belongs to, so a
+	// tenant in the key would be a tenant the caller does not yet have.
+	sessions map[string]Session
 }
 
 // NewMemory returns an in-memory store holding the default tenant and nothing else.
@@ -179,6 +189,8 @@ func NewMemory() *Memory {
 		templates: map[templateKey]TemplateVersion{},
 		rules:     map[ruleKey]AlertRule{},
 		states:    map[stateKey]AlertState{},
+		accounts:  map[accountKey]Account{},
+		sessions:  map[string]Session{},
 	}
 }
 
@@ -393,6 +405,20 @@ func (m *Memory) DeleteTenant(_ context.Context, id TenantID) error {
 	for key := range m.states {
 		if key.tenant == id {
 			delete(m.states, key)
+		}
+	}
+	// Accounts and the sessions they hold. The database performs this from one DELETE through two
+	// ON DELETE CASCADEs; here it is two sweeps, and the session one is keyed on the session's own
+	// tenant rather than on the account it names, so that a session whose account had somehow gone
+	// missing still leaves with its tenant.
+	for key := range m.accounts {
+		if key.tenant == id {
+			delete(m.accounts, key)
+		}
+	}
+	for hash, session := range m.sessions {
+		if session.TenantID == id {
+			delete(m.sessions, hash)
 		}
 	}
 	return nil

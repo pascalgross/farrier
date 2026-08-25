@@ -254,15 +254,21 @@ func (s *scopedPostgres) withTenant(ctx context.Context, what string, fn func(pg
 // withResolveKey runs fn inside a transaction that names one row's key, and no tenant at all.
 //
 // It is the narrow exception migration 0004 built into the policies on certificates and
-// enrollment_tokens, and it exists because two lookups must happen before a tenant is known: an agent
-// presents a certificate, a machine that is not yet a host presents an enrolment token, and finding
-// the row is *how* the tenant is discovered. The policy admits exactly the one row whose SHA-256 the
-// caller has already named — a key they hold rather than one they could enumerate — so the exemption
-// is a row wide instead of a table wide.
+// enrollment_tokens, and migration 0009 extended to operator_accounts and operator_sessions. Four
+// lookups must happen before a tenant is known: an agent presents a certificate, a machine that is not
+// yet a host presents an enrolment token, a sign-in form names an address, and a signed-in browser
+// presents a session token. In each case finding the row is *how* the tenant is discovered. The policy
+// admits exactly the one row whose key the caller has already named, so the exemption is a row wide
+// instead of a table wide.
 //
-// Nothing but the two resolvers may use it. A method that reached for this instead of withTenant would
-// be asking the database for one row from any tenant at all, which is the thing farrier.tenant exists
-// to prevent.
+// Three of those four keys are a SHA-256 of something the caller holds, which is what makes naming one
+// a poor way of finding another. The address is the exception and migration 0009 says so at the policy:
+// what keeps a guessable key from being a disclosure there is the sign-in endpoint's uniform refusal,
+// not this transaction.
+//
+// Nothing but those four resolvers may use it. A method that reached for this instead of withTenant
+// would be asking the database for one row from any tenant at all, which is the thing farrier.tenant
+// exists to prevent.
 func (p *Postgres) withResolveKey(ctx context.Context, what, key string, fn func(pgx.Tx) error) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {

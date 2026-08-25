@@ -66,6 +66,33 @@ online-key signature for a reboot would be the backdoor the rest of this design 
 it refuses one. What bounds a routine job instead is the host's own policy — see
 [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
 
+### Operators, and how they sign in
+
+The token above works and is not what you want people using. It is one credential for everybody, so the
+audit trail records "operator" rather than a person, and the two-person approval rule cannot be
+satisfied at all — it compares the approver against the job's creator, and under one token those are the
+same string.
+
+Give each person an account instead:
+
+```bash
+sudo -u farrier farrier-server accounts add --email ops@example.org --name "Ops"
+# Password: (typed, twice, never a flag: argv is world-readable in ps)
+```
+
+They sign in at the web interface with that address and password, and get a session in an `HttpOnly`
+cookie rather than a token pasted into a browser's local storage. `accounts list` shows who has one and
+when they last signed in, `accounts passwd` sets a new password, and `accounts remove` deletes the
+account and every session it holds — which is the whole of "somebody has left".
+
+Accounts are created here, on the machine, and by no API. That is deliberate and
+[`SECURITY.md` §5.3](SECURITY.md#53-the-platform-administrator) says why: the credential that
+administers fleets must not be able to authenticate as a customer, so it is given no route that would
+let it. `--tenant` names the fleet; it defaults to the one the control plane serves.
+
+Keep `FARRIER_ADMIN_TOKEN` set anyway. It is what a script uses, and it is how you get in on the day
+nobody can sign in.
+
 ### In containers, if that is how you run things
 
 The same two pieces — one binary and PostgreSQL — as a Compose stack, in
@@ -152,6 +179,13 @@ with `--tenant`:
 
 ```bash
 farrier-server serve --tenant acme --admin-token "$ACME_TOKEN" ...
+```
+
+Or give that fleet accounts, which is the same act performed on the same machine and does not need the
+control plane restarted for each one:
+
+```bash
+farrier-server accounts add --tenant acme --email ops@acme.example --name "Acme Ops"
 ```
 
 `approvalMode` is that fleet's answer to "who has to agree before a host may act on a destructive job",

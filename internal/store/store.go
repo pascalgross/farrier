@@ -521,6 +521,82 @@ type Certificate struct {
 	RevokedAt time.Time
 }
 
+// Account is one operator: a person who signs in to a fleet with an address and a password.
+//
+// It belongs to a tenant exactly as a host does, and for the same reason: a credential reaches exactly
+// one fleet, so there is nothing in a request — or in a sign-in form — that could point at another one.
+//
+// It exists because a fleet's operators were one shared bearer token, which made the audit trail name
+// nobody and made second-person approval unsatisfiable: that rule compares the approver's principal
+// against the job's creator, and under one credential those two strings are always equal.
+type Account struct {
+	// ID is the control plane's identifier for this account.
+	ID string
+
+	// TenantID is the fleet this operator acts in.
+	//
+	// Carried on the record for the same reason Certificate carries one: resolving an address to an
+	// account happens before any tenant is known, and the answer is what scopes the rest of the
+	// request.
+	TenantID TenantID
+
+	// Email is the address as it was entered, for display and for the audit log.
+	Email string
+
+	// EmailKey is the SHA-256 of the normalised address, which is what the row is found by.
+	//
+	// Separate from Email so that the lookup names one row through the same session setting the
+	// certificate and enrolment-token resolvers use, rather than introducing a second shape of key for
+	// the policy to admit.
+	EmailKey string
+
+	// DisplayName is what to call this person in the interface, empty for the address.
+	DisplayName string
+
+	// PasswordHash is the Argon2id PHC string. The password itself is never stored.
+	PasswordHash string
+
+	// CreatedAt is when the account was made.
+	CreatedAt time.Time
+
+	// LastSignedInAt is when it last signed in, zero for never.
+	LastSignedInAt time.Time
+}
+
+// Session is one signed-in browser.
+//
+// It exists because a browser cannot hold a password: signing in exchanges one for an opaque token
+// this process generated, and only the token's SHA-256 is stored — the same discipline as an enrolment
+// token, and correct here for the same reason, which is that the input is uniform randomness rather
+// than something a person chose.
+type Session struct {
+	// TokenHash is the SHA-256 of the session token. The token itself is never stored.
+	TokenHash string
+
+	// TenantID is the fleet the account belongs to.
+	//
+	// On the row rather than joined for, because resolving a session is where a request discovers whose
+	// data it may touch — and because the composite foreign key can then refuse a session that claims
+	// one tenant while naming another's account.
+	TenantID TenantID
+
+	// AccountID is whose session it is.
+	AccountID string
+
+	// CreatedAt is when the operator signed in.
+	CreatedAt time.Time
+
+	// ExpiresAt is when the session stops authenticating anybody.
+	ExpiresAt time.Time
+}
+
+// Valid reports whether a session still authenticates at the given instant.
+//
+// Against the caller's clock rather than the database's, matching every other validity window in
+// Farrier: docs/SECURITY.md treats clock skew as a boundary, and a credential that outlived its window
+// because two machines disagreed would be the least visible way for that to matter.
+func (s Session) Valid(now time.Time) bool { return now.Before(s.ExpiresAt) }
+
 // HeartbeatUpdate is what one heartbeat changes about a host.
 //
 // It is a separate struct from Host so that a heartbeat cannot accidentally overwrite fields it does
@@ -803,6 +879,27 @@ type Store interface {
 	// not consume the token — a host retrying an enrolment it has already completed must not burn a
 	// second token in the course of being told no.
 	TenantForEnrollmentToken(ctx context.Context, hash string) (TenantID, error)
+
+	// AccountByEmail returns the operator account an address names, or ErrNotFound.
+	//
+	// Here rather than on Scoped because it is the third of the lookups that must happen before a
+	// tenant is known: a sign-in form names an address and nothing else, and finding the row is how the
+	// fleet is discovered. The key is the SHA-256 of the normalised address, which is what the policy
+	// on operator_accounts admits a single row for.
+	//
+	// Unlike the certificate and token resolvers, the key here is guessable — an address is not a
+	// secret. The refusal that keeps that from being a disclosure lives in the endpoint above this
+	// method, which answers an unknown address and a wrong password identically; migration 0009 says so
+	// at the policy, and this comment says so at the method, because the two have to stay true together.
+	AccountByEmail(ctx context.Context, emailKey string) (Account, error)
+
+	// SessionByToken returns the session a token names, or ErrNotFound.
+	//
+	// The fourth pre-tenant lookup, and the closest analogue to LookupCertificate: it runs on every
+	// request an operator's browser makes, and the row it returns is what scopes everything after it.
+	// Expiry is not checked here — the caller checks it against its own clock, for the reason
+	// Session.Valid gives.
+	SessionByToken(ctx context.Context, tokenHash string) (Session, error)
 
 	// CreateTenant records a new tenant.
 	CreateTenant(ctx context.Context, t Tenant) error
@@ -1094,6 +1191,52 @@ type Scoped interface {
 
 	// UpsertAlertState records one key's state, keyed on the key.
 	UpsertAlertState(ctx context.Context, s AlertState) error
+
+	// CreateAccount records a new operator account, or ErrConflict if the address is taken.
+	//
+	// The address is unique across the installation rather than within the fleet, so ErrConflict can
+	// mean an address another tenant already uses. Migration 0009 says why that is the right trade and
+	// why the disclosure it implies is bounded: only somebody who can already read the table can reach
+	// this method, because accounts are created on the machine and not through the API.
+	CreateAccount(ctx context.Context, a Account) error
+
+	// GetAccount returns one of this fleet's accounts by id, or ErrNotFound.
+	GetAccount(ctx context.Context, id string) (Account, error)
+
+	// ListAccounts returns this fleet's accounts, oldest first.
+	ListAccounts(ctx context.Context) ([]Account, error)
+
+	// UpdateAccountPassword replaces one account's password hash, or returns ErrNotFound.
+	//
+	// It is also how a hash written under weaker Argon2id parameters is rewritten, at the one moment
+	// the password is known: sign-in. That is why it takes a hash rather than a password — this package
+	// does not know how to make one, and should not.
+	UpdateAccountPassword(ctx context.Context, id, passwordHash string) error
+
+	// RecordAccountSignIn stamps when an account last signed in, or returns ErrNotFound.
+	RecordAccountSignIn(ctx context.Context, id string, at time.Time) error
+
+	// DeleteAccount removes an account and every session it holds, or returns ErrNotFound.
+	//
+	// The sessions go with it because the account is the only thing that made them mean anything, and
+	// a session outliving its account is a credential nobody can revoke by name. The schema's ON DELETE
+	// CASCADE is what performs it; this method is where the guarantee is written down.
+	DeleteAccount(ctx context.Context, id string) error
+
+	// CreateSession records a signed-in browser and clears that account's expired sessions.
+	//
+	// The two happen together and that is the whole of session housekeeping: the table grows by one row
+	// per sign-in and shrinks by all of that account's dead rows at the next one, so there is no sweeper
+	// to schedule and nothing to forget to run. A row that expires and is never returned to costs one
+	// row until its owner signs in again.
+	CreateSession(ctx context.Context, s Session) error
+
+	// DeleteSession ends one session, whether or not it had expired.
+	//
+	// It is what sign-out does, and it is idempotent: a token that names no row is not an error,
+	// because a second sign-out — or a sign-out of a session that had already expired — is not a
+	// failure a caller should have to distinguish.
+	DeleteSession(ctx context.Context, tokenHash string) error
 }
 
 // Compile-time proof that both implementations satisfy the interface.

@@ -1,0 +1,113 @@
+package server
+
+import (
+	"log/slog"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/pascalgross/farrier/internal/auth"
+)
+
+// MaxSessionRequestBytes bounds a sign-in request body.
+//
+// An address and a password. This is generous by two orders of magnitude and exists so the body is
+// bounded before it is in memory, like every other body this server reads — which matters more here
+// than elsewhere, because this is one of the two routes reachable without a credential.
+const MaxSessionRequestBytes = 4 << 10
+
+// The bounds on sign-in attempts, per source address.
+//
+// The second endpoint in this server that anybody may reach without a credential, and the only one
+// where an attempt is cheap for the caller and expensive here: verifying a password is an Argon2id
+// derivation that allocates 64 MiB, so an unbounded sign-in route is a memory exhaustion primitive
+// before it is a password-guessing one. That is why this limit exists even though the enrolment
+// comment argues limits are mostly about load rather than success — here it is about both.
+//
+// Ten attempts and one back every six seconds: a person who has forgotten which of two passwords they
+// used will not notice, and a script will.
+const (
+	// signInBurst is how many attempts a source may make at once.
+	signInBurst = 10
+
+	// signInRefill is how long one attempt takes to come back.
+	signInRefill = 6 * time.Second
+)
+
+// handleSignIn exchanges an address and a password for a session cookie.
+//
+// Unauthenticated by construction — it is where a credential comes from — which is why it is rate
+// limited, why the body is bounded, and why every failure is one answer. A wrong address, a wrong
+// password and an account that has been deleted are indistinguishable from here, and deliberately cost
+// the same: internal/auth verifies against a decoy hash when the address is unknown, so the response
+// time does not sort the addresses that exist from the ones that do not.
+//
+// The response carries the identity rather than the token, because the token is in an HttpOnly cookie
+// the browser will send back on its own. There is nothing here for a script to store, which is the
+// point: a script uses the bearer token instead.
+func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
+	if s.accounts == nil {
+		// No accounts provider configured. It is 404 rather than 501 because the route genuinely does
+		// not exist on this installation, and a client that got 501 would keep offering the form.
+		writeError(w, http.StatusNotFound, "not_found", "this control plane has no account sign-in")
+		return
+	}
+	if !s.signInLimiter.allow(requestSource(r), time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.signInLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
+		return
+	}
+
+	var req struct {
+		// Email is the address the operator signs in with.
+		Email string `json:"email"`
+
+		// Password is what they typed. It is never logged, never stored and never echoed.
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(w, r, MaxSessionRequestBytes, &req); err != nil {
+		writeDecodeError(w, err, "the request body holds more than one value; send one sign-in")
+		return
+	}
+
+	// A credential in the response, and a redirect chain in front of a browser: no cache may keep it.
+	noStore(w)
+
+	identity, err := s.accounts.SignIn(r.Context(), w, req.Email, req.Password)
+	if err != nil {
+		// One refusal for every cause. The log line carries the address, because an operator locked out
+		// of their own control plane is the commonest reason anybody reads it — and never the password.
+		slog.Info("sign-in refused", "email", auth.NormaliseEmail(req.Email), "source", requestSource(r))
+		w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
+		writeError(w, http.StatusUnauthorized, "unauthenticated",
+			"that address and password do not match an account on this control plane")
+		return
+	}
+
+	slog.Info("operator signed in", "operator", identity.Principal(), "tenant", identity.Tenant)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subject":   identity.Subject,
+		"display":   identity.Display,
+		"provider":  identity.Provider,
+		"principal": identity.Principal(),
+	})
+}
+
+// handleSignOut ends the session a request carries.
+//
+// It is not behind requireOperator, and that is deliberate rather than an oversight: a session that has
+// already expired still has a cookie in the browser and a row in the table, and refusing to sign such a
+// caller out would leave both in place. Signing out is the one operation that must work for a
+// credential that no longer authenticates.
+func (s *Server) handleSignOut(w http.ResponseWriter, r *http.Request) {
+	if s.accounts == nil {
+		writeError(w, http.StatusNotFound, "not_found", "this control plane has no account sign-in")
+		return
+	}
+	if err := s.accounts.SignOut(r.Context(), w, r); err != nil {
+		slog.Error("could not end a session", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not end the session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

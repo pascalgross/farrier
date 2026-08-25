@@ -68,6 +68,15 @@ type Config struct {
 	// Auth authenticates human operators.
 	Auth auth.Provider
 
+	// Accounts is the local-accounts provider, nil when this installation has none.
+	//
+	// It is here as well as inside Auth, and the duplication is the point: Auth answers "who is this
+	// request", which is all any handler needs, while signing in and signing out are operations on a
+	// particular kind of credential and have to reach the implementation that owns its format. A nil
+	// value means the two session routes answer 404, which is the honest response for a control plane
+	// authenticated by bearer token alone.
+	Accounts *auth.Accounts
+
 	// OnlineKey signs routine jobs, and is nil when this control plane has none.
 	//
 	// Nil is a supported configuration rather than a broken one: without it the routine tier is
@@ -135,6 +144,16 @@ type Server struct {
 	// enrolLimiter bounds attempts against the one endpoint that needs no client certificate.
 	enrolLimiter *rateLimiter
 
+	// signInLimiter bounds attempts against the other endpoint that needs no credential at all.
+	//
+	// A separate limiter rather than a shared one, because the two defend different things and want
+	// different numbers: enrolment is a fleet being built and should tolerate a burst, and a sign-in
+	// costs this process 64 MiB of Argon2id per attempt.
+	signInLimiter *rateLimiter
+
+	// accounts is the local-accounts provider, nil when this installation has none.
+	accounts *auth.Accounts
+
 	// events fans live events out to subscribed browser tabs; the durable copy is the store's inbox.
 	events eventStream
 
@@ -200,13 +219,15 @@ func New(cfg Config) (*Server, error) {
 	_, statErr := fs.Stat(assets, "index.html")
 
 	s := &Server{
-		cfg:          cfg,
-		mux:          http.NewServeMux(),
-		assets:       assets,
-		hasUI:        statErr == nil,
-		enrolLimiter: newRateLimiter(enrollBurst, enrollRefill),
-		paths:        http.NewServeMux(),
-		allow:        map[string][]string{},
+		cfg:           cfg,
+		mux:           http.NewServeMux(),
+		assets:        assets,
+		hasUI:         statErr == nil,
+		enrolLimiter:  newRateLimiter(enrollBurst, enrollRefill),
+		signInLimiter: newRateLimiter(signInBurst, signInRefill),
+		accounts:      cfg.Accounts,
+		paths:         http.NewServeMux(),
+		allow:         map[string][]string{},
 	}
 	// Background rather than derived from a request or from ListenAndServe's context: a detached
 	// delivery must outlive the request that caused it, and must still be cancellable as a group.
@@ -241,6 +262,12 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
 	s.route(http.MethodPost, "/api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
 	s.route(http.MethodGet, "/api/v1/whoami", s.requireOperator(s.handleWhoami))
+
+	// Signing in and signing out. Both are unauthenticated on purpose: the first is where a credential
+	// comes from, and the second has to work for a session that has already stopped authenticating —
+	// otherwise the cookie and its row both stay behind.
+	s.route(http.MethodPost, "/api/v1/session", http.HandlerFunc(s.handleSignIn))
+	s.route(http.MethodDelete, "/api/v1/session", http.HandlerFunc(s.handleSignOut))
 	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
 	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
 	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))

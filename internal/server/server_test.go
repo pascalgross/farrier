@@ -76,6 +76,15 @@ type harness struct {
 	// templateKey is the sealing key the server was built with, for fixtures that store templates
 	// directly and still need the enrolment path to be able to open them.
 	templateKey *seal.Key
+
+	// accountEmail and accountPassword are an operator account in the harness's own tenant.
+	//
+	// Chained beside the token provider rather than instead of it, so that every existing test keeps
+	// authenticating with a bearer token and the session tests have a real credential to exchange. A
+	// fake would prove nothing here: what the session routes are about is the cookie, and the cookie
+	// only exists because auth.Accounts made one.
+	accountEmail    string
+	accountPassword string
 }
 
 // scoped returns a store handle for the harness's own tenant.
@@ -124,6 +133,22 @@ func newHarness(t *testing.T) *harness {
 		},
 	}}
 
+	// One operator account, so the sign-in routes have something to sign in to. The password is well
+	// above auth.MinPasswordLength and is not a secret: it never leaves this process.
+	const accountEmail = "operator@example.org"
+	const accountPassword = "a harness password"
+	passwordHash, err := auth.HashPassword(accountPassword)
+	if err != nil {
+		t.Fatalf("hashing the harness account's password: %v", err)
+	}
+	if err := memory.In(tenant).CreateAccount(context.Background(), store.Account{
+		ID: "01JHARNESSACCOUNT", Email: accountEmail, EmailKey: auth.EmailKey(accountEmail),
+		DisplayName: "Harness Operator", PasswordHash: passwordHash, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("creating the harness account: %v", err)
+	}
+	accounts := auth.NewAccounts(memory, time.Hour)
+
 	online, err := onlinekey.Ensure(filepath.Join(dir, "ca"))
 	if err != nil {
 		t.Fatalf("preparing the online key: %v", err)
@@ -138,7 +163,8 @@ func newHarness(t *testing.T) *harness {
 		OnlineKey:        online,
 		TemplateKey:      templateKey,
 		Store:            memory,
-		Auth:             provider,
+		Auth:             auth.Chain(provider, accounts),
+		Accounts:         accounts,
 		HeartbeatSeconds: 60,
 		TokenTTL:         time.Hour,
 	})
@@ -165,6 +191,7 @@ func newHarness(t *testing.T) *harness {
 		adminToken: adminToken, secondToken: secondToken,
 		tenant: tenant, otherToken: otherToken, otherTenant: otherTenant,
 		platformToken: platformToken, templateKey: templateKey,
+		accountEmail: accountEmail, accountPassword: accountPassword,
 	}
 }
 
