@@ -56,6 +56,16 @@ dump is not a set of provisioning scripts — and a restore without it leaves ev
 permanently unopenable. The control plane says exactly that when it happens, which is the difference
 between an operator fixing their restore and filing a bug about templates being corrupt.
 
+The third key in that directory asks nothing of you. `online.key` is generated on first start, and it
+signs the one privileged operation that carries no offline signature: `packages.applySecurity`. There is
+no command that creates it and nothing to distribute — its public half reaches agents in the enrolment
+response and on every heartbeat, so rotating it is deleting the file and restarting: hosts pick the new
+one up on their next heartbeat, and a routine job queued before the change stops verifying. It is
+**not** a trust anchor and never belongs in a host's `trusted-signers`: an agent that accepted an
+online-key signature for a reboot would be the backdoor the rest of this design is arranged against, and
+it refuses one. What bounds a routine job instead is the host's own policy — see
+[`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
+
 ### In containers, if that is how you run things
 
 The same two pieces — one binary and PostgreSQL — as a Compose stack, in
@@ -310,6 +320,34 @@ other token attributes an RFC 7512 URL carries — `model=`, `manufacturer=`, `l
 rest of that set — are accepted and ignored, because `p11tool --list-tokens` prints them for every
 token and they name a product line rather than a token. `pin-value` and `module-name` are the two the
 reference refuses outright, for the reasons the error messages give.
+
+**A YubiKey, from empty to a `trusted-signers` line.** Farrier does not generate a key on a token —
+`ykman` does, and the key has no way out of the device afterwards.
+
+```bash
+# 9c is PIV's signature slot: it asks for the PIN on every operation rather than caching it.
+# ED25519 needs firmware 5.7 or newer, and ECCP256 is what everything before it can do — which is why
+# two algorithms exist on the wire at all.
+ykman piv keys generate --algorithm ECCP256 --touch-policy always 9c signing.pub
+
+# A self-signed certificate in the same slot: most PKCS#11 modules enumerate a PIV slot only once it
+# holds one, so a key without a certificate is a key nothing can find.
+ykman piv certificates generate --subject "CN=ops-yubikey-1" 9c signing.pub
+
+farrier key show --in "pkcs11:id=%02?module-path=/usr/lib/x86_64-linux-gnu/libykcs11.so"
+```
+
+Slot 9c is `CKA_ID` 02, and the reference names that rather than a label, because a PIV token's labels
+are worded by whoever wrote the module — `SIGN key` under OpenSC, `Private key for Digital Signature`
+under Yubico's own `libykcs11` — and matching on one is fragile across vendors in the way this backend
+exists not to be. What follows from that is worth knowing before anything is engraved on a host: the
+identity recorded in `trusted-signers` and in the audit log is then `pkcs11:02`, derived from the id.
+`object=<label>` supplies a name instead, where the module lets you choose one — SoftHSM does, PIV does
+not.
+
+With `--touch-policy always`, a signature needs the finger as well as the PIN, which is the property
+worth having on a key that authorises reboots. `farrier sign` waits thirty seconds for it and then gives
+up, rather than blocking on a token nobody is standing at.
 
 Cloud credentials come from the environment, then the provider's own well-known file, then the instance
 metadata service — which is the order that answers promptly on a laptop, where the metadata address
