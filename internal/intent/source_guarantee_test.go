@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -62,18 +61,23 @@ var shellTextFragments = []string{
 	"sh -c", "bash -c",
 }
 
-// repoRoot walks up from this file until it finds the directory holding go.mod.
+// repoRoot walks up from the working directory until it finds the directory holding go.mod.
 //
 // It exists because the guarantee tests assert a property of the whole repository, not of one package,
-// and go test gives no reliable handle on the module root. Walking up from the test's own source path
-// works under go test, under an IDE, and in CI without configuration.
+// and go test gives no reliable handle on the module root. The working directory is the package's own
+// source directory under go test, under an IDE, and in CI, which is handle enough.
+//
+// It is not runtime.Caller, which is the obvious thing to reach for and is wrong here: under -trimpath
+// a caller's file name is module-relative, the walk upwards from it finds no go.mod, and these tests
+// fail on a repository that is entirely correct. Every binary this project ships is built with
+// -trimpath, so the flag reaching GOFLAGS is a matter of time — and a guarantee test that fails for a
+// reason having nothing to do with its guarantee teaches people to disbelieve it.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot determine the path of this test file")
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("cannot determine the working directory: %v", err)
 	}
-	dir := filepath.Dir(thisFile)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir
