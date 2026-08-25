@@ -93,6 +93,13 @@ fuzz: ## Fuzz both guarantee targets for longer than CI does
 site: ## Render the documentation site into public/
 	go run ./tools/docsite -root . -out public
 
+# Generated and committed rather than built, so that a checkout has the mark without running anything
+# and so that a change to it shows up as a diff somebody looks at. tools/brandmark's own test fails when
+# a committed copy stops matching, which is what makes that safe.
+.PHONY: brand
+brand: ## Regenerate the mark: the SVGs and the favicon
+	go run ./tools/brandmark -root .
+
 .PHONY: lint
 lint: vet doccheck golangci ## Run every Go linter
 
