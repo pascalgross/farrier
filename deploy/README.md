@@ -110,7 +110,9 @@ docker compose -f compose.yaml -f compose.traefik.yaml up -d
 
 The overlay adds a **TCP** router with `tls.passthrough=true`, not an HTTP one, and removes the
 published port. Traefik matches SNI and forwards bytes; the TLS session runs end to end between the
-agent and `farrier-server`.
+agent and `farrier-server`. The overlay passes `FARRIER_AGENT_HOSTNAME` into the container, and the
+entrypoint adds it to the private server certificate's DNS names. If the name changes, a restart issues
+a replacement server certificate from the existing CA.
 
 That is not a preference. The agent protocol authenticates a host with a client certificate, and the
 server identifies the host by that certificate's fingerprint on every request — which is also the whole
