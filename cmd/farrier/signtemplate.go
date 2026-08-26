@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/farrier/internal/prompt"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/provision"
 	"github.com/pascalgross/farrier/internal/signing"
@@ -77,7 +78,7 @@ func signTemplateCommand(argv []string) int {
 
 	fmt.Fprint(os.Stderr, describeTemplate(bootstrap, signer))
 	if !*assumeYes {
-		ok, err := confirm("Sign this template? [y/N] ")
+		ok, err := prompt.Confirm("Sign this template? [y/N] ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
 			return 1
@@ -117,7 +118,7 @@ func signTemplateCommand(argv []string) int {
 	// To stderr, so that stdout is exactly the request body and can be piped into curl.
 	fmt.Fprintf(os.Stderr, "\nSigned. Store it with:\n"+
 		"  curl -X POST \"$FARRIER_URL/api/v1/templates\" \\\n"+
-		"    -H \"Authorization: Bearer $FARRIER_ADMIN_TOKEN\" \\\n"+
+		"    -H \"Authorization: Bearer $FARRIER_TOKEN\" \\\n"+
 		"    -H 'Content-Type: application/json' -d @-\n")
 	return 0
 }

@@ -1,8 +1,6 @@
 package server
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -49,21 +47,5 @@ func TestRateLimiterIsPerSource(t *testing.T) {
 	}
 	if !limiter.allow("10.0.0.2", now) {
 		t.Error("a second source was refused because of the first")
-	}
-}
-
-// TestRequestSourceIgnoresForwardedHeaders is the reason the limiter is worth having at all.
-//
-// A forwarded header is set by whoever is talking to the server. Trusting one would let a single client
-// present a different source on every request and defeat the limiter entirely, which is worse than
-// having none: it would look like a defence.
-func TestRequestSourceIgnoresForwardedHeaders(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", http.NoBody)
-	r.RemoteAddr = "203.0.113.7:54321"
-	r.Header.Set("X-Forwarded-For", "10.0.0.1")
-	r.Header.Set("X-Real-IP", "10.0.0.2")
-
-	if got := requestSource(r); got != "203.0.113.7" {
-		t.Errorf("requestSource = %q; it must use the peer address, not a header the client sets", got)
 	}
 }

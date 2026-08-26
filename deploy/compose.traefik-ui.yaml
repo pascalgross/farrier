@@ -30,6 +30,7 @@ services:
       traefik.http.routers.farrier-ui.rule: Host(`${FARRIER_UI_HOSTNAME:?set FARRIER_UI_HOSTNAME in .env}`)
       traefik.http.routers.farrier-ui.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
       traefik.http.routers.farrier-ui.tls: "true"
+      traefik.http.routers.farrier-ui.middlewares: farrier-ui-signin@docker
       # Whatever your Traefik calls its ACME resolver. Traefik obtains and renews the certificate for
       # this hostname on its own, and nothing about it reaches farrier-server — which is the reason to
       # prefer this shape over feeding a certificate into the container: the server reads --tls-cert
@@ -66,3 +67,28 @@ services:
       # "deny" middleware, and this is the idiomatic way to spell one: every request through this
       # router is answered 403 without reaching a back end.
       traefik.http.middlewares.farrier-no-agents.ipallowlist.sourcerange: 127.0.0.1/32
+
+      # Rate limiting for the sign-in endpoint, here rather than in the control plane.
+      #
+      # farrier-server limits sign-in attempts per source address, and on this router every browser
+      # arrives from Traefik. One bucket for the whole installation would be an availability problem
+      # rather than a nuisance: verifying a password is a 64 MiB Argon2id derivation, so the limit is
+      # low by necessity, and an unauthenticated client that keeps that one bucket empty stops everybody
+      # else signing in.
+      #
+      # The fix belongs at this layer and only at this layer, because this is the only layer that knows
+      # who the client is. The obvious alternative — teach farrier-server to read X-Forwarded-For from a
+      # trusted proxy — is worse here than doing nothing, and the reason is specific to this stack: this
+      # overlay is documented as stacking on compose.traefik.yaml, whose TCP router passes TLS straight
+      # through. Both legs dial the same container from the same Traefik address, and on the passthrough
+      # leg Traefik never parses HTTP, so it cannot strip a header a client set. Trusting the header
+      # from Traefik's address would therefore trust it from anybody who reached the agent hostname —
+      # turning a shared bucket into no bucket at all, and an unauthenticated password-guessing channel
+      # with a fresh allowance per forged value.
+      #
+      # `sourcecriterion` is the default, the request's real source address as Traefik sees it. Twenty
+      # in a burst and ten a minute sustained: a person who has forgotten which password they used will
+      # not notice, and a script will.
+      traefik.http.middlewares.farrier-ui-signin.ratelimit.average: "10"
+      traefik.http.middlewares.farrier-ui-signin.ratelimit.period: 1m
+      traefik.http.middlewares.farrier-ui-signin.ratelimit.burst: "20"

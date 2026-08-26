@@ -203,11 +203,11 @@ image: ## Build the farrier-server container image
 
 # Values for the variables the Compose files require, so that the files can be parsed without a .env.
 # They are visibly fake: this target checks that the stack is well-formed, and starting anything with
-# them would be a control plane whose admin token is the letter x. A real value in the environment wins,
-# because Compose prefers the environment over .env — so this never validates the file it is checking
-# against somebody's actual secrets.
+# them would be a control plane whose every password is the word "check". A real value in the
+# environment wins, because Compose prefers the environment over .env — so this never validates the file
+# it is checking against somebody's actual secrets.
 COMPOSE_CHECK_ENV := POSTGRES_SUPERUSER_PASSWORD=check FARRIER_DB_PASSWORD=check \
-	FARRIER_REPLICATION_PASSWORD=check FARRIER_ADMIN_TOKEN=check \
+	FARRIER_REPLICATION_PASSWORD=check \
 	FARRIER_AGENT_HOSTNAME=agents.example.invalid FARRIER_UI_HOSTNAME=farrier.example.invalid
 
 .PHONY: compose-check

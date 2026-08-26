@@ -150,6 +150,23 @@ type Memory struct {
 
 	// states are the alert evaluator's memory by tenant, rule and host.
 	states map[stateKey]AlertState
+
+	// accounts are accounts by id, each carrying the tenant it belongs to — or none, for a platform one.
+	//
+	// Keyed by the id alone, matching the primary key migration 0010 moved it to: an account id is 128
+	// bits generated here, so it is unique across the installation by construction and a session can
+	// point at one without carrying a tenant it has no business knowing.
+	accounts map[string]Account
+
+	// sessions are signed-in browsers by the SHA-256 of their token.
+	//
+	// Keyed by the hash alone, matching the schema and matching how the row is reached: resolving a
+	// token is how a request discovers whose it is, so anything else in the key would be something the
+	// caller does not yet have.
+	sessions map[string]Session
+
+	// apiTokens are the credentials scripts present, by the SHA-256 of the token.
+	apiTokens map[string]APIToken
 }
 
 // NewMemory returns an in-memory store holding the default tenant and nothing else.
@@ -179,6 +196,9 @@ func NewMemory() *Memory {
 		templates: map[templateKey]TemplateVersion{},
 		rules:     map[ruleKey]AlertRule{},
 		states:    map[stateKey]AlertState{},
+		accounts:  map[string]Account{},
+		sessions:  map[string]Session{},
+		apiTokens: map[string]APIToken{},
 	}
 }
 
@@ -393,6 +413,27 @@ func (m *Memory) DeleteTenant(_ context.Context, id TenantID) error {
 	for key := range m.states {
 		if key.tenant == id {
 			delete(m.states, key)
+		}
+	}
+	// Accounts, and the sessions and tokens they hold. The database performs this from one DELETE
+	// through a chain of ON DELETE CASCADEs; here it is three sweeps, and the credentials are swept on
+	// the accounts that were removed rather than on the tenant, because a credential row carries no
+	// tenant of its own since migration 0010.
+	gone := map[string]bool{}
+	for accountID, account := range m.accounts {
+		if account.TenantID == id {
+			gone[accountID] = true
+			delete(m.accounts, accountID)
+		}
+	}
+	for hash, held := range m.sessions {
+		if gone[held.AccountID] {
+			delete(m.sessions, hash)
+		}
+	}
+	for hash, held := range m.apiTokens {
+		if gone[held.AccountID] {
+			delete(m.apiTokens, hash)
 		}
 	}
 	return nil

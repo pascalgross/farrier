@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,10 +50,10 @@ type harness struct {
 
 	// secondToken authenticates a *different* operator in the same tenant.
 	//
-	// A tenant using second-person approval needs two operators, and two operators is something the
-	// shipped auth.StaticToken cannot express: it holds one token and one subject. This stands in for
-	// the multi-operator provider auth.Provider exists as a seam for, so that the approval path can be
-	// exercised at all.
+	// A tenant using second-person approval needs two operators, and reaching that path through the
+	// shipped providers would mean two accounts, two passwords and two sign-ins per test. This stands
+	// in for the multi-operator provider auth.Provider exists as a seam for, so that the approval path
+	// can be exercised without the credential machinery in the way.
 	secondToken string
 
 	// tenant is the fleet both operators act in.
@@ -76,6 +77,15 @@ type harness struct {
 	// templateKey is the sealing key the server was built with, for fixtures that store templates
 	// directly and still need the enrolment path to be able to open them.
 	templateKey *seal.Key
+
+	// accountEmail and accountPassword are an operator account in the harness's own tenant.
+	//
+	// Chained beside the token provider rather than instead of it, so that every existing test keeps
+	// authenticating with a bearer token and the session tests have a real credential to exchange. A
+	// fake would prove nothing here: what the session routes are about is the cookie, and the cookie
+	// only exists because auth.Accounts made one.
+	accountEmail    string
+	accountPassword string
 }
 
 // scoped returns a store handle for the harness's own tenant.
@@ -124,6 +134,27 @@ func newHarness(t *testing.T) *harness {
 		},
 	}}
 
+	// One operator account, so the sign-in routes have something to sign in to. The password is well
+	// above auth.MinPasswordLength and is not a secret: it never leaves this process.
+	const accountEmail = "operator@example.org"
+	const accountPassword = "a harness password"
+	passwordHash, err := auth.HashPassword(accountPassword)
+	if err != nil {
+		t.Fatalf("hashing the harness account's password: %v", err)
+	}
+	if err := memory.In(tenant).CreateAccount(context.Background(), store.Account{
+		ID: "01JHARNESSACCOUNT", Email: accountEmail, EmailKey: auth.EmailKey(accountEmail),
+		DisplayName: "Harness Operator", PasswordHash: passwordHash, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("creating the harness account: %v", err)
+	}
+	accounts := auth.NewAccounts(memory, time.Hour, 24*time.Hour)
+
+	// The token provider is in the chain because the account routes mint tokens and something has to
+	// accept them afterwards. It is the shipped one rather than a fake: what the round trip is for is
+	// precisely that a token minted through the API authenticates through the provider.
+	apiTokens := auth.NewAPITokens(memory)
+
 	online, err := onlinekey.Ensure(filepath.Join(dir, "ca"))
 	if err != nil {
 		t.Fatalf("preparing the online key: %v", err)
@@ -138,7 +169,8 @@ func newHarness(t *testing.T) *harness {
 		OnlineKey:        online,
 		TemplateKey:      templateKey,
 		Store:            memory,
-		Auth:             provider,
+		Auth:             auth.Chain(provider, accounts, apiTokens),
+		Accounts:         accounts,
 		HeartbeatSeconds: 60,
 		TokenTTL:         time.Hour,
 	})
@@ -165,6 +197,7 @@ func newHarness(t *testing.T) *harness {
 		adminToken: adminToken, secondToken: secondToken,
 		tenant: tenant, otherToken: otherToken, otherTenant: otherTenant,
 		platformToken: platformToken, templateKey: templateKey,
+		accountEmail: accountEmail, accountPassword: accountPassword,
 	}
 }
 
@@ -203,11 +236,12 @@ func makeTenant(t *testing.T, memory *store.Memory, slug string, mode store.Appr
 // twoOperators authenticates a handful of bearer tokens as distinct identities.
 //
 // It exists because a tenant using second-person approval needs two operators, a cross-tenant assertion
-// needs an operator in another fleet, and a platform assertion needs a credential with no fleet at all
-// — and auth.StaticToken holds one token, one subject and one tenant. It is a stand-in for the OIDC or
-// local-accounts provider auth.Provider is a seam for, and it deliberately does nothing else: this is
-// not a boundary the guarantee rests on, and a more elaborate fake would only invite somebody to
-// believe it was testing the authentication rather than what happens after it.
+// needs an operator in another fleet, and a platform assertion needs a credential with no fleet at all.
+// The shipped providers can express all three — they are accounts — but each would cost a password hash
+// and a sign-in per test, and Argon2id is deliberately expensive. It is a stand-in for the provider
+// auth.Provider is a seam for, and it deliberately does nothing else: this is not a boundary the
+// guarantee rests on, and a more elaborate fake would only invite somebody to believe it was testing
+// the authentication rather than what happens after it.
 type twoOperators struct {
 	// tokens maps a bearer token to the identity it authenticates.
 	tokens map[string]auth.Identity
@@ -216,10 +250,21 @@ type twoOperators struct {
 // Name identifies the provider.
 func (t *twoOperators) Name() string { return "test" }
 
+// UnavailableToken makes this provider report an outage rather than a refusal.
+//
+// A provider that cannot reach its store knows nothing about the credential it was handed, and the
+// middleware has to answer that differently from a wrong one. Injecting it here rather than breaking
+// the memory store is what keeps the assertion about the middleware: the store is fine, and the
+// provider simply cannot say.
+const UnavailableToken = "the-store-is-unreachable"
+
 // Authenticate resolves a bearer token to one of the two identities.
 func (t *twoOperators) Authenticate(_ context.Context, r *http.Request) (*auth.Identity, error) {
-	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	identity, ok := t.tokens[strings.TrimSpace(raw)]
+	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if raw == UnavailableToken {
+		return nil, fmt.Errorf("%w: the test provider cannot reach its store", auth.ErrUnavailable)
+	}
+	identity, ok := t.tokens[raw]
 	if !ok {
 		return nil, auth.ErrUnauthenticated
 	}

@@ -34,7 +34,10 @@ func TestGuaranteeThePlatformCredentialReachesNoTenantsData(t *testing.T) {
 		{http.MethodPost, "/api/v1/jobs"},
 		{http.MethodGet, "/api/v1/jobs/01JANYTHING"},
 		{http.MethodPost, "/api/v1/jobs/01JANYTHING/approve"},
-		{http.MethodGet, "/api/v1/whoami"},
+		{http.MethodGet, "/api/v1/events"},
+		{http.MethodGet, "/api/v1/services/failed"},
+		{http.MethodGet, "/api/v1/alerts"},
+		{http.MethodGet, "/api/v1/templates"},
 	} {
 		t.Run(c.method+" "+c.path, func(t *testing.T) {
 			status, body := h.adminJSON(t, h.platformToken, c.method, c.path, map[string]any{})
@@ -43,6 +46,75 @@ func TestGuaranteeThePlatformCredentialReachesNoTenantsData(t *testing.T) {
 					status, c.method, c.path, body)
 			}
 		})
+	}
+}
+
+// TestWhoamiAnswersAPlatformCredentialWithNoTenant is the one route that answers both credentials.
+//
+// It used to be in the table above, and moving it out is a deliberate narrowing of what "reaches no
+// tenant's data" is being asserted about rather than a hole in it. The guarantee is about a customer's
+// hosts, jobs, tokens and results; the identity of the caller is not any of those. Refusing to say
+// "you are the platform administrator" bought nothing and cost the interface its only way to tell
+// somebody why the credential they had just pasted reached an empty console.
+//
+// So the assertion becomes the sharper one: the answer names the caller, says which role they hold,
+// and carries no tenant at all — not a tenant with empty fields, which a client could render as a
+// fleet called "".
+func TestWhoamiAnswersAPlatformCredentialWithNoTenant(t *testing.T) {
+	h := newHarness(t)
+
+	status, body := h.adminJSON(t, h.platformToken, http.MethodGet, "/api/v1/whoami", nil)
+	if status != http.StatusOK {
+		t.Fatalf("a platform credential got %d on whoami: %s", status, body)
+	}
+
+	var answer struct {
+		// Principal is the string every audit line would record for this caller.
+		Principal string `json:"principal"`
+
+		// Platform is what the interface reads to decide which of two interfaces to render.
+		Platform bool `json:"platform"`
+
+		// Tenant must be absent rather than empty.
+		Tenant *json.RawMessage `json:"tenant"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("decoding whoami: %v", err)
+	}
+	if !answer.Platform {
+		t.Error("whoami did not report a platform credential as one")
+	}
+	if answer.Tenant != nil {
+		t.Errorf("whoami handed a platform credential a tenant: %s", *answer.Tenant)
+	}
+	if answer.Principal != "test:platform" {
+		t.Errorf("whoami reports the principal %q", answer.Principal)
+	}
+
+	// The other side of it: an operator still gets their fleet, so widening the route did not cost the
+	// answer the toolbar exists to render.
+	status, body = h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/whoami", nil)
+	if status != http.StatusOK {
+		t.Fatalf("an operator got %d on whoami: %s", status, body)
+	}
+	var operatorAnswer struct {
+		// Platform must be false for an operator.
+		Platform bool `json:"platform"`
+
+		// Tenant is the fleet this credential acts in.
+		Tenant *struct {
+			// Slug is the fleet's handle, which is what the assertion is about.
+			Slug string `json:"slug"`
+		} `json:"tenant"`
+	}
+	if err := json.Unmarshal(body, &operatorAnswer); err != nil {
+		t.Fatalf("decoding whoami: %v", err)
+	}
+	if operatorAnswer.Platform {
+		t.Error("an operator credential was reported as a platform one")
+	}
+	if operatorAnswer.Tenant == nil || operatorAnswer.Tenant.Slug != "alpha" {
+		t.Errorf("an operator's whoami named the fleet %+v", operatorAnswer.Tenant)
 	}
 }
 

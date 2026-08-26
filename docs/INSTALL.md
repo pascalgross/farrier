@@ -24,9 +24,9 @@ sudo farrier-server ca init --ca-dir /var/lib/farrier-server/ca
 sudo -u postgres createuser farrier --pwprompt
 sudo -u postgres createdb --owner farrier farrier
 
-# 3. Run it. The schema is created on first start.
+# 3. Run it. The schema is created on first start, and so is the first account —
+#    whose password is printed once, on this terminal, and nowhere else.
 export FARRIER_DATABASE_URL='postgres://farrier:...@localhost/farrier?sslmode=disable'
-export FARRIER_ADMIN_TOKEN="$(openssl rand -hex 32)"
 farrier-server serve --addr :8443 --ca-dir /var/lib/farrier-server/ca
 ```
 
@@ -65,6 +65,67 @@ one up on their next heartbeat, and a routine job queued before the change stops
 online-key signature for a reboot would be the backdoor the rest of this design is arranged against, and
 it refuses one. What bounds a routine job instead is the host's own policy — see
 [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
+
+### Operators, and how they sign in
+
+Everybody gets an account: an address, a password, and a session in an `HttpOnly` cookie. There is no
+shared credential and deliberately no way to configure one. `FARRIER_ADMIN_TOKEN` and
+`FARRIER_PLATFORM_TOKEN` used to be here, and they are gone rather than deprecated — one string for a
+whole fleet names nobody in the audit trail, cannot be taken away from one person who has left, never
+expires, and made the two-person approval rule unsatisfiable by construction, because it compares the
+approver against the job's creator and under one token those were always the same string.
+
+The first start of an empty database creates one account so that there is a way in, and prints its
+password once:
+
+```
+This control plane had no accounts, so one has been created.
+
+  address:  admin@localhost
+  password: <24 characters, printed here and nowhere else>
+```
+
+Set `FARRIER_BOOTSTRAP_EMAIL`, and `FARRIER_BOOTSTRAP_PASSWORD` or `--bootstrap-password-file`, to
+choose them yourself. Either way the accounts table is the truth afterwards: neither is read again.
+
+Then give each person their own:
+
+```bash
+sudo -u farrier farrier-server accounts add --email ops@example.org --name "Ops"
+# Password: (typed, twice, never a flag: argv is world-readable in ps)
+```
+
+`accounts list` shows who has one and when they last signed in, `accounts passwd` sets a new password,
+and `accounts remove` deletes the account together with every session and token it holds — which is the
+whole of "somebody has left". Somebody who is signed in can change their own password from the account
+page without any of this.
+
+Accounts are created here, on the machine, and by no API. That is deliberate and
+[`SECURITY.md` §5.3](SECURITY.md#53-the-platform-administrator) says why: the credential that
+administers fleets must not be able to authenticate as a customer, so it is given no route that would
+let it. `--tenant` names the fleet; it defaults to the one the control plane serves.
+
+### What a script uses
+
+Not a password, and not a shared token. An operator issues an **API token** from the account page in the
+web interface: it belongs to that account, acts as that account in the audit trail, may expire, and is
+revoked from the same page in a second.
+
+```bash
+export FARRIER_TOKEN=frr_...                      # shown once, when it is issued
+curl -s https://farrier.example.org/api/v1/hosts \
+  -H "Authorization: Bearer $FARRIER_TOKEN"
+```
+
+It is a bearer token and that is not a contradiction with the paragraph above. What was wrong with the
+old one was never the word "bearer": it was one credential for a whole fleet, held in a flag, naming
+nobody, never expiring, and withdrawable only by restarting the control plane with a new one and telling
+everybody.
+
+One thing a token deliberately cannot do is reach `/api/v1/account` — the routes that mint and revoke
+tokens, change a password and end sessions. A token that could issue another, with no expiry, would
+outlive its own revocation. Those routes want a signed-in browser, and answer a token with 403 and a
+sentence saying so.
 
 ### In containers, if that is how you run things
 
@@ -129,30 +190,40 @@ certificate authority, and they share nothing else: no fleet can see another's h
 results, and an operator credential reaches exactly one of them. There is no fleet in any URL, so there
 is nothing an operator could edit to be somewhere else.
 
-Provisioning one is a separate credential's job:
+Provisioning one is a separate account's job. A **platform administrator** carries no fleet at all, and
+that is the whole of what makes them one:
 
 ```bash
-export FARRIER_PLATFORM_TOKEN="$(openssl rand -hex 32)"
-farrier-server serve --addr :8443 --ca-dir /var/lib/farrier-server/ca
+sudo -u farrier farrier-server accounts add --platform --email you@example.org --name "You"
+```
 
+They sign in exactly like anybody else, and get a fleets screen — create, rename, retire, and set each
+fleet's approval mode and webhook — and nothing else, because a platform credential is refused by every
+route that reaches a fleet's hosts or jobs. The same thing from a terminal, with an API token that
+account issued for itself:
+
+```bash
+# $FARRIER_TOKEN is an API token that account issued for itself, from its own account page.
 curl -sX POST https://control.example.org/api/v1/tenants \
-  -H "Authorization: Bearer $FARRIER_PLATFORM_TOKEN" \
+  -H "Authorization: Bearer $FARRIER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"slug":"acme","displayName":"Acme Ltd","approvalMode":"second_person"}'
 ```
 
-The platform token administers fleets and **reaches no fleet's hosts or jobs** — every operator route
-refuses it, and every fleet route refuses an operator credential. That separation is the point of
-having two tokens rather than one: running Farrier for other people should not require being able to
+A platform administrator administers fleets and **reaches no fleet's hosts or jobs** — every operator
+route refuses them, and every fleet route refuses an operator. That separation is the point of having
+two kinds of account rather than one: running Farrier for other people should not require being able to
 read what they run.
 
-It also cannot issue a fleet's operator credential. That belongs to whatever authenticates your
-operators — `auth.Provider` is the seam, and the shipped token provider binds one token to one fleet
-with `--tenant`:
+They also cannot create a fleet's operator. That happens on the machine, like every other account:
 
 ```bash
-farrier-server serve --tenant acme --admin-token "$ACME_TOKEN" ...
+farrier-server accounts add --tenant acme --email ops@acme.example --name "Acme Ops"
 ```
+
+Which is not an inconvenience to be routed around — [`SECURITY.md`
+§5.3](SECURITY.md#53-the-platform-administrator) turns on it, because an API that handed out a fleet's
+credentials would make whoever runs the installation able to authenticate as any customer.
 
 `approvalMode` is that fleet's answer to "who has to agree before a host may act on a destructive job",
 and it is per fleet because a one-person shop and a regulated customer cannot share an answer. The three
@@ -163,7 +234,7 @@ values and the reasoning are in [`SECURITY.md` §3](SECURITY.md#3-the-intent-cat
 ```bash
 # On the control plane, or through the web interface:
 curl -sX POST https://farrier.example.org/api/v1/tokens \
-  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $FARRIER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"label":"web tier","group":"web-prod"}'
 ```
@@ -192,12 +263,12 @@ every repository on the system, which turns one compromised project into root on
 ```bash
 # Read-only work needs nothing but an operator credential.
 curl -sX POST https://farrier.example.org/api/v1/jobs \
-  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $FARRIER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"hostId":"01J…","intent":"facts.collect","params":{}}'
 
 curl -s "https://farrier.example.org/api/v1/jobs?host=01J…" \
-  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN"
+  -H "Authorization: Bearer $FARRIER_TOKEN"
 ```
 
 A job comes back with a `state`: `queued`, `awaiting_approval`, `running`, or whatever status the host
@@ -216,7 +287,7 @@ needs two more things, and neither of them is the control plane's to give.
    farrier sign --key ~/.farrier/ops.key --host 01J9ABC… \
      --intent service.restart --params '{"unit":"nginx.service"}' \
    | curl -sX POST "$FARRIER_URL/api/v1/jobs" \
-       -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" \
+       -H "Authorization: Bearer $FARRIER_TOKEN" \
        -H 'Content-Type: application/json' -d @-
    ```
 

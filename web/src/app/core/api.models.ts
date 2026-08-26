@@ -435,8 +435,92 @@ export interface Whoami {
   /** The provider-qualified string recorded as the author of anything they do. */
   principal: string;
 
-  /** The fleet this credential acts in. */
-  tenant: Tenant;
+  /**
+   * Whether this is the installation's platform administrator rather than a fleet's operator.
+   *
+   * It decides which of two interfaces to render, and there are two because the credentials reach
+   * disjoint sets of routes: a platform credential administers fleets and is refused by every route
+   * that reaches a fleet's hosts or jobs, and an operator credential is the other way round.
+   */
+  platform: boolean;
+
+  /**
+   * The fleet this credential acts in, null for a platform administrator.
+   *
+   * Null rather than an empty tenant, deliberately: a client that forgot to read `platform` fails on
+   * the field it needs rather than rendering a fleet called "".
+   */
+  tenant: Tenant | null;
+}
+
+/** The response of `GET /api/v1/tenants`. */
+export interface TenantsResponse {
+  /** Every fleet on this installation, oldest first. */
+  tenants: Tenant[];
+}
+
+/** The body of `POST /api/v1/tenants`. */
+export interface CreateTenantRequest {
+  /** The short stable handle. Lower-case letters, digits and hyphens; it cannot be changed later. */
+  slug: string;
+
+  /** What the fleet is called in the interface, defaulting to the slug. */
+  displayName?: string;
+
+  /** How this fleet releases a destructive job: "none", "self" or "second_person". */
+  approvalMode?: string;
+
+  /** Where this fleet's events are posted, empty for nowhere. */
+  webhookUrl?: string;
+}
+
+/**
+ * The body of `PATCH /api/v1/tenants/{id}`.
+ *
+ * Every field is optional and one that is not sent is left alone, which is what makes this a patch: an
+ * administrator changing an approval mode must not silently erase a webhook they never mentioned. The
+ * slug is absent because it cannot be changed — it is what logs and support tickets refer to.
+ */
+export interface UpdateTenantRequest {
+  /** What the fleet is called in the interface. */
+  displayName?: string;
+
+  /** How this fleet releases a destructive job. */
+  approvalMode?: string;
+
+  /** Where this fleet's events are posted, empty for nowhere. */
+  webhookUrl?: string;
+}
+
+/** The body of `POST /api/v1/session`. */
+export interface SignInRequest {
+  /** The address the operator signs in with, matched without regard to case or surrounding space. */
+  email: string;
+
+  /** What they typed. It is sent once, over TLS, and is never stored by this application. */
+  password: string;
+}
+
+/**
+ * The response of `POST /api/v1/session`.
+ *
+ * There is deliberately no token in it. The credential is an HttpOnly cookie the browser keeps and
+ * this application cannot read, which is the point of signing in this way rather than pasting a bearer
+ * token into `localStorage`. What comes back is who signed in, so the shell can render a name without
+ * a second round trip.
+ */
+export interface SignedIn {
+  /** The identifier the provider knows this operator by, which for an account is their address. */
+  subject: string;
+
+  /** A human-readable name. */
+  display: string;
+
+  /** Which provider authenticated them. */
+  provider: string;
+
+  /** The provider-qualified string recorded as the author of anything they do. */
+  principal: string;
 }
 
 /**
@@ -838,4 +922,140 @@ export interface RenderedTemplate {
 
   /** The control plane's own sentence about the output being shown once. */
   note: string;
+}
+
+/** The signed-in account, as `GET /api/v1/account` describes it. */
+export interface Account {
+  /** The address this account signs in with. */
+  email: string;
+
+  /** What to call this person, empty for the address. */
+  displayName: string;
+
+  /** When the account was made. */
+  createdAt: string;
+
+  /** When it last signed in, null for never. */
+  lastSignedIn: string | null;
+
+  /** Whether this administers the installation rather than a fleet. */
+  platform: boolean;
+
+  /** The provider-qualified string recorded as the author of anything this account does. */
+  principal: string;
+}
+
+/** The body of `POST /api/v1/account/password`. */
+export interface ChangePasswordRequest {
+  /** What the operator signs in with today, verified even though the session already authenticated. */
+  currentPassword: string;
+
+  /** What they want instead. */
+  newPassword: string;
+}
+
+/**
+ * One browser this account is signed in on.
+ *
+ * There is no token and no token hash here, which is why `current` is a flag the server computed
+ * rather than an identifier this application compares. Nothing in this shape authenticates anybody.
+ */
+export interface OperatorSession {
+  /** When the sign-in happened. */
+  createdAt: string;
+
+  /** When the session stops authenticating, as it stands — it moves forward while it is used. */
+  expiresAt: string;
+
+  /** When a request last presented it, null for never. */
+  lastUsed: string | null;
+
+  /** What the browser called itself. Advisory: a client chooses this string. */
+  userAgent: string;
+
+  /** Where it was last used from. Advisory: behind a proxy this is the proxy. */
+  source: string;
+
+  /** Whether it has run out, in which case it is a row waiting to be swept rather than a credential. */
+  expired: boolean;
+
+  /** Whether this is the session asking. */
+  current: boolean;
+}
+
+/** The response of `GET /api/v1/account/sessions`. */
+export interface SessionsResponse {
+  /** Every session this account holds, newest first. */
+  sessions: OperatorSession[];
+}
+
+/** The response of `POST /api/v1/account/sessions/revoke`. */
+export interface SessionsRevoked {
+  /** How many sessions were ended, including the one that asked. */
+  ended: number;
+}
+
+/**
+ * One API token this account holds.
+ *
+ * The id is the token's SHA-256, which is what the store keys on. It is not a credential — a hash of
+ * 256 bits of randomness cannot be turned back into one — and returning it is what lets revoking a
+ * token need no second identifier kept in step with the first.
+ */
+export interface ApiToken {
+  /** What names this token in a request to revoke it. */
+  id: string;
+
+  /** What the operator called it. */
+  label: string;
+
+  /** When it was issued. */
+  createdAt: string;
+
+  /** When it stops working, null for never. */
+  expiresAt: string | null;
+
+  /** When a request last presented it, null for never. */
+  lastUsed: string | null;
+
+  /** Whether it would still be accepted. */
+  usable: boolean;
+}
+
+/** The response of `GET /api/v1/account/tokens`. */
+export interface ApiTokensResponse {
+  /** Every token this account holds, newest first. */
+  tokens: ApiToken[];
+}
+
+/** The body of `POST /api/v1/account/tokens`. */
+export interface CreateApiTokenRequest {
+  /** What to call it, so that revoking the right one is possible later. Required. */
+  label: string;
+
+  /** How long it lasts; zero or absent means it does not expire. */
+  expiresInDays?: number;
+}
+
+/**
+ * A token just issued.
+ *
+ * The `token` field is the only time the value exists anywhere but in whoever copied it: only the
+ * SHA-256 is stored, so the page that renders this has to say so.
+ */
+export interface IssuedApiToken {
+  /** What names this token in a request to revoke it. */
+  id: string;
+
+  /** What the operator called it. */
+  label: string;
+
+  /** When it was issued. */
+  createdAt: string;
+
+  /** When it stops working, null for never. */
+  expiresAt: string | null;
+
+  /** The token itself, returned exactly once. */
+  token: string;
 }

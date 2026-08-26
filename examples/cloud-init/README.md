@@ -53,12 +53,12 @@ the machine.
 
 ```bash
 curl -sX POST https://farrier.example.org/api/v1/templates \
-  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $FARRIER_TOKEN" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg body "$(cat wheel-and-unattended-upgrades.yaml)" \
         '{name: "baseline", body: $body}')"
 
 curl -sX POST https://farrier.example.org/api/v1/templates/baseline/render \
-  -H "Authorization: Bearer $FARRIER_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $FARRIER_TOKEN" -H 'Content-Type: application/json' \
   -d '{"params":{"admin_user":"ubuntu"}}'
 ```
 

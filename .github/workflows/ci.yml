@@ -400,7 +400,7 @@ jobs:
           POSTGRES_SUPERUSER_PASSWORD=$(openssl rand -hex 16)
           FARRIER_DB_PASSWORD=$(openssl rand -hex 16)
           FARRIER_REPLICATION_PASSWORD=$(openssl rand -hex 16)
-          FARRIER_ADMIN_TOKEN=$(openssl rand -hex 32)
+          FARRIER_BOOTSTRAP_PASSWORD=$(openssl rand -hex 32)
           FARRIER_IMAGE=farrier-server:0.0.0-ci
           ENV
           docker compose -f compose.yaml -f compose.standby.yaml up -d --wait --wait-timeout 600

@@ -14,23 +14,20 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
-	"golang.org/x/term"
-
 	"github.com/pascalgross/farrier/internal/agent"
 	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/prompt"
 	"github.com/pascalgross/farrier/internal/signing"
 	"github.com/pascalgross/farrier/internal/signing/backend"
 	"github.com/pascalgross/farrier/internal/signing/backend/file"
@@ -269,56 +266,10 @@ func referenceExamples() []string {
 	return out
 }
 
-// promptInput is the one reader every prompt in this program shares.
-//
-// One, and not one per prompt, because a buffered reader reads ahead. Two prompts with two readers meant
-// the first swallowed the second's line and the second reported "no passphrase on standard input" while
-// standard input plainly had one — which made `farrier key generate`, whose second prompt is a
-// confirmation, impossible to script. Signing has the same shape: a passphrase, then a confirmation.
-var promptInput *bufio.Reader
-
-// readPromptLine reads one line from the shared reader, without its terminator.
-//
-// End of input is an empty line rather than an error, and each caller decides what that means. For a
-// passphrase it is a refusal; for a yes-or-no question it is a no.
-func readPromptLine() (string, error) {
-	if promptInput == nil {
-		promptInput = bufio.NewReader(os.Stdin)
-	}
-	line, err := promptInput.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
-}
-
 // readPassphrase reads a passphrase without echoing it.
 //
-// When standard input is not a terminal — a script, a CI job — it is read as a line instead, so that
-// automation works without the tool pretending it can prompt. That is a deliberate accommodation
-// rather than an oversight: refusing to work non-interactively would push people to put the passphrase
-// on the command line, where every user on the machine can read it from the process list.
-func readPassphrase(prompt string) ([]byte, error) {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		// A whole line rather than Fscanln, which stops at the first space — so a passphrase of four
-		// words would have been silently truncated to one. Only the trailing newline is stripped:
-		// leading and inner spaces are part of the passphrase.
-		line, err := readPromptLine()
-		if err != nil {
-			return nil, fmt.Errorf("reading a passphrase from standard input: %w", err)
-		}
-		if line == "" {
-			return nil, errors.New("no passphrase on standard input")
-		}
-		return []byte(line), nil
-	}
-
-	fmt.Fprint(os.Stderr, prompt)
-	passphrase, err := term.ReadPassword(fd)
-	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		return nil, fmt.Errorf("reading a passphrase: %w", err)
-	}
-	return passphrase, nil
-}
+// A thin wrapper over internal/prompt so that it can be handed to the signing-backend registry as a
+// backend.PassphraseFunc, which is the shape that keeps the rule travelling with the value: a
+// passphrase or a PIN is never a command-line argument, where every user on the machine can read it
+// from the process list.
+func readPassphrase(message string) ([]byte, error) { return prompt.Secret(message) }

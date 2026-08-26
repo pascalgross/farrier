@@ -521,6 +521,133 @@ type Certificate struct {
 	RevokedAt time.Time
 }
 
+// Account is one person who signs in, with an address and a password.
+//
+// It exists because operators were one shared bearer token, which made the audit trail name nobody and
+// made second-person approval unsatisfiable: that rule compares the approver's principal against the
+// job's creator, and under one credential those two strings are always equal.
+//
+// An account belongs to a fleet exactly as a host does — or to none at all, which is what makes it the
+// installation's own administrator rather than a customer's operator. The two kinds are one table so
+// that "an address identifies exactly one account" is a constraint the database states rather than a
+// rule two tables would have to be remembered to agree on.
+type Account struct {
+	// ID is the control plane's identifier for this account.
+	ID string
+
+	// TenantID is the fleet this operator acts in, empty for a platform administrator.
+	//
+	// Carried on the record for the same reason Certificate carries one: resolving an address to an
+	// account happens before any tenant is known, and the answer is what scopes the rest of the
+	// request. Empty is not a missing value — it is the whole of what makes an account a platform one.
+	TenantID TenantID
+
+	// Email is the address as it was entered, for display and for the audit log.
+	Email string
+
+	// EmailKey is the SHA-256 of the normalised address, which is what the row is found by.
+	//
+	// Separate from Email so that the lookup names one row through the same session setting the
+	// certificate and enrolment-token resolvers use, rather than introducing a second shape of key for
+	// the policy to admit.
+	EmailKey string
+
+	// DisplayName is what to call this person in the interface, empty for the address.
+	DisplayName string
+
+	// PasswordHash is the Argon2id PHC string. The password itself is never stored.
+	PasswordHash string
+
+	// CreatedAt is when the account was made.
+	CreatedAt time.Time
+
+	// LastSignedInAt is when it last signed in, zero for never.
+	LastSignedInAt time.Time
+}
+
+// Session is one signed-in browser.
+//
+// It exists because a browser cannot hold a password: signing in exchanges one for an opaque token
+// this process generated, and only the token's SHA-256 is stored — the same discipline as an enrolment
+// token, and correct here for the same reason, which is that the input is uniform randomness rather
+// than something a person chose.
+//
+// It carries no tenant. A session belongs to the account that created it and the account is the single
+// source of truth for which side of the tenant boundary it sits on; a tenant on this row would be a
+// second copy of that answer, and the failure it invites — a session claiming one fleet while naming
+// another's account — is one nothing would refuse.
+type Session struct {
+	// TokenHash is the SHA-256 of the session token. The token itself is never stored.
+	TokenHash string
+
+	// AccountID is whose session it is.
+	AccountID string
+
+	// CreatedAt is when the operator signed in.
+	CreatedAt time.Time
+
+	// ExpiresAt is when the session stops authenticating anybody.
+	//
+	// It moves. A session that is being used is extended, so that a working day is not interrupted by
+	// one; a session that is not is left to run out. See SessionMaxAge for the bound that stops the
+	// extension being indefinite.
+	ExpiresAt time.Time
+
+	// LastUsedAt is when a request last presented it, zero for never.
+	LastUsedAt time.Time
+
+	// UserAgent and Source are what the browser called itself and where the request came from.
+	//
+	// Advisory and clearly so: a user agent is a string the client chooses, and behind a proxy the
+	// address is the proxy's. They exist because "that one is not me" is a judgement somebody makes
+	// from weak evidence or not at all, and the alternative is a list of six sessions that are all
+	// just "a session".
+	UserAgent string
+	Source    string
+}
+
+// Valid reports whether a session still authenticates at the given instant.
+//
+// Against the caller's clock rather than the database's, matching every other validity window in
+// Farrier: docs/SECURITY.md treats clock skew as a boundary, and a credential that outlived its window
+// because two machines disagreed would be the least visible way for that to matter.
+func (s Session) Valid(now time.Time) bool { return now.Before(s.ExpiresAt) }
+
+// APIToken is a credential belonging to one account, for the scripts a password cannot serve.
+//
+// It is a bearer token, and that is not a contradiction with having removed the other one. What was
+// wrong with a shared admin token was not the word "bearer": it was one credential for a whole fleet,
+// held in a flag, naming nobody in the audit trail, never expiring, and withdrawable only by restarting
+// the control plane and telling everybody. This one belongs to a person, acts as that person, expires,
+// and is revoked from a page in a second.
+type APIToken struct {
+	// Hash is the SHA-256 of the token as issued. The token itself is never stored.
+	Hash string
+
+	// AccountID is whose token it is, and therefore who its actions are recorded against.
+	AccountID string
+
+	// Label is what the operator called it, so that revoking the right one is possible.
+	Label string
+
+	// CreatedAt is when it was issued.
+	CreatedAt time.Time
+
+	// ExpiresAt is when it stops working, zero for never.
+	ExpiresAt time.Time
+
+	// LastUsedAt is when a request last presented it, zero for never.
+	LastUsedAt time.Time
+}
+
+// Usable reports whether a token may still be presented at the given instant.
+//
+// A zero expiry means no expiry, which is a decision somebody made rather than a missing value — see
+// migration 0010 for why that is nullable rather than a far-future date.
+func (t APIToken) Usable(now time.Time) bool {
+	return t.ExpiresAt.IsZero() || now.Before(t.ExpiresAt)
+}
+
 // HeartbeatUpdate is what one heartbeat changes about a host.
 //
 // It is a separate struct from Host so that a heartbeat cannot accidentally overwrite fields it does
@@ -804,6 +931,47 @@ type Store interface {
 	// second token in the course of being told no.
 	TenantForEnrollmentToken(ctx context.Context, hash string) (TenantID, error)
 
+	// Platform returns the accounts of the installation's own administrators.
+	//
+	// The counterpart to In(tenant), and it exists for the same reason: which side of the tenant
+	// boundary an operation is on is not a flag a caller remembers to pass, it is a handle they cannot
+	// obtain without saying. A platform account carries no tenant, so it is unreachable from any
+	// In(tenant) handle — `NULL = 'anything'` is NULL and not true — and this is the only door to it.
+	//
+	// It returns the same interface In(tenant) satisfies for accounts, so nothing above this layer has
+	// to know which kind it is holding. That is what lets the sign-in path be one path.
+	Platform() AccountScope
+
+	// AccountByEmail returns the account an address names, or ErrNotFound.
+	//
+	// Here rather than behind a handle because it is the third of the lookups that must happen before
+	// the caller's side of the boundary is known: a sign-in form names an address and nothing else, and
+	// finding the row is how the fleet — or the absence of one — is discovered.
+	//
+	// Unlike the certificate and token resolvers, the key here is guessable: an address is not a
+	// secret. The refusal that keeps that from being a disclosure lives in the endpoint above this
+	// method, which answers an unknown address and a wrong password identically; migration 0010 says so
+	// at the policy, and this comment says so at the method, because the two have to stay true together.
+	AccountByEmail(ctx context.Context, emailKey string) (Account, error)
+
+	// SessionByToken returns a session and the account it belongs to, or ErrNotFound.
+	//
+	// The fourth pre-tenant lookup, and the closest analogue to LookupCertificate: it runs on every
+	// request a signed-in browser makes, and what it returns is what scopes everything after it. It
+	// answers both halves because they are one question — "who is this request" — and because the
+	// account id that answers the second half is produced by the first: splitting them would mean a
+	// second transaction naming a key the first one had just found.
+	//
+	// Expiry is not checked here. The caller checks it against its own clock, for the reason
+	// Session.Valid gives.
+	SessionByToken(ctx context.Context, tokenHash string) (Session, Account, error)
+
+	// APITokenByHash returns a token and the account it belongs to, or ErrNotFound.
+	//
+	// The fifth, and the same shape as the fourth: a script presents a token, and the row is where the
+	// request finds out whose it is. Usability is left to the caller for the reason expiry is.
+	APITokenByHash(ctx context.Context, hash string) (APIToken, Account, error)
+
 	// CreateTenant records a new tenant.
 	CreateTenant(ctx context.Context, t Tenant) error
 
@@ -862,6 +1030,13 @@ type Store interface {
 // PostgreSQL implementation then sets that tenant on the transaction, so the database refuses rows
 // from anywhere else — the predicate in each statement is the optimisation, and the policy is the rule.
 type Scoped interface {
+	// AccountScope is every operation on this tenant's operator accounts and their credentials.
+	//
+	// Embedded rather than repeated because the platform side needs exactly the same set and gets it
+	// from Store.Platform(), so the sign-in path can be written once against whichever handle a
+	// credential resolved to.
+	AccountScope
+
 	// Tenant reports whose data this handle reaches, for logs and for assertions.
 	Tenant() TenantID
 
@@ -1094,6 +1269,106 @@ type Scoped interface {
 
 	// UpsertAlertState records one key's state, keyed on the key.
 	UpsertAlertState(ctx context.Context, s AlertState) error
+}
+
+// AccountScope is every operation on the accounts of one side of the tenant boundary.
+//
+// It is an interface of its own rather than methods on Scoped because there are two sides and only one
+// of them is a tenant. A fleet's operators are reached through Store.In(tenant); the installation's own
+// administrators, who carry no tenant at all, are reached through Store.Platform(). Everything above
+// this layer — the sign-in path, the account page, the token endpoints — is written against this
+// interface and never learns which of the two it is holding, which is what keeps "a platform
+// administrator signs in exactly like anybody else" true in code rather than by parallel implementation.
+//
+// The session and token methods take an account id rather than being reached through a per-account
+// handle. A session belongs to an account and not to a fleet — migration 0010 moved the row-level
+// security policy to say so — and a third handle for it would be indirection with one reader.
+type AccountScope interface {
+	// CreateAccount records a new account, or ErrConflict if the address is taken.
+	//
+	// The address is unique across the installation rather than within a fleet, so ErrConflict can mean
+	// an address another fleet already uses, or one the platform administrator holds. Migration 0010
+	// says why that is the right trade and why the disclosure it implies is bounded: accounts are
+	// created on the machine, by somebody who can already read the table.
+	CreateAccount(ctx context.Context, a Account) error
+
+	// GetAccount returns one of this side's accounts by id, or ErrNotFound.
+	GetAccount(ctx context.Context, id string) (Account, error)
+
+	// ListAccounts returns this side's accounts, oldest first.
+	ListAccounts(ctx context.Context) ([]Account, error)
+
+	// UpdateAccountPassword replaces one account's password hash, or returns ErrNotFound.
+	//
+	// It is also how a hash written under weaker Argon2id parameters is rewritten, at the one moment
+	// the password is known: sign-in. That is why it takes a hash rather than a password — this package
+	// does not know how to make one, and should not.
+	UpdateAccountPassword(ctx context.Context, id, passwordHash string) error
+
+	// RecordAccountSignIn stamps when an account last signed in, or returns ErrNotFound.
+	RecordAccountSignIn(ctx context.Context, id string, at time.Time) error
+
+	// DeleteAccount removes an account and every credential it holds, or returns ErrNotFound.
+	//
+	// Sessions and API tokens go with it, because the account is the only thing that made them mean
+	// anything and a credential outliving its account is one nobody can revoke by name. The schema's
+	// ON DELETE CASCADE performs it; this method is where the guarantee is written down.
+	DeleteAccount(ctx context.Context, id string) error
+
+	// CreateSession records a signed-in browser and clears that account's expired sessions.
+	//
+	// The two happen together and that is the whole of session housekeeping: the table grows by one row
+	// per sign-in and shrinks by all of that account's dead rows at the next one, so there is no sweeper
+	// to schedule and nothing to forget to run.
+	CreateSession(ctx context.Context, s Session) error
+
+	// ListSessions returns one account's sessions, newest first.
+	//
+	// It exists so that "sign out everywhere" is a decision somebody makes rather than a button they
+	// press blind. Nothing here returns a token or its hash to a caller that did not already hold one.
+	ListSessions(ctx context.Context, accountID string) ([]Session, error)
+
+	// TouchSession extends one session and records that it was used.
+	//
+	// The extension is what stops a session expiring in the middle of a working day, and it is a
+	// separate method rather than a side effect of the lookup because it is a write: the caller decides
+	// how often it is worth one. See auth.SessionRenewAfter.
+	TouchSession(ctx context.Context, accountID, tokenHash string, expiresAt, usedAt time.Time) error
+
+	// DeleteSession ends one session, whether or not it had expired.
+	//
+	// Idempotent: a token that names no row is not an error, because a second sign-out — or a sign-out
+	// of a session that had already expired — is not a failure a caller should have to distinguish.
+	DeleteSession(ctx context.Context, accountID, tokenHash string) error
+
+	// DeleteSessionsFor ends every session one account holds, and reports how many.
+	//
+	// This is "sign out everywhere", which is the only thing an operator can do about a session they
+	// cannot identify — and the thing to do after a laptop goes missing. The count is returned because
+	// "signed out of 3 other places" is a different message from "signed out of nothing".
+	DeleteSessionsFor(ctx context.Context, accountID string) (int, error)
+
+	// CreateAPIToken records a token belonging to one account.
+	CreateAPIToken(ctx context.Context, t APIToken) error
+
+	// ListAPITokens returns one account's tokens, newest first.
+	//
+	// The token itself is absent, because only its hash was ever stored. That is worth being visible in
+	// the shape rather than only in a comment: a field that could hold the secret and does not is a
+	// question somebody asks once.
+	ListAPITokens(ctx context.Context, accountID string) ([]APIToken, error)
+
+	// TouchAPIToken records that a token was used, or returns ErrNotFound.
+	//
+	// Separate from the lookup for the same reason TouchSession is: it is a write on a read path, and
+	// how often to pay for one is the caller's decision rather than the store's.
+	TouchAPIToken(ctx context.Context, accountID, hash string, usedAt time.Time) error
+
+	// DeleteAPIToken revokes one token, or returns ErrNotFound.
+	//
+	// ErrNotFound rather than silence, unlike DeleteSession: revoking a token is a deliberate act aimed
+	// at a row somebody is looking at, so "there was nothing there" is information they want.
+	DeleteAPIToken(ctx context.Context, accountID, hash string) error
 }
 
 // Compile-time proof that both implementations satisfy the interface.

@@ -96,12 +96,15 @@ services:
       # libpq's PGPASSWORD has no such syntax, so any password the database accepts works here.
       # A password inside an explicit FARRIER_DATABASE_URL still wins over this, as libpq specifies.
       PGPASSWORD: ${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}
-      # Through the environment rather than a flag, because argv is world-readable in ps — the same
-      # reasoning the server applies to the SMTP password.
-      FARRIER_ADMIN_TOKEN: ${FARRIER_ADMIN_TOKEN:?set FARRIER_ADMIN_TOKEN in .env}
-      # Empty means single-fleet, which is the case for almost everybody: without a platform token
-      # there is nothing that can create a second tenant, and the one you have is called "default".
-      FARRIER_PLATFORM_TOKEN: ${FARRIER_PLATFORM_TOKEN:-}
+      # The first account, read only on the first start of an empty database. Through the environment
+      # rather than a flag, because argv is world-readable in ps — the same reasoning the server applies
+      # to the SMTP password.
+      #
+      # Neither is required, and the password being empty is a supported case rather than an oversight:
+      # the server generates one, prints it once, and `docker compose logs farrier-server` is where it
+      # is. That is right for trying this out and wrong for anything somebody has to get back into.
+      FARRIER_BOOTSTRAP_EMAIL: ${FARRIER_BOOTSTRAP_EMAIL:-admin@localhost}
+      FARRIER_BOOTSTRAP_PASSWORD: ${FARRIER_BOOTSTRAP_PASSWORD:-}
       FARRIER_TENANT: ${FARRIER_TENANT:-default}
     volumes:
       # The CA that issues agent certificates, the key that signs routine jobs, and the key that seals

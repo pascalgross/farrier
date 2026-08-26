@@ -27,20 +27,50 @@ interface ProblemDocument {
 /**
  * Describes an HTTP failure.
  *
- * A 401 is by far the most likely one and has a specific cause — a wrong or expired token — so it is
- * named rather than rendered as a status code somebody has to look up. Everything else prefers the
- * control plane's own message: the API writes those for a human reading a curl output during an
- * incident, and repeating them here means the browser and the terminal say the same thing.
+ * A 401 is by far the most likely one and has a specific cause — a credential that has expired, been
+ * revoked or was wrong to begin with — so it is named rather than rendered as a status code somebody
+ * has to look up. It deliberately does not say which of the two credentials failed: a session and a
+ * bearer token expire for different reasons, and an operator who is told the wrong one has been sent
+ * to look in the wrong place. Everything else prefers the control plane's own message: the API writes
+ * those for a human reading a curl output during an incident, and repeating them here means the
+ * browser and the terminal say the same thing.
  */
 export function describeError(err: unknown): string {
   const carrier = err as StatusCarrier | null;
   const status = carrier?.status;
   if (status === 401) {
-    return 'The control plane rejected this token. Sign out and enter the one it printed at startup.';
+    return 'The control plane refused this credential. Sign in again.';
   }
   if (status === 0 || status === undefined) {
     return 'The control plane could not be reached.';
   }
   const message = carrier?.error?.message;
   return message ? message : `The control plane returned ${status}.`;
+}
+
+/**
+ * Describes a control plane that could not answer, as distinct from one that refused.
+ *
+ * It exists for one caller and one moment: the identity probe the shell makes on start. That request
+ * has two failure modes and they mean opposite things. A 401 is the ordinary answer for a browser that
+ * has not signed in, and belongs on no screen at all. Anything else — a 500 because the database is
+ * unreachable, or no response because the control plane is not running — is not about the credential,
+ * and presenting it as one puts a sign-in form in front of somebody whose session is fine and whose
+ * password will not help.
+ *
+ * That distinction is the browser half of `auth.ErrUnavailable`, which is what makes the control plane
+ * answer 500 rather than 401 during an outage. Without this, the server's care would end at the wire:
+ * the interface would render every failure as "sign in again" regardless.
+ *
+ * It returns an empty string for a 401, so the caller can treat "no message" as "signed out".
+ */
+export function describeUnavailable(err: unknown): string {
+  const carrier = err as StatusCarrier | null;
+  if (carrier?.status === 401) {
+    return '';
+  }
+  const message = carrier?.error?.message;
+  return message
+    ? `${message} This is not a refusal — your session may be fine.`
+    : 'The control plane could not say who you are. This is not a refusal: it could not answer at all.';
 }

@@ -68,6 +68,15 @@ type Config struct {
 	// Auth authenticates human operators.
 	Auth auth.Provider
 
+	// Accounts is the local-accounts provider, nil when this installation has none.
+	//
+	// It is here as well as inside Auth, and the duplication is the point: Auth answers "who is this
+	// request", which is all any handler needs, while signing in and signing out are operations on a
+	// particular kind of credential and have to reach the implementation that owns its format. A nil
+	// value means the two session routes answer 404, which is the honest response for a control plane
+	// authenticated by bearer token alone.
+	Accounts *auth.Accounts
+
 	// OnlineKey signs routine jobs, and is nil when this control plane has none.
 	//
 	// Nil is a supported configuration rather than a broken one: without it the routine tier is
@@ -135,6 +144,30 @@ type Server struct {
 	// enrolLimiter bounds attempts against the one endpoint that needs no client certificate.
 	enrolLimiter *rateLimiter
 
+	// signInLimiter bounds attempts against the other endpoint that needs no credential at all.
+	//
+	// A separate limiter rather than a shared one, because the two defend different things and want
+	// different numbers: enrolment is a fleet being built and should tolerate a burst, and a sign-in
+	// costs this process 64 MiB of Argon2id per attempt.
+	signInLimiter *rateLimiter
+
+	// passwordLimiter bounds password changes, per account.
+	//
+	// The route is behind a signed-in session, which is the least privilege this system has and is not
+	// the same as no privilege: verifying the current password is a 64 MiB Argon2id derivation, and
+	// nothing about being signed in stops somebody driving that in a loop. It is also an online
+	// guessing oracle against the account's own password for anyone holding a stolen cookie — which
+	// matters less than it sounds, since the cookie already authenticates, and matters at all because
+	// people reuse passwords.
+	//
+	// Keyed on the account id rather than the source address, because here the caller is authenticated:
+	// the id is the true identity, is not a value the request chooses, and does not collapse into one
+	// bucket behind a proxy the way an address does.
+	passwordLimiter *rateLimiter
+
+	// accounts is the local-accounts provider, nil when this installation has none.
+	accounts *auth.Accounts
+
 	// events fans live events out to subscribed browser tabs; the durable copy is the store's inbox.
 	events eventStream
 
@@ -200,13 +233,16 @@ func New(cfg Config) (*Server, error) {
 	_, statErr := fs.Stat(assets, "index.html")
 
 	s := &Server{
-		cfg:          cfg,
-		mux:          http.NewServeMux(),
-		assets:       assets,
-		hasUI:        statErr == nil,
-		enrolLimiter: newRateLimiter(enrollBurst, enrollRefill),
-		paths:        http.NewServeMux(),
-		allow:        map[string][]string{},
+		cfg:             cfg,
+		mux:             http.NewServeMux(),
+		assets:          assets,
+		hasUI:           statErr == nil,
+		enrolLimiter:    newRateLimiter(enrollBurst, enrollRefill),
+		signInLimiter:   newRateLimiter(signInBurst, signInRefill),
+		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
+		accounts:        cfg.Accounts,
+		paths:           http.NewServeMux(),
+		allow:           map[string][]string{},
 	}
 	// Background rather than derived from a request or from ListenAndServe's context: a detached
 	// delivery must outlive the request that caused it, and must still be cancellable as a group.
@@ -240,7 +276,26 @@ func (s *Server) routes() {
 	s.route(http.MethodPost, "/api/v1/jobs", s.requireOperator(s.handleCreateJob))
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
 	s.route(http.MethodPost, "/api/v1/jobs/{id}/approve", s.requireOperator(s.handleApproveJob))
-	s.route(http.MethodGet, "/api/v1/whoami", s.requireOperator(s.handleWhoami))
+	s.route(http.MethodGet, "/api/v1/whoami", s.requireIdentity(s.handleWhoami))
+
+	// Signing in and signing out. Both are unauthenticated on purpose: the first is where a credential
+	// comes from, and the second has to work for a session that has already stopped authenticating —
+	// otherwise the cookie and its row both stay behind.
+	s.route(http.MethodPost, "/api/v1/session", http.HandlerFunc(s.handleSignIn))
+	s.route(http.MethodDelete, "/api/v1/session", http.HandlerFunc(s.handleSignOut))
+
+	// An account's own credentials: its password, the browsers it is signed in on, and the tokens it
+	// has issued for scripts. Every one is behind requireAccount rather than requireOperator, and the
+	// difference is that requireAccount refuses an API token — a token that could mint another would
+	// outlive its own revocation. It is also the one group of routes both an operator and a platform
+	// administrator reach, because everybody has an account and everybody has a password to change.
+	s.route(http.MethodGet, "/api/v1/account", s.requireAccount(s.handleGetAccount))
+	s.route(http.MethodPost, "/api/v1/account/password", s.requireAccount(s.handleChangePassword))
+	s.route(http.MethodGet, "/api/v1/account/sessions", s.requireAccount(s.handleListSessions))
+	s.route(http.MethodPost, "/api/v1/account/sessions/revoke", s.requireAccount(s.handleRevokeSessions))
+	s.route(http.MethodGet, "/api/v1/account/tokens", s.requireAccount(s.handleListAPITokens))
+	s.route(http.MethodPost, "/api/v1/account/tokens", s.requireAccount(s.handleCreateAPIToken))
+	s.route(http.MethodDelete, "/api/v1/account/tokens/{id}", s.requireAccount(s.handleDeleteAPIToken))
 	s.route(http.MethodGet, "/api/v1/templates", s.requireOperator(s.handleListTemplates))
 	s.route(http.MethodPost, "/api/v1/templates", s.requireOperator(s.handleCreateTemplate))
 	s.route(http.MethodGet, "/api/v1/templates/{name}", s.requireOperator(s.handleGetTemplate))
@@ -594,6 +649,35 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 	})
 }
 
+// refuseOrFail answers an authentication error, telling a wrong credential from an unreachable store.
+//
+// One function for the four middlewares below, because the distinction is easy to state and easy to
+// drop, and dropping it is silent: a control plane whose database is unreachable would answer 401 to
+// every request, which to a browser *is* the sign-in form and to a script is "your token was revoked".
+// Everybody would be told their credential had been taken away, at the moment nobody could check.
+//
+// The 500 says nothing about the credential — not whether the account exists, not which provider
+// failed. It says the control plane could not answer, which is the truth and is what somebody on call
+// needs to see.
+//
+// It returns whether it wrote a response, so a caller can keep the shape of an ordinary guard clause.
+func refuseOrFail(w http.ResponseWriter, err error, refusal string) bool {
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, auth.ErrUnauthenticated) {
+		slog.Error("could not check a credential", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal",
+			"the control plane could not check your credential; this is not a refusal")
+		return true
+	}
+	// One response for missing, malformed and wrong. Telling the caller which half of their guess was
+	// right is free reconnaissance.
+	w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
+	writeError(w, http.StatusUnauthorized, "unauthenticated", refusal)
+	return true
+}
+
 // requireOperator authenticates a human operator and scopes the request to their tenant.
 //
 // The tenant comes from the credential and from nowhere else — not a path segment, not a header, not a
@@ -607,11 +691,10 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 func (s *Server) requireOperator(next func(http.ResponseWriter, *http.Request, operator)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
-		if err != nil || identity == nil {
-			// One response for missing, malformed and wrong. Telling the caller which half of their
-			// guess was right is free reconnaissance.
-			w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid operator credential is required")
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a valid operator credential is required") {
 			return
 		}
 		if identity.Platform || identity.Tenant == "" {
@@ -627,6 +710,31 @@ func (s *Server) requireOperator(next func(http.ResponseWriter, *http.Request, o
 	})
 }
 
+// requireIdentity authenticates any operator credential without deciding which kind it is.
+//
+// It exists for exactly one route — GET /api/v1/whoami — and the reason is worth stating, because a
+// middleware that accepts both credentials is otherwise the shape of a mistake. Every other route
+// belongs to one of the two roles and refuses the other, which is the whole of the separation
+// docs/SECURITY.md §5.3 describes. "Who am I" belongs to neither: it is the question a browser asks
+// before it knows which interface to render, and answering a platform credential with 403 meant the
+// application could only report that the credential it had just been given was unusable, without
+// being able to say what it was for.
+//
+// It hands over the identity and no store handle at all. A handler behind it therefore has nothing in
+// reach that could read a tenant's data, which is the property requirePlatform relies on too.
+func (s *Server) requireIdentity(next func(http.ResponseWriter, *http.Request, auth.Identity)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a valid credential is required") {
+			return
+		}
+		next(w, r, *identity)
+	})
+}
+
 // requirePlatform authenticates the installation's own administrator.
 //
 // It guards the tenant routes and nothing else. The identity it produces carries no tenant and is given
@@ -635,9 +743,10 @@ func (s *Server) requireOperator(next func(http.ResponseWriter, *http.Request, o
 func (s *Server) requirePlatform(next func(http.ResponseWriter, *http.Request, auth.Identity)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := s.cfg.Auth.Authenticate(r.Context(), r)
-		if err != nil || identity == nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid credential is required")
+		if identity == nil && err == nil {
+			err = auth.ErrUnauthenticated
+		}
+		if refuseOrFail(w, err, "a valid credential is required") {
 			return
 		}
 		if !identity.Platform {

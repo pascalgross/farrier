@@ -1,0 +1,227 @@
+<div class="farrier-account">
+  <header class="farrier-account__header">
+    <h1>Your account</h1>
+    @if (account(); as me) {
+      <p>
+        Signed in as <strong>{{ me.email }}</strong>, recorded against everything you do as
+        <code>{{ me.principal }}</code>.
+        {{ me.platform
+          ? 'This account administers the installation: it can create and configure fleets, and reaches no fleet’s hosts or jobs.'
+          : '' }}
+      </p>
+    }
+  </header>
+
+  @if (loading()) {
+    <mat-progress-bar mode="indeterminate" aria-label="Loading your account" />
+  }
+
+  @if (loadError(); as failure) {
+    <p class="farrier-account__error">{{ failure }}</p>
+  }
+
+  <!-- ─── Password ───────────────────────────────────────────────────────────────────────────── -->
+  <mat-card appearance="outlined">
+    <mat-card-header>
+      <mat-card-title>Password</mat-card-title>
+      <mat-card-subtitle>
+        Your current password is asked for even though you are signed in. A session is a credential
+        somebody else may be holding, and this is the one change that would lock you out of your own
+        account.
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content class="farrier-account__form">
+      <mat-form-field appearance="outline">
+        <mat-label>Current password</mat-label>
+        <input matInput type="password" autocomplete="current-password"
+               [ngModel]="currentPassword()" (ngModelChange)="currentPassword.set($event)" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>New password</mat-label>
+        <input matInput type="password" autocomplete="new-password"
+               [ngModel]="newPassword()" (ngModelChange)="newPassword.set($event)" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>New password again</mat-label>
+        <input matInput type="password" autocomplete="new-password"
+               [ngModel]="confirmPassword()" (ngModelChange)="confirmPassword.set($event)"
+               (keyup.enter)="changePassword()" />
+        <!--
+          One hint element rather than one per condition: Angular projects content into mat-hint by
+          selector, and a hint inside a @if is inside an embedded view the selector does not reach —
+          so it renders in the middle of the field's outline instead. The computed says which.
+        -->
+        @if (passwordHint(); as hint) {
+          <mat-hint>{{ hint }}</mat-hint>
+        }
+      </mat-form-field>
+
+      @if (passwordError(); as failure) {
+        <p class="farrier-account__note farrier-account__note--bad">{{ failure }}</p>
+      }
+      @if (passwordDone(); as done) {
+        <p class="farrier-account__note farrier-account__note--good">{{ done }}</p>
+      }
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button mat-flat-button [disabled]="!canChangePassword()" (click)="changePassword()">
+        Change password
+      </button>
+    </mat-card-actions>
+  </mat-card>
+
+  <!-- ─── Sessions ───────────────────────────────────────────────────────────────────────────── -->
+  <mat-card appearance="outlined">
+    <mat-card-header>
+      <mat-card-title>Signed-in browsers</mat-card-title>
+      <mat-card-subtitle>
+        What each one says it is, and where it was last used from. Both are what the client told the
+        control plane: behind a proxy the address is the proxy's, and a user agent is a string a client
+        chooses. They are here so that "that one is not me" is a judgement you can make at all.
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      @if (sessions().length === 0) {
+        <p class="farrier-account__empty">No sessions. Not even this one, which means the list has
+          not loaded.</p>
+      } @else {
+        <ul class="farrier-account__list">
+          @for (held of sessions(); track held.createdAt + held.userAgent) {
+            <li class="farrier-account__row" [class.farrier-account__row--muted]="held.expired">
+              <mat-icon class="farrier-account__row-icon">
+                {{ held.current ? 'laptop_mac' : 'devices' }}
+              </mat-icon>
+
+              <div class="farrier-account__row-body">
+                <span class="farrier-account__row-title">
+                  {{ describeSession(held) }}
+                  @if (held.current) {
+                    <span class="farrier-account__badge">this browser</span>
+                  }
+                  @if (held.expired) {
+                    <span class="farrier-account__badge farrier-account__badge--muted">expired</span>
+                  }
+                </span>
+                <span class="farrier-account__row-meta farrier-numeric">
+                  Signed in {{ age(held.createdAt) }} · last used {{ age(held.lastUsed) }}
+                </span>
+              </div>
+            </li>
+          }
+        </ul>
+      }
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button mat-button (click)="loadSessions()">Refresh</button>
+      <!--
+        Everywhere means everywhere, this browser included. A version that quietly kept the current
+        session would have to be explained, and the explanation lands at the moment somebody is least
+        able to reason about which "here" they mean.
+      -->
+      <button mat-stroked-button [disabled]="working()" (click)="signOutEverywhere()"
+              matTooltip="Ends every session, including this one. You will be signed out.">
+        Sign out everywhere
+      </button>
+    </mat-card-actions>
+  </mat-card>
+
+  <!-- ─── API tokens ─────────────────────────────────────────────────────────────────────────── -->
+  <mat-card appearance="outlined">
+    <mat-card-header>
+      <mat-card-title>API tokens</mat-card-title>
+      <mat-card-subtitle>
+        What a script uses instead of a password. A token acts as you — everything it does is recorded
+        against <code>{{ account()?.principal }}</code> — so give one only to something you would be
+        content to have acted for you, and revoke it when you are not.
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content class="farrier-account__form">
+      @if (issued(); as fresh) {
+        <!--
+          Shown here and never again: only the SHA-256 is stored, so this is the one moment the value
+          exists anywhere but in whoever copies it.
+        -->
+        <div class="farrier-account__issued">
+          <div class="farrier-account__issued-head">
+            <mat-icon>vpn_key</mat-icon>
+            <span>{{ fresh.label }} — copy it now</span>
+          </div>
+          <code class="farrier-account__secret">{{ fresh.token }}</code>
+          <p class="farrier-account__issued-note">
+            Only its hash is stored, so this will not be shown again. Send it as
+            <code>Authorization: Bearer …</code>. If you lose it, revoke it and mint another — that
+            costs nothing.
+          </p>
+          <div class="farrier-account__issued-actions">
+            <button mat-button (click)="dismissIssued()">Done</button>
+          </div>
+        </div>
+      }
+
+      <div class="farrier-account__mint">
+        <mat-form-field appearance="outline" class="farrier-account__mint-label">
+          <mat-label>What is it for</mat-label>
+          <input matInput [ngModel]="tokenLabel()" (ngModelChange)="tokenLabel.set($event)"
+                 (keyup.enter)="mintToken()" placeholder="deployment pipeline" />
+          <mat-hint>A token nobody can tell from the others is a token nobody revokes.</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="farrier-account__mint-expiry">
+          <mat-label>Expires</mat-label>
+          <mat-select [ngModel]="tokenDays()" (ngModelChange)="tokenDays.set($event)">
+            @for (choice of lifetimes; track choice.days) {
+              <mat-option [value]="choice.days">{{ choice.label }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <button mat-flat-button class="farrier-account__mint-button"
+                [disabled]="!canMintToken()" (click)="mintToken()">
+          Issue token
+        </button>
+      </div>
+
+      @if (tokenError(); as failure) {
+        <p class="farrier-account__note farrier-account__note--bad">{{ failure }}</p>
+      }
+
+      @if (tokens().length === 0) {
+        <p class="farrier-account__empty">No tokens. Nothing is acting as you but this browser.</p>
+      } @else {
+        <ul class="farrier-account__list">
+          @for (token of tokens(); track token.id) {
+            <li class="farrier-account__row" [class.farrier-account__row--muted]="!token.usable">
+              <mat-icon class="farrier-account__row-icon">key</mat-icon>
+
+              <div class="farrier-account__row-body">
+                <span class="farrier-account__row-title">
+                  {{ token.label }}
+                  @if (!token.usable) {
+                    <span class="farrier-account__badge farrier-account__badge--muted">expired</span>
+                  }
+                </span>
+                <span class="farrier-account__row-meta farrier-numeric">
+                  Issued {{ age(token.createdAt) }} · last used {{ age(token.lastUsed) }} ·
+                  {{ token.expiresAt ? 'expires ' + (token.expiresAt | date: 'mediumDate') : 'no expiry' }}
+                </span>
+              </div>
+
+              <button mat-icon-button [disabled]="working()" (click)="revokeToken(token)"
+                      matTooltip="Revoke this token. It stops working immediately."
+                      [attr.aria-label]="'Revoke ' + token.label">
+                <mat-icon>delete_outline</mat-icon>
+              </button>
+            </li>
+          }
+        </ul>
+      }
+    </mat-card-content>
+  </mat-card>
+</div>

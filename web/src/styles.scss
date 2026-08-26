@@ -3,6 +3,11 @@
 // Tailwind lives in src/tailwind.css, which is loaded first. The split is not arbitrary: Material
 // supplies the components that benefit from having accessibility, focus management and keyboard
 // behaviour already solved, and Tailwind supplies layout. Neither is asked to do the other's job.
+//
+// Two rules below are where that division of labour turns out to need a seam rather than a boundary:
+// the icon font's class, and the one place Tailwind's global reset reaches into a Material component.
+// Both are documented at length where they appear, because each was a bug that looked like a broken
+// build rather than like a stylesheet.
 
 @use "@angular/material" as mat;
 
@@ -26,6 +31,58 @@ body {
   font-family: Roboto, "Helvetica Neue", system-ui, sans-serif;
   background: var(--mat-sys-surface);
   color: var(--mat-sys-on-surface);
+}
+
+// The class that actually uses the bundled icon font.
+//
+// It has to be written here because @fontsource ships the @font-face and nothing else. Google's hosted
+// stylesheet has a second half — this rule — and taking the font offline meant taking both halves, not
+// one. MatIconRegistry's default font set is `material-icons mat-ligature-font`, so without a rule that
+// matches `.material-icons` nothing ever applies the family: the icon names are ligatures, and a
+// ligature that is not looked up renders as its own letters. That is the failure this fixes, and it is
+// worth naming precisely because it does not look like a missing stylesheet — the application renders,
+// and the toolbar simply says "notifications" and "logout" in words, overflowing whatever is beside it.
+//
+// The declarations are Google's, kept rather than trimmed: `font-feature-settings: "liga"` is the one
+// that turns a name into a glyph, and the rest exist so that an icon inherits nothing from a paragraph
+// it happens to sit in. `.mat-icon-inline` overrides the size on the icons that want to match their
+// text, which works because Material's rule is the more specific of the two.
+.material-icons {
+  font-family: "Material Icons";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+}
+
+// The one place Tailwind's reset reaches into a Material component.
+//
+// Material draws an outlined field as three siblings — a leading piece, the notch that holds the
+// floating label, and a trailing piece — and each draws only the sides it owns. The sides it must not
+// draw are left at the browser's default `border-style: none`, which is what makes Material's
+// `border-width: 1px` shorthand on all four sides harmless. Tailwind's Preflight sets `border: 0 solid`
+// on every element, so those sides have a style after all, and the width then has something to draw:
+// a full-height rule down the middle of every input in the application.
+//
+// The fix is this narrow on purpose. Preflight's `border-style: solid` is what makes every Tailwind
+// `border-*` utility work, so it cannot be dropped, and a blanket rule on `.mat-mdc-notch-piece` would
+// lose to Material's own — component styles are injected into the head at run time, after this
+// stylesheet, so equal specificity goes to Material. Nothing in Material sets this property, so this
+// rule has no competition rather than winning a fight.
+//
+// It is the inline-end side in both writing directions: Material puts the transparent seam border on
+// whichever side faces the leading piece and shipped a [dir=rtl] rule that swaps it, so naming the
+// physical side here would draw the line again in Arabic and Hebrew.
+.mdc-notched-outline__notch {
+  border-inline-end-style: none;
 }
 
 // Numbers compared down a column — update counts, uptimes, clock offsets, identifiers — are set with

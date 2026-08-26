@@ -44,6 +44,7 @@ func usage() {
 usage:
   farrier-server serve       run the control plane
   farrier-server ca init     create the private CA that issues agent certificates
+  farrier-server accounts    create and manage the accounts operators sign in with
   farrier-server catalogue   print the intent catalogue this build knows
   farrier-server version     print the version
 
@@ -67,6 +68,8 @@ func main() {
 		os.Exit(serve(args[1:]))
 	case "ca":
 		os.Exit(caCommand(args[1:]))
+	case "accounts":
+		os.Exit(accountsCommand(args[1:]))
 	case "catalogue":
 		printCatalogue()
 	case "version":
@@ -94,13 +97,15 @@ func serve(argv []string) int {
 		"PostgreSQL connection URL, or the literal \"memory\" for a throwaway in-process store")
 	tlsCert := fs.String("tls-cert", "", "PEM certificate for this server's own HTTPS identity")
 	tlsKey := fs.String("tls-key", "", "PEM key for this server's own HTTPS identity")
-	adminToken := fs.String("admin-token", envOr("FARRIER_ADMIN_TOKEN", ""),
-		"bearer token for one tenant's operators; one is generated and printed if omitted")
 	tenantSlug := fs.String("tenant", envOr("FARRIER_TENANT", "default"),
-		"the tenant --admin-token acts in; created on first start if it does not exist")
-	platformToken := fs.String("platform-token", envOr("FARRIER_PLATFORM_TOKEN", ""),
-		"bearer token for tenant administration; reaches no tenant's hosts or jobs. Omit on a "+
-			"single-fleet installation")
+		"the fleet this control plane serves; created on first start if it does not exist")
+	bootstrapEmail := fs.String("bootstrap-email", envOr("FARRIER_BOOTSTRAP_EMAIL", "admin@localhost"),
+		"address of the account created when the database holds none; change it afterwards with "+
+			"`farrier-server accounts`")
+	bootstrapPasswordFile := fs.String("bootstrap-password-file", "",
+		"file holding the first account's password; a file rather than a flag, because argv is "+
+			"world-readable in ps. FARRIER_BOOTSTRAP_PASSWORD is read when this is unset, and one is "+
+			"generated and printed once when neither is given")
 	webhook := fs.String("webhook", "",
 		"URL to POST this tenant's events to; sinks send data out and nothing sends code in")
 	heartbeat := fs.Int("heartbeat-seconds", 60, "pacing handed to agents, which they clamp to 15..3600")
@@ -162,38 +167,34 @@ func serve(argv []string) int {
 		return 1
 	}
 
-	token := *adminToken
-	if token == "" {
-		// Generating one rather than starting without authentication. A control plane that came up open
-		// because nobody set a flag is a control plane somebody eventually leaves open.
-		token, err = auth.GenerateToken()
-		if err != nil {
-			slog.Error("could not generate an admin token", "error", err)
-			return 1
-		}
-		fmt.Fprintf(os.Stderr, "\nNo --admin-token was given, so one has been generated for this run.\n"+
-			"It is not stored and will be different next time; set FARRIER_ADMIN_TOKEN to keep it.\n\n"+
-			"  export FARRIER_ADMIN_TOKEN=%s\n\n", token)
-	}
-	operators, err := auth.NewStaticToken(token, "operator", string(tenant.ID))
-	if err != nil {
-		slog.Error("could not configure operator authentication", "error", err)
+	// Somebody to sign in as, if the database holds nobody.
+	//
+	// A control plane that came up with no way in is one that gets abandoned or made reachable in a
+	// hurry, and the second is much worse than the first. So the first start creates an account, in the
+	// fleet this process serves, and says what its password is exactly once.
+	if err := bootstrapAccount(ctx, backing, tenant, *bootstrapEmail, *bootstrapPasswordFile); err != nil {
+		slog.Error("could not create the first account", "error", err)
 		return 1
 	}
-	provider := auth.Provider(operators)
 
-	// The platform credential is optional, and its absence is the single-fleet case rather than a
-	// misconfiguration. Without one there is nothing that can create a second tenant, which is exactly
-	// right for somebody running Farrier for themselves: the tenancy is there, and it is one.
-	if *platformToken != "" {
-		platform, platformErr := auth.NewPlatformToken(*platformToken, "platform")
-		if platformErr != nil {
-			slog.Error("could not configure platform authentication", "error", platformErr)
-			return 1
-		}
-		provider = auth.Chain(operators, platform)
-		slog.Info("tenant administration is enabled", "route", "/api/v1/tenants")
-	}
+	// Two providers, and between them everything that authenticates a person.
+	//
+	// There used to be a third and a fourth: one shared bearer token per fleet and one for the
+	// installation, both held in a flag. They are gone, and nothing replaces them in that shape — a
+	// credential that names nobody in the audit trail, makes second-person approval a comparison of a
+	// string with itself, never expires, and is withdrawn by restarting the control plane is not
+	// something an installation should have to be careful with. What a script needs instead is an API
+	// token belonging to an account, which is revoked from a page in a second.
+	//
+	// Both are always configured, because there is nothing to configure: the credentials are rows. An
+	// installation with no accounts simply has two providers that recognise nobody, which is not the
+	// same as a feature being off — somebody who runs `farrier-server accounts add` must not also have
+	// to restart the control plane before the account works.
+	//
+	// auth.Chain asks every member, so the order is readability and nothing else: a cookie cannot be
+	// shadowed by the provider that looks at headers, or the other way round.
+	accounts := auth.NewAccounts(backing, auth.DefaultSessionTTL, auth.DefaultSessionMaxAge)
+	provider := auth.Chain(accounts, auth.NewAPITokens(backing))
 
 	// The key that signs routine jobs. Beside the CA, generated on first start, and its public half is
 	// handed to every agent at enrolment and on every heartbeat. It authorises one tier and cannot
@@ -247,6 +248,7 @@ func serve(argv []string) int {
 		Authority:        authority,
 		Store:            backing,
 		Auth:             provider,
+		Accounts:         accounts,
 		OnlineKey:        online,
 		TemplateKey:      templateKey,
 		HeartbeatSeconds: *heartbeat,
@@ -295,6 +297,104 @@ func smtpConfig(host string, port int, from, username, passwordFile string) (not
 	}
 	slog.Info("alert mail is configured", "relay", host, "port", port, "from", from)
 	return cfg, nil
+}
+
+// bootstrapAccount creates the first account when the installation has none, and says so once.
+//
+// It runs on every start and does nothing on all but the first, and the condition is "this fleet has no
+// accounts" rather than a marker file or a flag. That is deliberate: a marker is state that can be lost
+// or copied, and an installation restored from a database backup would either be locked out or handed a
+// second administrator depending on which way the marker went. The accounts table is the truth.
+//
+// The account belongs to the fleet this process serves rather than to the installation, because the
+// first thing anybody does with a new control plane is enrol a host — and a platform administrator,
+// who by construction cannot read any fleet's hosts, would have nothing to look at. Whoever needs to
+// create further fleets adds one with `farrier-server accounts add --platform`, which is the same shape
+// the optional platform token had.
+//
+// The password comes from a file, or from the environment, or is generated. Never from a flag: argv is
+// world-readable in ps, which is the same reason --smtp-password-file is a file.
+func bootstrapAccount(ctx context.Context, backing store.Store, tenant store.Tenant, email, passwordFile string) error {
+	scope := backing.In(tenant.ID)
+	existing, err := scope.ListAccounts(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the account list: %w", err)
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+
+	password, generated, err := bootstrapPassword(passwordFile)
+	if err != nil {
+		return err
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hashing the first password: %w", err)
+	}
+	id, err := server.NewID()
+	if err != nil {
+		return fmt.Errorf("allocating an account id: %w", err)
+	}
+
+	address := auth.NormaliseEmail(email)
+	err = scope.CreateAccount(ctx, store.Account{
+		ID:           id,
+		Email:        address,
+		EmailKey:     auth.EmailKey(address),
+		PasswordHash: hash,
+		CreatedAt:    time.Now().UTC(),
+	})
+	if errors.Is(err, store.ErrConflict) {
+		// The address belongs to an account somewhere else on this installation — most likely a
+		// platform administrator created before the first fleet. Not a failure to start: this fleet
+		// still has nobody, and saying which flag fixes it is more use than refusing to serve.
+		slog.Warn("no account in this fleet, and the bootstrap address is taken elsewhere",
+			"email", address, "fix", "farrier-server accounts add --tenant "+tenant.Slug+" --email …")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("creating the first account: %w", err)
+	}
+
+	if !generated {
+		slog.Info("created the first account", "email", address, "tenant", tenant.Slug)
+		return nil
+	}
+	// Printed to stderr rather than logged, and printed exactly once. A password in a structured log
+	// line is a password in whatever collects them, and this one is meant to be read by the person
+	// watching the first start and then changed.
+	fmt.Fprintf(os.Stderr, "\nThis control plane had no accounts, so one has been created.\n\n"+
+		"  address:  %s\n  password: %s\n\n"+
+		"It is stored only as an Argon2id hash and will not be printed again. Change it from the\n"+
+		"account page after signing in, or with `farrier-server accounts passwd`.\n\n", address, password)
+	return nil
+}
+
+// bootstrapPassword returns the first account's password and whether it had to be invented.
+//
+// Three sources, in the order somebody would expect: a file named on the command line, the environment
+// — which is what a Compose file sets — and failing both, thirty-two bytes of randomness. The last is
+// the case that has to print, which is why the caller is told which happened.
+func bootstrapPassword(passwordFile string) (string, bool, error) {
+	if passwordFile != "" {
+		raw, err := os.ReadFile(passwordFile)
+		if err != nil {
+			return "", false, fmt.Errorf("reading %s: %w", passwordFile, err)
+		}
+		if password := strings.TrimSpace(string(raw)); password != "" {
+			return password, false, nil
+		}
+		return "", false, fmt.Errorf("%s is empty", passwordFile)
+	}
+	if password := strings.TrimSpace(os.Getenv("FARRIER_BOOTSTRAP_PASSWORD")); password != "" {
+		return password, false, nil
+	}
+	password, err := auth.GeneratePassword()
+	if err != nil {
+		return "", false, fmt.Errorf("generating a password: %w", err)
+	}
+	return password, true, nil
 }
 
 // requireRowLevelSecurity refuses to start when the database role can see through the tenant boundary.

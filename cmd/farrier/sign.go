@@ -15,6 +15,7 @@ import (
 	"github.com/pascalgross/farrier/internal/canonical"
 	"github.com/pascalgross/farrier/internal/id"
 	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/farrier/internal/prompt"
 	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/signing"
 	"github.com/pascalgross/farrier/internal/signing/backend"
@@ -111,7 +112,7 @@ func signCommand(argv []string) int {
 
 	fmt.Fprint(os.Stderr, describeJob(job, spec, decoded, *host, signer, payload))
 	if !*assumeYes {
-		ok, err := confirm("Sign this? [y/N] ")
+		ok, err := prompt.Confirm("Sign this? [y/N] ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
 			return 1
@@ -159,7 +160,7 @@ func signCommand(argv []string) int {
 	// To stderr, so that stdout is exactly the request body and can be piped into curl.
 	fmt.Fprintf(os.Stderr, "\nSigned. Send it with:\n"+
 		"  curl -X POST \"$FARRIER_URL/api/v1/jobs\" \\\n"+
-		"    -H \"Authorization: Bearer $FARRIER_ADMIN_TOKEN\" \\\n"+
+		"    -H \"Authorization: Bearer $FARRIER_TOKEN\" \\\n"+
 		"    -H 'Content-Type: application/json' -d @-\n")
 	return 0
 }
@@ -310,24 +311,4 @@ func describeJob(job protocol.Job, spec intent.Spec, decoded intent.Params,
 		signer.KeyID(), signing.TrustedSignersPath)
 	fmt.Fprintf(&b, "\n  Signed payload, verbatim:\n    %s\n\n", payload)
 	return b.String()
-}
-
-// confirm asks a yes-or-no question on the terminal.
-//
-// Anything other than an explicit yes is a no, including an empty line and a closed input. A signature
-// authorises a machine to be rebooted; defaulting to yes on a stray newline would be the wrong way for
-// this to be wrong.
-func confirm(prompt string) (bool, error) {
-	fmt.Fprint(os.Stderr, prompt)
-
-	// The shared reader, not a fresh one. A buffered reader created here would read past its own line
-	// and take whatever followed with it — and the line before this one is a passphrase.
-	answer, err := readPromptLine()
-	if err != nil {
-		return false, fmt.Errorf("reading the answer: %w", err)
-	}
-	// End of input is a no rather than an error: piping /dev/null at this command should decline
-	// rather than authorise.
-	return strings.EqualFold(strings.TrimSpace(answer), "y") ||
-		strings.EqualFold(strings.TrimSpace(answer), "yes"), nil
 }

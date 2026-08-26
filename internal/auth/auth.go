@@ -3,6 +3,22 @@
 // It is a seam: local accounts now, OIDC and SAML later, added by writing an implementation rather than
 // by editing a switch. See docs/EXTENDING.md.
 //
+// Two implementations ship and they are two halves of one answer. Accounts is an address and a password
+// per person, with a session in an HttpOnly cookie: it is what a browser uses, and it is what makes the
+// audit trail name somebody and makes second-person approval reachable. APITokens is a revocable token
+// belonging to one of those accounts, acting as that account: it is what a script uses. They compose
+// through Chain, so an installation has both.
+//
+// There used to be a third, StaticToken: one shared bearer token per fleet, held in a flag. It is gone
+// on purpose. A shared credential names nobody in the audit trail, cannot be withdrawn from one person
+// without changing it for everybody, never expires, and made the second-person approval rule
+// unsatisfiable by construction — that rule compares the approver's principal against the job's
+// creator, and under one shared token those two strings were always equal.
+//
+// Accounts reaches internal/store, which is why this package does. That is a property of local accounts
+// rather than of the seam — an OIDC implementation would reach an issuer instead — and nothing on a
+// managed host links any of it: only cmd/farrier-server and internal/server import this package.
+//
 // It is worth being explicit that this is **not** a boundary the guarantee in docs/SECURITY.md rests
 // on. A compromised administrator account is inside that threat model by construction — the guarantee
 // says an attacker who owns the control plane, its database *and* an administrator account still cannot
@@ -14,8 +30,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,6 +43,20 @@ import (
 // It is one error for a missing, malformed and wrong credential alike. Distinguishing them tells
 // whoever is guessing which half of their guess was right.
 var ErrUnauthenticated = errors.New("auth: unauthenticated")
+
+// ErrUnavailable reports that a credential could not be checked, which is not the same as wrong.
+//
+// The distinction is the whole point and it is easy to lose, because both end a request. A provider
+// that cannot reach its store knows nothing about the credential it was given — so answering 401 tells
+// every signed-in operator that their session has been invalidated and every one signing in that their
+// password is wrong, at the moment none of that is true and none of them can do anything about it. An
+// outage should look like an outage: the browser keeps its cookie, the operator stops retyping, and
+// whoever is on call reads a 500 rather than a support request about passwords.
+//
+// It carries no detail about the credential and never reaches the caller as text. What the caller gets
+// is a 500 and a sentence about the control plane; this exists so that the middleware can tell which
+// of the two answers to give.
+var ErrUnavailable = errors.New("auth: the credential could not be checked")
 
 // Identity is an authenticated operator.
 type Identity struct {
@@ -55,6 +84,19 @@ type Identity struct {
 	// to check that they were allowed to.
 	Tenant string
 
+	// Credential names the kind of credential this request presented.
+	//
+	// It exists because two of them resolve to the same person on purpose. An API token acts as the
+	// account that owns it — same provider, same subject, therefore the same principal — so that the
+	// second-person approval rule cannot be sidestepped by holding one. That is right for the audit
+	// trail and wrong for exactly one class of route: the account page, where a credential must not be
+	// able to mint or revoke another. A leaked token that could issue a token with no expiry would
+	// outlive its own revocation.
+	//
+	// It is deliberately not part of Principal. Who did something and what they were holding at the
+	// time are two questions, and only the first is an identity.
+	Credential string
+
 	// Platform reports a platform administrator: the installation's operator rather than a customer's.
 	//
 	// It carries no tenant and is refused by every route that reaches tenant data. That separation is
@@ -78,6 +120,19 @@ func (i Identity) Principal() string {
 	return i.Provider + ":" + i.Subject
 }
 
+// The kinds of credential Identity.Credential names.
+//
+// Two, and there is no plan for a third of this shape: an OIDC or SAML implementation would produce a
+// session like any other, because what this distinguishes is not where the identity came from but
+// whether a person is at the other end of the request.
+const (
+	// CredentialSession is a signed-in browser, holding a cookie this control plane issued.
+	CredentialSession = "session"
+
+	// CredentialAPIToken is a script, holding a token an account minted for it.
+	CredentialAPIToken = "api-token"
+)
+
 // Provider authenticates a human operator against the control plane.
 type Provider interface {
 	// Name identifies the implementation, for the audit log and the login page.
@@ -91,81 +146,12 @@ type Provider interface {
 	Authenticate(ctx context.Context, r *http.Request) (*Identity, error)
 }
 
-// StaticToken authenticates a single bearer token, for a small installation and for the tests.
-//
-// It exists because the first thing anybody does with a new control plane is start it, and requiring an
-// identity provider to be configured before the fleet list will render is exactly the friction that
-// makes people close the tab. The token is compared in constant time and only its hash is held.
-type StaticToken struct {
-	// hash is the SHA-256 of the accepted token.
-	hash [32]byte
-
-	// display is the operator name recorded for this token.
-	display string
-
-	// tenant is the fleet this token reaches, empty for a platform token.
-	tenant string
-
-	// platform reports that this token administers the installation rather than a fleet.
-	platform bool
-}
-
-// NewStaticToken returns a provider accepting one bearer token, acting in one tenant.
-//
-// The tenant is bound to the credential rather than chosen per request, which is what makes an operator
-// unable to reach another fleet by editing a URL. It is required: a token with no tenant would be an
-// operator credential that reaches nothing, and silently defaulting one to a tenant it happened to find
-// is how a test fixture becomes a production configuration.
-func NewStaticToken(token, display, tenant string) (*StaticToken, error) {
-	provider, err := newToken(token, display)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(tenant) == "" {
-		return nil, errors.New("auth: an operator token must name the tenant it acts in")
-	}
-	provider.tenant = tenant
-	return provider, nil
-}
-
-// NewPlatformToken returns a provider for the installation's own administrator.
-//
-// It holds no tenant and every route that reaches tenant data refuses it. What it can do is create and
-// configure tenants — which is the whole job of running Farrier for other people, and is deliberately a
-// different job from being able to read what they run.
-func NewPlatformToken(token, display string) (*StaticToken, error) {
-	if display == "" {
-		display = "platform"
-	}
-	provider, err := newToken(token, display)
-	if err != nil {
-		return nil, err
-	}
-	provider.platform = true
-	return provider, nil
-}
-
-// newToken builds the half of a token provider both kinds share.
-func newToken(token, display string) (*StaticToken, error) {
-	token = strings.TrimSpace(token)
-	if len(token) < 16 {
-		return nil, errors.New("auth: an admin token must be at least 16 characters")
-	}
-	if display == "" {
-		display = "operator"
-	}
-	// Trimmed on both sides. The presented token is trimmed too, so a configured token carrying a
-	// trailing newline — which is what happens when it comes from a file, or from a shell that added
-	// one — would otherwise be a token that can never be presented successfully.
-	return &StaticToken{hash: sha256.Sum256([]byte(token)), display: display}, nil
-}
-
 // Chain tries several providers in order and takes the first identity one of them returns.
 //
-// A hosted control plane needs at least two credentials that are not the same kind of thing — the
-// platform administrator's and each tenant's — and the Provider seam authenticates rather than
-// enumerates, so composing is the way to have both without either implementation knowing about the
-// other. Order is the order given; every member is asked, so adding one cannot silently shadow another.
+// A control plane needs at least two credentials that are not the same kind of thing — what a browser
+// holds and what a script holds — and the Provider seam authenticates rather than enumerates, so
+// composing is the way to have both without either implementation knowing about the other. Order is the
+// order given; every member is asked, so adding one cannot silently shadow another.
 func Chain(providers ...Provider) Provider { return chain(providers) }
 
 // chain is the composed provider Chain returns.
@@ -189,25 +175,40 @@ func (c chain) Name() string {
 // returning early on the first ErrUnauthenticated would be correct but would also make the number of
 // comparisons depend on which credential was presented, and the whole reason each member compares in
 // constant time is that this should not be observable.
+//
+// An operational failure is kept and reported only when nobody authenticated, which is the ordering
+// that matters: a browser holding a valid session must still get in while the token provider's store is
+// unreachable, and a request that authenticated nowhere *because* a store was unreachable must not be
+// told its credential was wrong. Refusals are discarded rather than joined — every member refusing is
+// the ordinary case and says nothing worth keeping.
 func (c chain) Authenticate(ctx context.Context, r *http.Request) (*Identity, error) {
 	var found *Identity
+	var unavailable error
 	for _, p := range c {
 		identity, err := p.Authenticate(ctx, r)
 		if err == nil && identity != nil && found == nil {
 			found = identity
+			continue
+		}
+		if err != nil && !errors.Is(err, ErrUnauthenticated) && unavailable == nil {
+			unavailable = err
 		}
 	}
-	if found == nil {
-		return nil, ErrUnauthenticated
+	if found != nil {
+		return found, nil
 	}
-	return found, nil
+	if unavailable != nil {
+		return nil, unavailable
+	}
+	return nil, ErrUnauthenticated
 }
 
-// GenerateToken returns a new random admin token.
+// GenerateToken returns 32 bytes of randomness as hex, for a session token.
 //
-// It is used when no token is configured, so that starting the server for the first time produces a
-// working, credentialed control plane rather than an open one. The token is printed once, at startup,
-// and is not recoverable afterwards.
+// Thirty-two bytes because that is what makes storing an unsalted SHA-256 of it correct: there is no
+// dictionary to attack a value drawn uniformly from 2^256. Hex rather than base64 because a session
+// token is never read or typed by a person — it lives in a cookie — so there is nothing to trade
+// twenty-one characters of length for.
 func GenerateToken() (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -216,33 +217,19 @@ func GenerateToken() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
-// Name identifies the implementation, for the audit log and the login page.
+// GeneratePassword returns a password for an account nobody has chosen one for yet.
 //
-// The two kinds are named apart because the name becomes half of the principal recorded against every
-// job, and a platform administrator and a tenant's operator must never be able to collide there.
-func (s *StaticToken) Name() string {
-	if s.platform {
-		return "platform-token"
+// Deliberately shorter than a token: 18 bytes is 144 bits, which is far past anything a password has to
+// resist, and 24 characters is short enough that somebody reading it off a first-start log and typing
+// it into a browser does not make a mistake. A 64-character hex string would be stronger in a way that
+// changes nothing and worse in a way that matters — it would get pasted into a note and left there.
+//
+// It is a temporary credential by intent. What produces it is the first start of a control plane whose
+// database holds no accounts, and the sentence printed beside it says to change it.
+func GeneratePassword() (string, error) {
+	raw := make([]byte, 18)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("auth: generating a password: %w", err)
 	}
-	return "static-token"
-}
-
-// Authenticate resolves a request to an identity, or returns ErrUnauthenticated.
-func (s *StaticToken) Authenticate(_ context.Context, r *http.Request) (*Identity, error) {
-	header := r.Header.Get("Authorization")
-	token, found := strings.CutPrefix(header, "Bearer ")
-	if !found {
-		return nil, ErrUnauthenticated
-	}
-	got := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	if subtle.ConstantTimeCompare(got[:], s.hash[:]) != 1 {
-		return nil, ErrUnauthenticated
-	}
-	return &Identity{
-		Subject:  s.display,
-		Display:  s.display,
-		Provider: s.Name(),
-		Tenant:   s.tenant,
-		Platform: s.platform,
-	}, nil
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
