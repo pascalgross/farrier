@@ -97,6 +97,8 @@ func serve(argv []string) int {
 		"PostgreSQL connection URL, or the literal \"memory\" for a throwaway in-process store")
 	tlsCert := fs.String("tls-cert", "", "PEM certificate for this server's own HTTPS identity")
 	tlsKey := fs.String("tls-key", "", "PEM key for this server's own HTTPS identity")
+	tlsServerName := fs.String("tls-server-name", envOr("FARRIER_TLS_SERVER_NAME", ""),
+		"additional DNS name for the automatically issued server certificate")
 	tenantSlug := fs.String("tenant", envOr("FARRIER_TENANT", "default"),
 		"the fleet this control plane serves; created on first start if it does not exist")
 	bootstrapEmail := fs.String("bootstrap-email", envOr("FARRIER_BOOTSTRAP_EMAIL", "admin@localhost"),
@@ -222,7 +224,11 @@ func serve(argv []string) int {
 	// issued from the same private CA — which means an enrolled agent, holding the CA bundle it was
 	// given, verifies the control plane with no further configuration.
 	if *tlsCert == "" || *tlsKey == "" {
-		issuedCert, issuedKey, certErr := authority.EnsureServerCertificate(*caDir, tlsNames(*addr), nil)
+		dnsNames := tlsNames(*addr)
+		if name := strings.TrimSpace(*tlsServerName); name != "" {
+			dnsNames = append(dnsNames, name)
+		}
+		issuedCert, issuedKey, certErr := authority.EnsureServerCertificate(*caDir, dnsNames, nil)
 		if certErr != nil {
 			slog.Error("could not issue a server certificate", "error", certErr)
 			return 1

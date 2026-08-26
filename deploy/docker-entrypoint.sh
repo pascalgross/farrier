@@ -28,7 +28,12 @@ if [ "$1" = "serve" ]; then
 	fi
 	# The defaults go in front of whatever the caller passed, because Go's flag package lets a later
 	# occurrence win: `command: ["serve", "--addr", ":9443"]` overrides the address and keeps the rest.
-	set -- serve --addr "${FARRIER_ADDR:-:8443}" --ca-dir "$CA_DIR" "$@"
+	if [ -n "${FARRIER_AGENT_HOSTNAME:-}" ]; then
+		set -- serve --addr "${FARRIER_ADDR:-:8443}" --ca-dir "$CA_DIR" \
+			--tls-server-name "$FARRIER_AGENT_HOSTNAME" "$@"
+	else
+		set -- serve --addr "${FARRIER_ADDR:-:8443}" --ca-dir "$CA_DIR" "$@"
+	fi
 fi
 
 # exec, so that the server is pid 1 and receives SIGTERM directly. Without it a stop would kill this

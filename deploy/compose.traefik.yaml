@@ -40,6 +40,11 @@ services:
     # carefully proxied service is also reachable on 8443 from the internet.
     ports: !override []
     networks: [farrier, traefik]
+    environment:
+      # Compose uses .env for label interpolation but does not otherwise expose it to the container.
+      # The entrypoint passes this value to farrier-server so its private certificate is valid for the
+      # public name agents use through this passthrough router.
+      FARRIER_AGENT_HOSTNAME: ${FARRIER_AGENT_HOSTNAME:?set FARRIER_AGENT_HOSTNAME in .env}
     labels:
       traefik.enable: "true"
       # Named explicitly because this container is on two networks and Traefik would otherwise pick one

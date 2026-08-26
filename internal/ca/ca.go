@@ -312,7 +312,12 @@ func (a *Authority) EnsureServerCertificate(dir string, dnsNames []string, ips [
 	certPath = filepath.Join(dir, ServerCertFile)
 	keyPath = filepath.Join(dir, ServerKeyFile)
 
-	if reusable(certPath, keyPath) {
+	// localhost and the loopback addresses are always included, because the most common first use of a
+	// freshly initialised control plane is somebody curling it from the machine it runs on.
+	dnsNames = append([]string{"localhost"}, dnsNames...)
+	ips = append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, ips...)
+
+	if reusable(certPath, keyPath, dnsNames, ips) {
 		return certPath, keyPath, nil
 	}
 
@@ -324,11 +329,6 @@ func (a *Authority) EnsureServerCertificate(dir string, dnsNames []string, ips [
 	if err != nil {
 		return "", "", err
 	}
-
-	// localhost and the loopback addresses are always included, because the most common first use of a
-	// freshly initialised control plane is somebody curling it from the machine it runs on.
-	dnsNames = append([]string{"localhost"}, dnsNames...)
-	ips = append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, ips...)
 
 	now := time.Now()
 	template := &x509.Certificate{
@@ -370,7 +370,7 @@ func (a *Authority) EnsureServerCertificate(dir string, dnsNames []string, ips [
 //
 // A certificate close to expiry is replaced rather than served: renewing on restart is free, and a
 // control plane whose own certificate expires takes the whole fleet offline until somebody notices.
-func reusable(certPath, keyPath string) bool {
+func reusable(certPath, keyPath string, dnsNames []string, ips []net.IP) bool {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return false
@@ -386,5 +386,18 @@ func reusable(certPath, keyPath string) bool {
 	if err != nil {
 		return false
 	}
-	return time.Now().Before(RenewAt(cert))
+	if !time.Now().Before(RenewAt(cert)) {
+		return false
+	}
+	for _, name := range dnsNames {
+		if cert.VerifyHostname(name) != nil {
+			return false
+		}
+	}
+	for _, ip := range ips {
+		if ip == nil || cert.VerifyHostname(ip.String()) != nil {
+			return false
+		}
+	}
+	return true
 }
