@@ -110,6 +110,19 @@ type Config struct {
 
 	// TokenTTL is how long a newly issued enrolment token remains usable.
 	TokenTTL time.Duration
+
+	// AgentURL is the base URL agents reach this control plane at, empty when nobody has said.
+	//
+	// It is configuration rather than something derived from a request, and the reason is the shape of
+	// the deployment this project documents. The Traefik overlay serves the interface on a second
+	// hostname and refuses the agent API on it with a 403 — so instructions built from the address a
+	// browser is using would name the one hostname an agent must not be pointed at, confidently and
+	// wrongly.
+	//
+	// Empty is a supported state and not a broken one: the interface then shows the browser's own
+	// address and says plainly that it may be the wrong one, which is a better answer than refusing to
+	// render the instructions at all.
+	AgentURL string
 }
 
 // Server is the running control plane.
@@ -290,6 +303,13 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/tokens", s.requireOperator(s.handleListTokens))
 	s.route(http.MethodPost, "/api/v1/tokens", s.requireOperator(s.handleCreateToken))
 	s.route(http.MethodGet, "/api/v1/catalogue", s.requireOperator(s.handleCatalogue))
+	s.route(http.MethodGet, "/api/v1/enrolment", s.requireOperator(s.handleEnrolmentInstructions))
+
+	// The one unauthenticated route under /api/v1, and deliberately so. A CA certificate is handed to
+	// every enrolling agent before that agent has any credential at all, so it is already a public
+	// document; what serving it here buys is the second step of enrolment being one command on the host
+	// rather than a browser download and a copy over scp.
+	s.route(http.MethodGet, CACertificatePath, http.HandlerFunc(s.handleCACertificate))
 	s.route(http.MethodGet, "/api/v1/jobs", s.requireOperator(s.handleListJobs))
 	s.route(http.MethodPost, "/api/v1/jobs", s.requireOperator(s.handleCreateJob))
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))

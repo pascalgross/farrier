@@ -28,12 +28,30 @@ if [ "$1" = "serve" ]; then
 	fi
 	# The defaults go in front of whatever the caller passed, because Go's flag package lets a later
 	# occurrence win: `command: ["serve", "--addr", ":9443"]` overrides the address and keeps the rest.
-	if [ -n "${FARRIER_AGENT_HOSTNAME:-}" ]; then
-		set -- serve --addr "${FARRIER_ADDR:-:8443}" --ca-dir "$CA_DIR" \
-			--tls-server-name "$FARRIER_AGENT_HOSTNAME" "$@"
+	#
+	# The agent hostname supplies two different settings and they are not the same setting. The first
+	# is a name on the server's own certificate, so an agent's TLS verification succeeds. The second is
+	# the address the enrolment instructions in the interface tell an operator to type — which cannot
+	# be derived from the request, because the Traefik overlay serves that interface on a second
+	# hostname where the agent API is deliberately refused.
+	#
+	# FARRIER_AGENT_URL wins when it is set, for the deployment that reaches agents on a port other
+	# than 443 or under a path prefix; the hostname is the shorthand for the ordinary case.
+	if [ -n "${FARRIER_AGENT_URL:-}" ]; then
+		agent_url="$FARRIER_AGENT_URL"
+	elif [ -n "${FARRIER_AGENT_HOSTNAME:-}" ]; then
+		agent_url="https://$FARRIER_AGENT_HOSTNAME"
 	else
-		set -- serve --addr "${FARRIER_ADDR:-:8443}" --ca-dir "$CA_DIR" "$@"
+		agent_url=""
 	fi
+
+	if [ -n "$agent_url" ]; then
+		set -- --agent-url "$agent_url" "$@"
+	fi
+	if [ -n "${FARRIER_AGENT_HOSTNAME:-}" ]; then
+		set -- --tls-server-name "$FARRIER_AGENT_HOSTNAME" "$@"
+	fi
+	set -- serve --addr "${FARRIER_ADDR:-:8443}" --ca-dir "$CA_DIR" "$@"
 fi
 
 # exec, so that the server is pid 1 and receives SIGTERM directly. Without it a stop would kill this

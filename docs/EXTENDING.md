@@ -271,6 +271,14 @@ forgery defence and is not something `EventSource` can supply. The usual workaro
 into the query string, and from there into every access log and proxy trace it passes. The cost is the
 reconnect loop in `core/event-stream.ts`, which `EventSource` would otherwise have supplied.
 
+The bundle carries a size budget in `angular.json`, and it is worth knowing which kind it is. The
+warning threshold is a tripwire for growth somebody should look at, not a limit: the error threshold is
+a long way above it. Raising the warning is a normal thing to do when a page adds a real feature, and
+raising it without noticing what grew is not — the enrolment panel on the fleet page moved it once, for
+about a kilobyte, and the check that made that a decision rather than an accident was reading which
+module the kilobyte came from. It came from a Material expansion panel, for one disclosure widget, and
+a native `<details>` does the same job for nothing.
+
 Whatever it grows into, the UI reads the API and can reach no host directly — it has no credential that
 any agent would accept, because agents authenticate the *control plane* by certificate and authorise
 work by signature.

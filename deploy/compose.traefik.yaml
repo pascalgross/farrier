@@ -45,6 +45,11 @@ services:
       # The entrypoint passes this value to farrier-server so its private certificate is valid for the
       # public name agents use through this passthrough router.
       FARRIER_AGENT_HOSTNAME: ${FARRIER_AGENT_HOSTNAME:?set FARRIER_AGENT_HOSTNAME in .env}
+      # The address the interface's enrolment instructions name, which defaults to the hostname above.
+      # It is a separate setting because with compose.traefik-ui.yaml the interface has a hostname of
+      # its own, and that is the one hostname where the agent API is refused — so an instruction built
+      # from the browser's request would be confidently wrong.
+      FARRIER_AGENT_URL: ${FARRIER_AGENT_URL:-}
     labels:
       traefik.enable: "true"
       # Named explicitly because this container is on two networks and Traefik would otherwise pick one

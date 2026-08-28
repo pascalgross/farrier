@@ -1070,3 +1070,65 @@ export interface IssuedApiToken {
   /** The token itself, returned exactly once. */
   token: string;
 }
+
+/**
+ * The body of `GET /api/v1/enrolment`.
+ *
+ * One response for all three steps, because the steps are one document. An operator who took the agent
+ * URL from this control plane and the CA certificate from another has a host that cannot enrol and a
+ * mistake nothing on either machine names.
+ */
+export interface EnrolmentInstructions {
+  /** The base URL to pass to `farrier enroll --server`. */
+  agentUrl: string;
+
+  /**
+   * Whether the address above is the browser's own rather than one somebody configured.
+   *
+   * Shown to the operator rather than hidden. The documented Traefik deployment serves this page on a
+   * hostname that refuses the agent API by design, so a guess is wrong there in a way that stays
+   * invisible until an agent has been installed and cannot enrol.
+   */
+  agentUrlIsAGuess: boolean;
+
+  /** Where the CA certificate can be fetched, for the second step. */
+  caCertificatePath: string;
+
+  /** The APT repository the agent package is installed from. */
+  aptUrl: string;
+}
+
+/**
+ * The body of `POST /api/v1/tokens`.
+ *
+ * `token` is the only time the value exists anywhere but in whoever copied it: only its SHA-256 is
+ * stored, so the page that renders this has to say so rather than offering to show it again.
+ */
+export interface MintedEnrolmentToken {
+  /** The token itself, returned exactly once. */
+  token: string;
+
+  /** What the operator called it. */
+  label: string;
+
+  /** The fleet group hosts enrolled with it join. */
+  group: string;
+
+  /** When it stops being usable. */
+  expiresAt: string;
+}
+
+/**
+ * The body of `POST /api/v1/tokens`, as the enrolment instructions send it.
+ *
+ * The server takes more than this — a lifetime, and a bootstrap template — and the enrolment panel
+ * sends neither. A token minted from that panel is for the plain case the panel documents, and arming
+ * a Tier 2 bootstrap is a decision made where templates are, not beside a copy button.
+ */
+export interface CreateEnrolmentTokenRequest {
+  /** A human-readable name, so the token list says what each one was for. */
+  label: string;
+
+  /** The fleet group hosts enrolled with it join. */
+  group: string;
+}

@@ -1,0 +1,106 @@
+package server_test
+
+import (
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// TestTheCACertificateIsServedWithoutACredential is the one unauthenticated route under /api/v1.
+//
+// It is deliberate rather than an omission, and the reason is what the document is: a CA certificate is
+// handed to every enrolling agent before that agent has any credential at all, so withholding it here
+// would withhold nothing. What serving it buys is the second step of enrolment being one command on the
+// host rather than a browser download and a copy across — and a step that spans two machines is the
+// step people improvise around.
+//
+// What is asserted alongside is that it really is a certificate, and the CA's own. A route that
+// answered 200 with an error page would satisfy "no credential needed" and leave every host trusting
+// nothing.
+func TestTheCACertificateIsServedWithoutACredential(t *testing.T) {
+	h := newHarness(t)
+
+	res, err := h.server.Client().Get(h.server.URL + "/api/v1/ca.crt")
+	if err != nil {
+		t.Fatalf("fetching the CA: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the CA certificate returned %d without a credential", res.StatusCode)
+	}
+	if disposition := res.Header.Get("Content-Disposition"); !strings.Contains(disposition, "farrier-ca.crt") {
+		t.Errorf("Content-Disposition is %q; a browser will render it rather than save it", disposition)
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("reading the CA: %v", err)
+	}
+	block, _ := pem.Decode(body)
+	if block == nil {
+		t.Fatalf("the response is not a PEM block: %s", body)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parsing the CA: %v", err)
+	}
+	if !cert.IsCA {
+		t.Errorf("the certificate served at /api/v1/ca.crt is not a CA: %s", cert.Subject)
+	}
+}
+
+// TestTheEnrolmentInstructionsNeedAnOperatorAndNameTheAgentAddress covers the other half.
+//
+// The agent URL is a statement about this installation's topology rather than a public document, so
+// unlike the certificate beside it this route takes a credential. And the address it reports is the
+// configured one: the panel that renders it exists because the page used to print a placeholder every
+// operator replaced by hand, and deriving the answer from the request would replace that placeholder
+// with the interface's own hostname — which, in the deployment this project documents, is the one
+// hostname where the agent API answers 403.
+func TestTheEnrolmentInstructionsNeedAnOperatorAndNameTheAgentAddress(t *testing.T) {
+	h := newHarness(t)
+
+	res, err := h.server.Client().Get(h.server.URL + "/api/v1/enrolment")
+	if err != nil {
+		t.Fatalf("GET /api/v1/enrolment: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the enrolment instructions returned %d without a credential, want 401", res.StatusCode)
+	}
+
+	status, body := h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/enrolment", nil)
+	if status != http.StatusOK {
+		t.Fatalf("reading the instructions returned %d: %s", status, body)
+	}
+	var view struct {
+		// AgentURL is what the enrolment command names, and IsAGuess whether anybody configured it.
+		AgentURL string `json:"agentUrl"`
+		IsAGuess bool   `json:"agentUrlIsAGuess"`
+
+		// CACertificatePath is where the second step reads the certificate from.
+		CACertificatePath string `json:"caCertificatePath"`
+	}
+	if err := json.Unmarshal(body, &view); err != nil {
+		t.Fatalf("decoding the instructions: %v", err)
+	}
+
+	// The harness configures no agent URL, so the answer is the browser's own address and says so.
+	// That is the honest state rather than a broken one, and the flag is what lets the interface warn
+	// instead of printing a confident wrong command.
+	if !view.IsAGuess {
+		t.Error("an unconfigured agent address was reported as though somebody had chosen it")
+	}
+	if view.AgentURL == "" {
+		t.Error("no agent address was reported at all, so the instructions name nothing")
+	}
+	if view.CACertificatePath != "/api/v1/ca.crt" {
+		t.Errorf("the instructions point at %q for the CA, which is not where it is served",
+			view.CACertificatePath)
+	}
+}

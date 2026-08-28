@@ -12,7 +12,9 @@ import {
   CreateApiTokenRequest,
   CreateReadJobRequest,
   CreateTemplateRequest,
+  CreateEnrolmentTokenRequest,
   CreateTenantRequest,
+  EnrolmentInstructions,
   EventsResponse,
   FailedServicesResponse,
   FleetResponse,
@@ -31,6 +33,7 @@ import {
   TemplateVersion,
   TemplateVersionsResponse,
   TemplatesResponse,
+  MintedEnrolmentToken,
   Tenant,
   TenantsResponse,
   UpdateTenantRequest,
@@ -237,6 +240,30 @@ export class ApiService {
    */
   catalogue(): Observable<CatalogueResponse> {
     return this.http.get<CatalogueResponse>('/api/v1/catalogue', { headers: this.headers() });
+  }
+
+  /**
+   * Fetches what an operator needs to enrol a host: the agent URL, the CA path and the APT repository.
+   *
+   * Read from the control plane rather than assembled in the browser, because the one value that
+   * matters — the address an agent connects to — is not the address this page was served from whenever
+   * the interface has a hostname of its own. Guessing it would produce instructions that look right
+   * and point at the one hostname the agent API is refused on.
+   */
+  enrolment(): Observable<EnrolmentInstructions> {
+    return this.http.get<EnrolmentInstructions>('/api/v1/enrolment', { headers: this.headers() });
+  }
+
+  /**
+   * Mints one single-use enrolment token.
+   *
+   * The token comes back once and is not recoverable: only its SHA-256 is stored, so a database dump
+   * does not let its holder enrol hosts. Whatever renders it has to say so at the moment it is shown.
+   */
+  createEnrolmentToken(request: CreateEnrolmentTokenRequest): Observable<MintedEnrolmentToken> {
+    return this.http.post<MintedEnrolmentToken>('/api/v1/tokens', request, {
+      headers: this.headers(),
+    });
   }
 
   /** Fetches recent jobs, newest first, optionally narrowed to one host. */

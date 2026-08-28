@@ -231,6 +231,10 @@ values and the reasoning are in [`SECURITY.md` §3](SECURITY.md#3-the-intent-cat
 
 ## A host
 
+The interface has this as a panel: **Fleet → Add a host** mints the token, fills in this control plane's
+own address and gives you the three commands with a copy button on each. What follows is the same thing
+for a script, and the same thing to read when you want to know what those commands do.
+
 ```bash
 # On the control plane, or through the web interface:
 curl -sX POST https://farrier.example.org/api/v1/tokens \
@@ -250,9 +254,20 @@ curl -fsSL https://farrier.tools/apt/farrier.sources \
   | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
 sudo apt-get update && sudo apt-get install farrier-agent
 
+# Trust this control plane's authority, before enrolling rather than after: an agent that starts
+# without it fails to verify the server and retries, so you get a running service and a host that
+# never appears — which reads as a control-plane fault. The certificate is public; it is handed to
+# every enrolling agent before that agent has a credential at all.
+curl -fsSL https://farrier.example.org/api/v1/ca.crt \
+  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/farrier/server-ca.crt
+
 sudo farrier enroll --server https://farrier.example.org --token frr_…
 sudo systemctl restart farrier-agent
 ```
+
+Skip the certificate step only when the control plane has a publicly trusted certificate, which is what
+the Traefik overlay in `deploy/` gives the *interface* and deliberately not the agent hostname: agents
+verify against the CA they were handed, so they need no public certificate and get no benefit from one.
 
 The `.sources` file uses deb822 with `Signed-By:` naming an explicit keyring, so the Farrier key is
 trusted for the Farrier repository only. `apt-key` is never used: it installs a key that is trusted for
