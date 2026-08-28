@@ -49,6 +49,19 @@ restartable = ["nginx.service"]
 max_job_age_seconds = 900
 `
 
+// closed is the shipped policy's answer to a restart: a list with nothing on it.
+//
+// It is spelled out rather than derived from packaging/policy.toml because the property being asserted
+// is what an empty restartable list does, not what today's package happens to contain. It is otherwise
+// permissive, so a test using it fails only for the reason it names.
+const closed = `
+[services]
+restartable = []
+
+[limits]
+max_job_age_seconds = 900
+`
+
 // restartRequest builds a service.restart request for a unit.
 func restartRequest(unit string) Request {
 	return Request{
@@ -185,18 +198,50 @@ func TestAuthoriseEnforcesTheLocalJobAgeLimit(t *testing.T) {
 	}
 }
 
-// TestGuaranteeAPrivilegedRequestWithNoIssueTimeIsRefused is the age limit's own failure mode.
+// TestAHelperRunByHandNeedsNoIssueTime holds the diagnostic path open through the whole sequence.
 //
-// policy.Decide skips the age check when there is no issue time to measure from, so a request that
-// simply omitted the field used to pass the limit rather than fail it. The field's doc comment claimed
-// a lying caller "could only make a job look older than it is, which fails closed"; that was false in
-// both directions, and the absent case is the one a bug reaches by accident.
+// The command-line path is what an administrator uses to diagnose a host, and it has no job behind it,
+// so it sends no issue time: ParseIssuedAt documents the empty value as exactly that case,
+// docs/SECURITY.md §6 describes the path, testfleet's 080-write-capability drives every helper this way,
+// and the packaging job installs the .deb and runs restart-unit by hand to prove the shipped policy
+// refuses a restart. All of those need the *policy* to be what answers.
 //
-// It is refused rather than defaulted for the reason the boundary exists at all. This is not a defence
-// against a compromised agent — such an agent sends `now` and the check passes, which the comment on
-// privsep.Request.IssuedAt now says outright. It is a refusal to let a missing field mean the same
-// thing as a limit that does not apply.
-func TestGuaranteeAPrivilegedRequestWithNoIssueTimeIsRefused(t *testing.T) {
+// A version of this branch once refused a zero issue time before the policy was consulted, on the theory
+// that only a buggy agent sends one. Both by-hand callers then failed on a request local policy would
+// have decided, and the packaging job read exit 2 where it asserts exit 3 — a refusal that says
+// "malformed" where the product's whole claim is "the host said no". The assertion therefore runs
+// performWith rather than Authorise: Main and Serve both reach the policy through it, and a precondition
+// added anywhere in that sequence turns this red rather than the fleet.
+func TestAHelperRunByHandNeedsNoIssueTime(t *testing.T) {
+	req := restartRequest("nginx.service")
+	req.IssuedAt = time.Time{}
+
+	ran := false
+	helper := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(context.Context, Job) (string, error) {
+			ran = true
+			return "restarted", nil
+		},
+	}
+	resp := helper.performWith(context.Background(), req, writePolicy(t, permissive))
+	if resp.ExitCode != ExitOK {
+		t.Fatalf("a by-hand run of a permitted operation exited %d: %s", resp.ExitCode, resp.Error)
+	}
+	if !ran {
+		t.Error("the operation was reported as done without the executor being called")
+	}
+}
+
+// TestAPolicyRefusalOutranksAMissingIssueTime is the packaging job's assertion, one layer down.
+//
+// The check that ships in CI installs the package and runs restart-unit by hand against the packaged
+// policy, whose restartable list is empty, and requires exit 3. Exit 3 means local policy declined;
+// exit 2 means the request never reached it. Those are different claims about the product, and the one
+// the guarantee rests on is the first. This pins the ordering in the unit tests, where the fix is cheap,
+// instead of only in a job that needs a built .deb to say so.
+func TestAPolicyRefusalOutranksAMissingIssueTime(t *testing.T) {
 	req := restartRequest("nginx.service")
 	req.IssuedAt = time.Time{}
 
@@ -204,39 +249,14 @@ func TestGuaranteeAPrivilegedRequestWithNoIssueTimeIsRefused(t *testing.T) {
 		Component: "restart-unit",
 		Socket:    privsep.RestartUnitSocket,
 		Execute: func(context.Context, Job) (string, error) {
-			t.Error("the executor ran for a request carrying no issue time")
+			t.Error("the executor ran for an operation local policy forbids")
 			return "", nil
 		},
 	}
-	resp := helper.performWith(context.Background(), req, writePolicy(t, permissive))
-	if resp.ExitCode == ExitOK {
-		t.Fatal("a privileged request with no issue time was performed; the age limit bounded nothing")
-	}
-	if resp.ExitCode != ExitUsage {
-		t.Errorf("exit %d, want %d: the caller sent something no honest agent sends, which is not the "+
-			"same as the policy declining", resp.ExitCode, ExitUsage)
-	}
-}
-
-// TestAHelperRunByHandNeedsNoIssueTime is the other side, and the reason the refusal above is where it
-// is rather than in Authorise.
-//
-// The command-line path is what an administrator uses to diagnose a host, and it has no job behind it —
-// ParseIssuedAt documents the empty value as exactly that case, docs/SECURITY.md §6 describes the path,
-// and testfleet's 080-write-capability drives every helper this way. An earlier version of the check
-// above lived in Authorise, which both paths share, and made those runs refuse under a policy that
-// permitted them: the shape of mistake the check is about, made by the check itself.
-func TestAHelperRunByHandNeedsNoIssueTime(t *testing.T) {
-	req := restartRequest("nginx.service")
-	req.IssuedAt = time.Time{}
-
-	decision, _, err := Authorise(req, writePolicy(t, permissive), time.Now())
-	if err != nil {
-		t.Fatalf("Authorise: %v", err)
-	}
-	if !decision.Allowed {
-		t.Fatalf("a by-hand run of a permitted operation was refused (%s: %s)",
-			decision.Code, decision.Reason)
+	resp := helper.performWith(context.Background(), req, writePolicy(t, closed))
+	if resp.ExitCode != ExitRefused {
+		t.Fatalf("exit %d, want %d: a request the policy forbids must be told so by the policy",
+			resp.ExitCode, ExitRefused)
 	}
 }
 

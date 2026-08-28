@@ -197,11 +197,14 @@ type Request struct {
 	// choose, and a restart signed on Tuesday cannot execute on Friday because the host was offline
 	// in between.
 	//
-	// A zero value is refused on this socket rather than skipped. An agent always has an issue time to
-	// send, so its absence is a bug in the caller, and treating a bug as "no limit applies" is the
-	// shape of failure this boundary exists not to have. The refusal is on the socket path only: a
-	// helper run by hand for diagnosis has no job behind it and therefore nothing to be old relative
-	// to, which is a different situation and not this one.
+	// A zero value means the age check measures nothing, and that is left as it is here rather than
+	// refused, because the refusal would have to live in the sequence a helper run by hand shares —
+	// and by hand there is no job to be old relative to, which is the case ParseIssuedAt and
+	// docs/SECURITY.md §6 both describe. The case worth catching is the signed one, and it is caught
+	// where the job still exists: internal/agent/execute.go refuses a signed privileged job whose
+	// window is unbounded, so effectiveIssueTime cannot return zero for one. An unsigned job's issue
+	// time is chosen by the control plane in any case, so refusing its absence here would turn away a
+	// caller who omitted a field while admitting the same caller sending `now`.
 	IssuedAt time.Time `json:"issuedAt"`
 }
 
