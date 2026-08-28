@@ -83,7 +83,11 @@ type Client struct {
 // that fails leaves the previous credential in use rather than none.
 func NewClient(baseURL, stateDir, caPath string) (*Client, error) {
 	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		// The same floor and the same 1.2 cipher list the control plane offers, from the one place both
+		// ends read them. An agent that accepted a weaker connection than the server would offer would
+		// make the server's list a statement about the server rather than about the connection.
+		MinVersion:   protocol.TLSMinVersion,
+		CipherSuites: protocol.TLSCipherSuites,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			cert, err := LoadCredential(stateDir)
 			if err != nil {
@@ -131,7 +135,7 @@ func NewClient(baseURL, stateDir, caPath string) (*Client, error) {
 
 // NewUnauthenticatedClient builds a client for enrolment, which has no certificate yet.
 func NewUnauthenticatedClient(baseURL, caPath string) (*Client, error) {
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	tlsCfg := &tls.Config{MinVersion: protocol.TLSMinVersion, CipherSuites: protocol.TLSCipherSuites}
 	if caPath != "" {
 		pem, err := os.ReadFile(caPath)
 		if err == nil && len(pem) > 0 {

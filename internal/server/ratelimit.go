@@ -29,6 +29,25 @@ const (
 	enrollIdleTTL = time.Hour
 )
 
+// Health-check rate limits.
+//
+// The endpoint is unauthenticated because a health check that needs a credential is one the load
+// balancer cannot perform, and each hit is a round trip to the shared database — so the rate at which
+// anybody who can reach the port may spend that is a number this file should state rather than one the
+// caller chooses.
+//
+// The numbers are set from what a prober does. A container health check runs every ten to thirty
+// seconds and a load balancer every few; sixty at once and one back per second is far above either and
+// far below a loop. A refusal here is a 429 and not an unhealthy verdict, so a source that trips it
+// cannot make the process look down to anybody else: buckets are per source.
+const (
+	// healthBurst is how many probes one source may make before the rate applies.
+	healthBurst = 60
+
+	// healthRefill is how long one probe takes to come back.
+	healthRefill = time.Second
+)
+
 // rateLimiter is a per-source token bucket.
 //
 // It is deliberately in-process and approximate. A control plane running several replicas will allow

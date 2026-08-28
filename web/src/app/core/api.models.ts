@@ -451,6 +451,17 @@ export interface Whoami {
    * the field it needs rather than rendering a fleet called "".
    */
   tenant: Tenant | null;
+
+  /**
+   * The control plane's version.
+   *
+   * It arrives here rather than from `/healthz` because that endpoint is unauthenticated, and an exact
+   * build is the first thing somebody matching a deployment against a published advisory looks for.
+   */
+  version: string;
+
+  /** The commit the control plane was built from. */
+  commit: string;
 }
 
 /** The response of `GET /api/v1/tenants`. */

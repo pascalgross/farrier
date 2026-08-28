@@ -293,7 +293,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, who ope
 		"approval_distinct_operator", record.ApprovalDistinctOperator)
 
 	s.emit(r.Context(), who.Store.Tenant(), notify.Event{
-		Kind: "job.created", HostID: req.HostID, Hostname: host.Hostname, At: job.IssuedAt,
+		Kind: notify.KindJobCreated, HostID: req.HostID, Hostname: host.Hostname, At: job.IssuedAt,
 		Summary: params.Describe() + " queued for " + host.Hostname + " by " + who.Principal(),
 		Detail: map[string]any{
 			"jobId": job.ID, "intent": job.Intent, "class": job.Class,
@@ -557,7 +557,7 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request, who op
 		"created_by", before.CreatedBy, "approved_by", who.Principal())
 
 	s.emit(r.Context(), who.Store.Tenant(), notify.Event{
-		Kind: "job.approved", HostID: before.HostID, At: time.Now().UTC(),
+		Kind: notify.KindJobApproved, HostID: before.HostID, At: time.Now().UTC(),
 		Summary: before.Job.Intent + " on " + before.HostID + " approved by " + who.Principal() +
 			", created by " + before.CreatedBy,
 		Detail: map[string]any{"jobId": jobID, "intent": before.Job.Intent},

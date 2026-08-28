@@ -164,7 +164,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		"host", hostID, "tenant", tenantID, "hostname", req.Hostname, "group", token.Group,
 		"agent_version", req.AgentVersion, "token_label", token.Label)
 	s.emit(r.Context(), tenantID, notify.Event{
-		Kind: "host.enrolled", HostID: hostID, Hostname: req.Hostname, At: now,
+		Kind: notify.KindHostEnrolled, HostID: hostID, Hostname: req.Hostname, At: now,
 		Summary: req.Hostname + " enrolled into group " + token.Group,
 	})
 
@@ -527,7 +527,7 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, who caller
 		switch req.Status {
 		case protocol.StatusFailed:
 			s.emit(r.Context(), who.Store.Tenant(), notify.Event{
-				Kind: string(notify.KindJobFailed), HostID: host.ID, Hostname: host.Hostname,
+				Kind: notify.KindJobFailed, HostID: host.ID, Hostname: host.Hostname,
 				At:      time.Now().UTC(),
 				Summary: "a job failed on " + host.Hostname + ": " + firstLine(req.Error),
 				Detail: map[string]any{
@@ -536,7 +536,7 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, who caller
 			})
 		case protocol.StatusExpired:
 			s.emit(r.Context(), who.Store.Tenant(), notify.Event{
-				Kind: string(notify.KindJobExpired), HostID: host.ID, Hostname: host.Hostname,
+				Kind: notify.KindJobExpired, HostID: host.ID, Hostname: host.Hostname,
 				At: time.Now().UTC(),
 				Summary: "a job expired unexecuted on " + host.Hostname +
 					"; it sat past its validity window and the host refused to run stale work",

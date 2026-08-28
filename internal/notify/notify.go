@@ -21,7 +21,13 @@ import (
 // Event is something worth telling an operator about.
 type Event struct {
 	// Kind is a stable machine-readable event type, such as "host.enrolled".
-	Kind string `json:"kind"`
+	//
+	// Typed rather than a plain string, so that the closed vocabulary in kinds.go is visible at every
+	// site that fills this in. It does not make an invalid kind impossible — an untyped literal still
+	// assigns — and that is why the server refuses one at the boundary where events are recorded. What
+	// the type does is make the other route, a kind derived from a field at run time, an explicit
+	// conversion that a reviewer sees rather than an assignment that reads like every other.
+	Kind Kind `json:"kind"`
 
 	// TenantID is the fleet this event belongs to.
 	//

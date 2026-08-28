@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,6 +152,13 @@ type Server struct {
 	// costs this process 64 MiB of Argon2id per attempt.
 	signInLimiter *rateLimiter
 
+	// healthLimiter bounds the third route that needs no credential at all.
+	//
+	// Its own limiter rather than a share of the enrolment one, because the two must not be able to
+	// exhaust each other: a load balancer probing every second is ordinary traffic, and a fleet
+	// enrolling a rack at once is ordinary traffic, and neither should turn the other into a refusal.
+	healthLimiter *rateLimiter
+
 	// passwordLimiter bounds password changes, per account.
 	//
 	// The route is behind a signed-in session, which is the least privilege this system has and is not
@@ -239,6 +247,7 @@ func New(cfg Config) (*Server, error) {
 		hasUI:           statErr == nil,
 		enrolLimiter:    newRateLimiter(enrollBurst, enrollRefill),
 		signInLimiter:   newRateLimiter(signInBurst, signInRefill),
+		healthLimiter:   newRateLimiter(healthBurst, healthRefill),
 		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
 		accounts:        cfg.Accounts,
 		paths:           http.NewServeMux(),
@@ -394,9 +403,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 //
 // Client certificates are verified against Farrier's own CA only. Using the system roots would mean any
 // publicly trusted certificate could authenticate as an agent.
+//
+// The floor and the 1.2 cipher list come from internal/protocol, which is also where the agent's client
+// reads them, so the two ends of the connection cannot be hardened apart. See docs/SECURITY.md §4.2.
 func (s *Server) TLSConfig() *tls.Config {
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   protocol.TLSMinVersion,
+		CipherSuites: protocol.TLSCipherSuites,
 		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    s.cfg.Authority.ClientCAPool(),
 		NextProtos:   []string{"h2", "http/1.1"},
@@ -772,21 +785,36 @@ func Fingerprint(cert *x509.Certificate) string {
 }
 
 // handleHealth reports that the process is up and can reach its database.
+//
+// Three things about it follow from the one fact that it is unauthenticated, and each was once the
+// other way round.
+//
+// It pings rather than listing tenants. The listing read one row per fleet on every hit, so anybody
+// who could reach the port could choose load for the shared database — and it answered more than
+// liveness, which is whether a round trip completes at all.
+//
+// It says "ok" and nothing else. The exact version and commit are what somebody matching a deployment
+// against a published advisory wants, and handing that to an unauthenticated caller is doing the first
+// half of their work for them. An operator gets it from /api/v1/whoami, which knows who is asking.
+//
+// It is rate-limited, per source, like the other two routes that need no credential. A probe is meant
+// to be cheap for a load balancer calling it every few seconds and is not meant to be a free round trip
+// to the database for everybody else.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.healthLimiter.allow(auth.RequestSource(r), time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.healthLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many health checks from here")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// The tenant list rather than a tenant's data, because this endpoint is unauthenticated and
-	// therefore belongs to no tenant. Only the error is looked at; nothing about any tenant leaves here.
-	if _, err := s.cfg.Store.ListTenants(ctx); err != nil {
+	if err := s.cfg.Store.Ping(ctx); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "database", "the database is not reachable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": buildinfo.Version,
-		"commit":  buildinfo.Revision(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 // writeJSON writes a JSON response.

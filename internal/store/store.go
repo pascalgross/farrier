@@ -1018,6 +1018,17 @@ type Store interface {
 	// agents reconnect every twenty-five seconds accumulates one dead waiter per poll.
 	Subscribe(hostID string) (<-chan struct{}, func())
 
+	// Ping reports whether the database is reachable, and reads nothing.
+	//
+	// It exists because the health endpoint is unauthenticated, and the query behind it used to be a
+	// tenant listing: one row per fleet, read in full, on every hit from anybody who could reach the
+	// port. That is a load an unauthenticated caller chooses for the shared database, and it answers a
+	// question nobody asked — liveness is whether a round trip completes, not what the rows say.
+	//
+	// It carries no tenant for the same reason it reads nothing: there is no fleet whose health this
+	// is, and a probe that named one would be answering about that fleet rather than about the process.
+	Ping(ctx context.Context) error
+
 	// Close releases the store's resources.
 	Close() error
 }

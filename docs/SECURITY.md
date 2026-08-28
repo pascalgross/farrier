@@ -305,6 +305,18 @@ The CA private key is the control plane's most sensitive secret. Compromising it
 impersonate *hosts to the server* — it does **not** let them run code on a host, because the agent
 authorises jobs by intent class and signature, not by who asked.
 
+**The transport floor is TLS 1.2 with AEAD suites only.** Both numbers are stated once, in
+`internal/protocol`, and read by the listener and by the agent's client, so the two ends of a
+connection cannot be hardened apart. TLS 1.3 is preferred and needs nothing said about it: its suites
+are not negotiable. What is configured is the 1.2 fallback, where Go's default selection would
+otherwise include ECDHE with AES-CBC and a SHA-1 HMAC — the encrypt-then-MAC construction a decade of
+padding-oracle results have been about. The list here is forward-secret and AEAD only.
+
+The floor is 1.2 rather than 1.3 because of the listener rather than the protocol: one port carries
+enrolling agents, enrolled agents and an operator's browser, and only the first two are built from this
+repository. Nothing rests on the difference. A downgrade cannot forge a client certificate the
+fingerprint lookup accepts, which is what actually authenticates an agent.
+
 ### 4.3 Clock skew
 
 Clock skew is a security boundary, not an operational annoyance.

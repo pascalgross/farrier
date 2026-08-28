@@ -98,6 +98,22 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 	}, nil
 }
 
+// Ping reports whether the database is reachable, and reads nothing.
+//
+// pgx's own Ping rather than a hand-written `SELECT 1`, because it is the same round trip and it is
+// the one the pool understands: it takes a connection from the pool and returns it, so what this
+// answers is "a pooled connection can complete a statement", which is exactly the question the health
+// endpoint is asking on behalf of whatever restarts this process.
+//
+// It sets no tenant, and it does not need to. Every statement that touches tenant data goes through
+// In(tenant) and runs inside a transaction that has set one; this reaches no table at all.
+func (p *Postgres) Ping(ctx context.Context) error {
+	if err := p.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("store: pinging the database: %w", err)
+	}
+	return nil
+}
+
 // Close releases the pool and stops the listener.
 func (p *Postgres) Close() error {
 	select {

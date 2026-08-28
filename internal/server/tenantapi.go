@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/farrier/internal/buildinfo"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -283,6 +284,13 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, who auth.I
 		"principal": who.Principal(),
 		"platform":  who.Platform,
 		"tenant":    nil,
+		// The build, here rather than on /healthz. Somebody has to be able to answer "which version is
+		// this installation running" — it is the first question of every upgrade and every advisory —
+		// and the difference between the two routes is that this one knows who is asking. /healthz
+		// answers a load balancer, which does not need the answer, and answers anybody else who can
+		// reach the port, which is who the answer helps most.
+		"version": buildinfo.Version,
+		"commit":  buildinfo.Revision(),
 	}
 	if who.Platform || who.Tenant == "" {
 		writeJSON(w, http.StatusOK, answer)

@@ -205,6 +205,9 @@ func NewMemory() *Memory {
 // Migrate does nothing; an empty map is already up to date, and NewMemory seeded the default tenant.
 func (m *Memory) Migrate(_ context.Context) error { return nil }
 
+// Ping always succeeds; the store is this process's memory, so it is reachable whenever this is.
+func (m *Memory) Ping(_ context.Context) error { return nil }
+
 // Close does nothing; there is nothing to release.
 func (m *Memory) Close() error { return nil }
 

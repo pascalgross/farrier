@@ -128,7 +128,7 @@ func (s *Server) detectUnitTransitions(ctx context.Context, who caller, previous
 		switch {
 		case unit.ActiveState == "failed":
 			emit(notify.Event{
-				Kind: string(notify.KindServiceFailed), HostID: who.Host.ID,
+				Kind: notify.KindServiceFailed, HostID: who.Host.ID,
 				Hostname: who.Host.Hostname, At: now,
 				Summary: who.Host.Hostname + ": " + unit.Name + " failed (" + unit.SubState + ")",
 				Detail: map[string]any{
@@ -138,7 +138,7 @@ func (s *Server) detectUnitTransitions(ctx context.Context, who caller, previous
 			})
 		case was.ActiveState == "failed" && unit.ActiveState == "active":
 			emit(notify.Event{
-				Kind: string(notify.KindServiceRecovered), HostID: who.Host.ID,
+				Kind: notify.KindServiceRecovered, HostID: who.Host.ID,
 				Hostname: who.Host.Hostname, At: now,
 				Summary: who.Host.Hostname + ": " + unit.Name + " is running again",
 				Detail:  map[string]any{"unit": unit.Name, "from": was.ActiveState},
@@ -164,7 +164,7 @@ func (s *Server) detectUnitTransitions(ctx context.Context, who caller, previous
 			})
 			if watched.matches(unit.Name) && unit.ActiveState == "failed" {
 				emit(notify.Event{
-					Kind: string(notify.KindServiceRecovered), HostID: who.Host.ID,
+					Kind: notify.KindServiceRecovered, HostID: who.Host.ID,
 					Hostname: who.Host.Hostname, At: now,
 					Summary: who.Host.Hostname + ": " + unit.Name + " is no longer reported; it was " +
 						"failing when it was last seen",

@@ -148,7 +148,10 @@ const maxOutboundInFlight = 64
 // own tenant, and to nowhere else, and it carries its tenant so that one which somehow arrived in the
 // wrong place is identifiable as such rather than looking like an ordinary event.
 func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Event) {
-	scoped, ev := s.record(ctx, tenantID, ev)
+	scoped, ev, recorded := s.record(ctx, tenantID, ev)
+	if !recorded {
+		return
+	}
 
 	// The refusal is logged by detach and otherwise ignored here, unlike in notifyAlert. A refused
 	// pass means the webhook and any event-routed mail did not go out, which leaves an event in the
@@ -168,26 +171,36 @@ func (s *Server) emit(ctx context.Context, tenantID store.TenantID, ev notify.Ev
 // host, and the digest is delivered on its own. The other caller is the delivery-failure notice, which
 // must not be delivered through the delivery that just failed.
 //
-// It returns the scoped store and the event with its identity filled in, so a caller that then
-// delivers is delivering exactly what was recorded.
+// It returns the scoped store, the event with its identity filled in — so a caller that then delivers
+// is delivering exactly what was recorded — and whether the event was recorded at all.
 func (s *Server) record(ctx context.Context, tenantID store.TenantID,
-	ev notify.Event) (store.Scoped, notify.Event) {
+	ev notify.Event) (store.Scoped, notify.Event, bool) {
 
 	ev.TenantID = string(tenantID)
 	if ev.At.IsZero() {
 		ev.At = time.Now().UTC()
 	}
-	if !notify.Kind(ev.Kind).Valid() {
-		// A programming error, not a data error: kinds are compile-time constants. Logged loudly and
-		// still delivered, because losing the event would hide the incident behind the typo.
-		slog.Error("an event was emitted with a kind outside the closed vocabulary", "kind", ev.Kind)
+
+	// Refused, not warned about. This is the boundary events leave the process at — the inbox, the
+	// open tabs, the tenant's webhook, the alert mail — and a kind outside the closed set matches no
+	// webhook filter, no alert-rule condition and no icon, so an event carrying one arrives everywhere
+	// looking delivered and is read by nothing. That is worse than its absence, because the absence
+	// is at least visible to whoever goes looking.
+	//
+	// It costs an event, and the trade is deliberate: the vocabulary is a compile-time set, so the
+	// only way here is a kind assembled at run time, which is a bug in this repository rather than bad
+	// input from outside. The log line below is what a person acts on, and the fix is a constant.
+	if !ev.Kind.Valid() {
+		slog.Error("an event was refused: its kind is outside the closed vocabulary",
+			"kind", ev.Kind, "tenant", tenantID, "summary", ev.Summary)
+		return s.cfg.Store.In(tenantID), ev, false
 	}
 
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	view := eventView{
-		Kind:     ev.Kind,
+		Kind:     string(ev.Kind),
 		HostID:   ev.HostID,
 		Hostname: ev.Hostname,
 		Summary:  ev.Summary,
@@ -215,7 +228,7 @@ func (s *Server) record(ctx context.Context, tenantID store.TenantID,
 	}
 
 	s.events.broadcast(tenantID, view)
-	return scoped, ev
+	return scoped, ev, true
 }
 
 // detach runs work outside the caller's request, tracked so a shutdown can drain it.
@@ -299,11 +312,11 @@ func (s *Server) deliverOutside(ctx context.Context, scoped store.Scoped, ev not
 			// is recorded and never delivered — sending it through the delivery that just failed
 			// would either fail again or report a failure that had already resolved.
 			s.record(ctx, tenantID, notify.Event{
-				Kind:     string(notify.KindDeliveryFailed),
+				Kind:     notify.KindDeliveryFailed,
 				HostID:   ev.HostID,
 				Hostname: ev.Hostname,
 				At:       time.Now().UTC(),
-				Summary: "the tenant webhook did not accept " + ev.Kind +
+				Summary: "the tenant webhook did not accept " + string(ev.Kind) +
 					"; the event is in this inbox and went nowhere else",
 				Detail: map[string]any{"sink": sink.Name(), "kind": ev.Kind, "error": err.Error()},
 			})
