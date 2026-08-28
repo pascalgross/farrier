@@ -22,6 +22,8 @@ function whoami(): Whoami {
       approvalMode: 'none',
       webhookUrl: '',
     },
+    version: '0.0.0-test',
+    commit: 'abc1234',
   };
 }
 
@@ -128,6 +130,8 @@ describe('SessionStore', () => {
       principal: 'local-account:admin@example.org',
       platform: true,
       tenant: null,
+      version: '0.0.0-test',
+      commit: 'abc1234',
     };
     const session = build({ whoami: [of(platform)] });
 

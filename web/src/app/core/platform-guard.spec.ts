@@ -27,6 +27,8 @@ function whoami(platform: boolean): Whoami {
           approvalMode: 'none',
           webhookUrl: '',
         },
+    version: '0.0.0-test',
+    commit: 'abc1234',
   };
 }
 

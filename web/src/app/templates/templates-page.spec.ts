@@ -257,3 +257,33 @@ describe('TemplatesPage pane correlation', () => {
     expect(cardTitles(fixture)).not.toContain('Versions');
   });
 });
+
+describe('TemplatesPage cloud-init examples', () => {
+  /**
+   * The link exists, points at the examples, and opens safely.
+   *
+   * This page is where somebody writing their first template arrives, and the repository already
+   * carries an annotated baseline they would otherwise never find. It is asserted rather than reviewed
+   * for because its absence is silent: the page renders, reads complete, and simply never mentions the
+   * examples again.
+   *
+   * `rel` is checked with it, because `target="_blank"` without `noopener` hands the opened page a
+   * handle on this one — and this one is a signed-in control plane.
+   */
+  it('links to the worked cloud-init examples in the repository', () => {
+    const fixture = render(version({}), [revision({ version: 3 })]);
+
+    const links = Array.from(
+      fixture.nativeElement.querySelectorAll('a[href]'),
+    ) as HTMLAnchorElement[];
+    const examples = links.find((a) => a.href.includes('examples/cloud-init'));
+
+    expect(examples)
+      .withContext('the Templates page no longer links to examples/cloud-init')
+      .toBeDefined();
+    expect(examples?.href).toBe(
+      'https://github.com/pascalgross/farrier/tree/main/examples/cloud-init',
+    );
+    expect(examples?.rel).toContain('noopener');
+  });
+});

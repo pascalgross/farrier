@@ -68,6 +68,22 @@ export class TemplatesPage {
    */
   protected readonly placeholderSyntax = '{{name}}';
 
+  /**
+   * Where the worked cloud-init examples live.
+   *
+   * A field rather than a literal in the markup so the specification can assert it: this page is where
+   * somebody writing their first template arrives, and the repository already carries an annotated
+   * baseline they would otherwise never find. A link that silently broke would leave the page looking
+   * complete while the examples went unread.
+   *
+   * It points at `main` rather than at the running version's tag. An installation on an older release
+   * may see a newer example, which is the lesser of the two costs — the alternative is a link that is
+   * dead for every build from an unreleased commit, and the examples are prose about cloud-init rather
+   * than an interface that moves with the release.
+   */
+  protected readonly examplesUrl =
+    'https://github.com/pascalgross/farrier/tree/main/examples/cloud-init';
+
   /** The reserved placeholder the control plane mints and refuses to accept from a caller. */
   protected readonly tokenSyntax = `{{${TOKEN_PLACEHOLDER}}}`;
 
