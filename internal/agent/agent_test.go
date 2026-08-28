@@ -730,3 +730,58 @@ func TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob(t *testing.T) {
 		}
 	})
 }
+
+// TestGuaranteeASignedJobWithAnUnboundedWindowIsRefused is the replay defence's own failure mode.
+//
+// Three of them degrade to "no bound" on a zero time, and they degrade together. The window check treats
+// a zero notAfter as open forever; effectiveIssueTime falls back to the *unsigned* issuedAt when
+// notBefore is zero, so max_job_age_seconds measures from a number the control plane chooses; and the
+// nonce record would be kept on some schedule of the agent's own rather than the signature's. A
+// compromised control plane holding one such job could redeliver it indefinitely and it would be a
+// validly signed destructive job every time — a replayable reboot, without ever holding the offline key.
+//
+// The signature is genuine in both cases below, which is what makes this a test about the window: it is
+// signed by a key in this host's own anchor and would be accepted if the window were a window.
+//
+// Nothing shipped produces such a job. `farrier sign` sets both edges and refuses --valid-for ≤ 0, and
+// this is the check that means the guarantee does not rest on that being true of every signer somebody
+// writes later.
+func TestGuaranteeASignedJobWithAnUnboundedWindowIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edge func(*protocol.Job)
+	}{
+		{"no expiry", func(j *protocol.Job) { j.NotAfter = time.Time{} }},
+		{"no start", func(j *protocol.Job) { j.NotBefore = time.Time{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trusted := newSignerFixture(t, "ops-laptop")
+			job := destructiveJob("nonce-unbounded-" + tc.name)
+			tc.edge(&job)
+			job.Signature = trusted.sign(t, job)
+
+			got := accept(job, testHostID, permissivePolicy(t), trusted.set, noOnlineKey(),
+				newNonceStore(t), 0, time.Now())
+			if got.accepted() {
+				t.Fatalf("a signed destructive job with %s was accepted; it could be replayed for ever",
+					tc.name)
+			}
+			if got.status != protocol.StatusRefusedUnsigned {
+				t.Errorf("status %q, want %q: what failed is the signature's authority to bound "+
+					"anything, not the host's policy", got.status, protocol.StatusRefusedUnsigned)
+			}
+		})
+	}
+}
+
+// TestGuaranteeTheNonceStoreRefusesAnExpiryItWouldHaveToInvent is the same rule one layer down.
+//
+// The record exists to outlive the authorisation it guards, so its lifetime has to come from the signed
+// window. A default would forget the nonce on a schedule of the agent's own choosing, and the job would
+// be replayable from that moment — which is the failure the store exists to prevent, arriving through
+// the store itself.
+func TestGuaranteeTheNonceStoreRefusesAnExpiryItWouldHaveToInvent(t *testing.T) {
+	if _, err := newNonceStore(t).Check("nonce-no-expiry", time.Time{}); err == nil {
+		t.Fatal("the nonce store accepted a zero expiry and chose a lifetime of its own")
+	}
+}

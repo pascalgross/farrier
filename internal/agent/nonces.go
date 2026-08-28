@@ -73,6 +73,15 @@ func (n *NonceStore) Check(nonce string, expiresAt time.Time) (seen bool, err er
 	if nonce == "" {
 		return false, errors.New("agent: a signed job must carry a nonce")
 	}
+	// A zero expiry is an error rather than a default, and the difference is the whole value of this
+	// store. The record exists to outlive the authorisation it guards, so its lifetime has to come from
+	// the signed window; a default would forget the nonce on a schedule of the agent's own choosing and
+	// make the job replayable from then on. The only caller reaches here for a signed privileged job,
+	// and accept() has already refused one whose window is not a window — so this is the second of two
+	// statements of the same rule, in the place that would silently paper over the first.
+	if expiresAt.IsZero() {
+		return false, errors.New("agent: a signed job's nonce needs the expiry its signature covers")
+	}
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -86,9 +95,6 @@ func (n *NonceStore) Check(nonce string, expiresAt time.Time) (seen bool, err er
 		if !expiry.After(now) {
 			delete(n.seen, existing)
 		}
-	}
-	if expiresAt.IsZero() {
-		expiresAt = now.Add(24 * time.Hour)
 	}
 	n.seen[nonce] = expiresAt
 

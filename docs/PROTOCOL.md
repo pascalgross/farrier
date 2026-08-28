@@ -430,11 +430,22 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
      signature** and MUST NOT be accepted as one;
    - `destructive` — signature by a key present in this host's `/etc/farrier/trusted-signers`
      required. A signature by the online key is **not** acceptable for this class.
-6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **check the
-   nonce** against the persisted nonce store and refuse replays. In that order: recording the nonce
-   first would let anyone who can reach the agent burn one with a garbage signature, and the store is
-   persistent, so the genuine job bearing that nonce would be refused as a replay for as long as its
-   signature remained valid.
+6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **refuse a
+   signed privileged job whose `notBefore` or `notAfter` is absent**, then **check the nonce** against
+   the persisted nonce store and refuse replays.
+
+   The order is load-bearing twice over. Recording the nonce first would let anyone who can reach the
+   agent burn one with a garbage signature, and the store is persistent, so the genuine job bearing
+   that nonce would be refused as a replay for as long as its signature remained valid. And the window
+   requirement comes after the signature so that an unsigned job is refused for being unsigned, which
+   is the message an operator can act on.
+
+   A missing edge is not a wide window; it is no window. Three defences degrade to "no bound" on it and
+   they degrade together: the check in step 4 admits everything, step 7's age limit falls back to
+   measuring from the unsigned `issuedAt`, and the nonce record's lifetime stops coming from the
+   signature. A control plane that had been taken over could then redeliver one such job for ever, and
+   it would be validly signed every time. Signers MUST set both edges; agents MUST NOT assume they did,
+   and refuse with `refused_unsigned`.
 7. **Check job age** against the local policy's `limits.max_job_age_seconds`.
    `issuedAt` is **not** covered by the signature (see [§8](#8-canonical-json)), so for a signed job the
    age is measured from `notBefore`, which is. A control plane that has been taken over could otherwise

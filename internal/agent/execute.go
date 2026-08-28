@@ -125,6 +125,33 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *s
 		}
 	}
 
+	// 4a. Refuse a signed privileged job whose window is not a window.
+	//
+	//     Three separate replay defences each degrade to "no bound" on a zero time, and they degrade
+	//     together: step 3 treats a zero notAfter as open forever, effectiveIssueTime falls back to the
+	//     *unsigned* issuedAt when notBefore is zero so max_job_age_seconds measures from a number the
+	//     control plane chooses, and the nonce record would expire on a schedule of its own. A
+	//     compromised control plane holding one such job could then redeliver it indefinitely, and it
+	//     would be a validly signed destructive job every time — without ever holding the offline key.
+	//
+	//     Nothing shipped produces one: `farrier sign` sets both edges and refuses --valid-for ≤ 0. That
+	//     is the point of checking here rather than trusting it. The agent is the side that has to
+	//     survive a signer it did not write, and this is the one check that closes all three at once.
+	//
+	//     After the signature rather than before it, so that an unsigned job is refused for being
+	//     unsigned — the message an operator can act on — rather than for a window it was never going
+	//     to have.
+	if job.Signature != "" && spec.Class.Privileged() {
+		switch {
+		case job.NotBefore.IsZero():
+			return acceptance{status: protocol.StatusRefusedUnsigned,
+				reason: "the signature covers no start time, so nothing bounds how old this job may be"}
+		case job.NotAfter.IsZero():
+			return acceptance{status: protocol.StatusRefusedUnsigned,
+				reason: "the signature covers no expiry, so the authorisation would never lapse"}
+		}
+	}
+
 	// 5. Refuse a replayed nonce — but only for a job whose signature has already verified above.
 	//    Recording it first would let anyone who can reach the agent burn a nonce with a job carrying a
 	//    garbage signature, and the nonce store is persistent, so the genuine job bearing that nonce

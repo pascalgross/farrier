@@ -248,6 +248,15 @@ because what that field distinguishes is not where the identity came from but wh
 other end of the request. [`SECURITY.md` §4.5](SECURITY.md#45-who-the-operator-is) is the specification
 for what the shipped pair actually do.
 
+**`Identity.Subject` must name one person.** It is the half of `Principal()` that distinguishes
+operators, and the two-person approval rule is `created_by <> approver`, evaluated as a string
+comparison in one `UPDATE`. A provider returning a group, a role, or any subject two people share makes
+that comparison false for every pair of them — so `second_person` becomes unsatisfiable, quietly and
+fail-closed: the job sits awaiting approval, the operator who switched the rule on believes a second
+person is reviewing destructive work, and no second person can. `StaticToken` was exactly that shape,
+which is why it is gone rather than configurable. An OIDC `sub` claim is a per-person subject; a group
+claim is not, and belongs in `Display` or nowhere.
+
 ### The Angular application
 
 Standalone components and lazily loaded routes, in `web/src/app`. There is no panel registry: it would
