@@ -181,6 +181,18 @@ DEB_FILE_VERSION = $(subst -,~,$(DEB_VERSION))
 deb-path: ## Print the .deb path `make deb` would produce, for scripts that need to name it
 	@echo "$(DIST)/packages/farrier-agent_$(DEB_FILE_VERSION)_$(ARCH).deb"
 
+# The packager version, used by the nfpm-install target and by every workflow that builds a .deb. Pinned
+# for a sharper reason than the linter above is. nfpm is the program that assembles the package every
+# enrolled host installs and runs maintainer scripts from as root, so whoever controls the nfpm build
+# controls root on the whole fleet through the one channel it trusts. `@latest` made that a decision
+# taken by whoever published a release most recently; an exact version makes it one somebody adopts, and
+# `go install module@version` verifies the download against the checksum database on the way in.
+NFPM_VERSION := v2.47.0
+
+.PHONY: nfpm-install
+nfpm-install: ## Install the pinned packager
+	go install github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
+
 .PHONY: deb
 deb: build ## Build the farrier-agent .deb
 	@command -v nfpm >/dev/null 2>&1 || { echo "nfpm not installed; see https://nfpm.goreleaser.com/install/"; exit 1; }
@@ -226,5 +238,9 @@ compose-check: ## Parse every Compose file, including the optional overlays
 clean: ## Remove build output
 	rm -rf $(DIST) coverage.txt
 
+.PHONY: actions-pinned
+actions-pinned: ## Every third-party action names a commit rather than a movable tag
+	@.github/scripts/actions-pinned.sh .
+
 .PHONY: ci
-ci: fmt-check vet doccheck test guarantee ## What CI runs, minus the pieces that need extra tooling
+ci: fmt-check vet doccheck actions-pinned test guarantee ## What CI runs, minus the pieces that need extra tooling
