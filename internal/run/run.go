@@ -69,13 +69,6 @@ const (
 	// Shutdown reboots the host. Reached only from the reboot-host root helper, after policy.
 	Shutdown Program = "/usr/sbin/shutdown"
 
-	// Systemctl is a fallback for the few unit operations not available over D-Bus.
-	//
-	// Reading unit state does not go through it: systemctl has no machine-readable output mode —
-	// list-units ignores -o/--output, which selects a journal format — so state is read over the D-Bus
-	// interface instead, which returns typed structs and needs no polkit authorisation.
-	Systemctl Program = "/usr/bin/systemctl"
-
 	// CloudInit applies a verified bootstrap template at enrolment, exactly once.
 	//
 	// This is guardrail 5 of docs/SECURITY.md §7 in one line: cloud-init does the applying, so
@@ -91,13 +84,18 @@ const (
 // It is checked on every call, so adding a program means editing this map. A caller that assembles a
 // path from anywhere else — configuration, a job parameter, a template — fails here rather than
 // executing.
+//
+// It holds only programs shipped code actually calls, and TestGuaranteeEveryAllowlistedProgramHasACaller
+// keeps it that way. /usr/bin/systemctl was here for a while with no caller at all — unit state is read
+// over D-Bus and so are start, stop and restart — and an entry like that is not inert: it is a
+// flag-rich program made runnable in advance, so that the day somebody adds the first call site, the
+// review that should have decided whether it may run at all has already silently happened.
 var allowed = map[Program]bool{
 	AptGet:            true,
 	UnattendedUpgrade: true,
 	Needrestart:       true,
 	Pro:               true,
 	Shutdown:          true,
-	Systemctl:         true,
 	CloudInit:         true,
 }
 

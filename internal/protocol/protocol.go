@@ -16,6 +16,7 @@
 package protocol
 
 import (
+	"crypto/tls"
 	"regexp"
 	"time"
 )
@@ -565,4 +566,34 @@ func TruncateOutput(s string) (string, bool) {
 		return s, false
 	}
 	return s[len(s)-MaxJobOutputBytes:], true
+}
+
+// TLSMinVersion is the floor for every Farrier TLS connection, on both ends.
+//
+// 1.2 rather than 1.3, and the reason is the listener rather than the protocol. One port carries three
+// kinds of client — an agent enrolling, an enrolled agent, and an operator's browser — and only the
+// first two are built from this repository. A 1.3 floor would be free for them and would refuse a
+// browser somebody is stuck with, on a control plane that is otherwise working, with a handshake error
+// that says nothing about why.
+//
+// What 1.2 costs is closed by TLSCipherSuites below rather than by the floor.
+const TLSMinVersion = tls.VersionTLS12
+
+// TLSCipherSuites is the TLS 1.2 half of the connection, stated rather than defaulted.
+//
+// Go's default 1.2 selection includes ECDHE with AES-CBC and SHA-1 HMAC, which is the encrypt-then-MAC
+// construction every 1.2 padding-oracle result of the last decade has been about. Nothing needs it
+// here: the two ends that matter are Go, and every browser that can reach a control plane at all has
+// done AEAD for years. So the list is AEAD only, forward-secret only, and it is written down instead of
+// inherited — a default is a decision somebody else makes on a schedule this project does not control.
+//
+// It says nothing about TLS 1.3, which is the point of 1.3: its suites are not negotiable and Go
+// ignores this field for them. A connection that reaches 1.3 has already skipped everything below.
+var TLSCipherSuites = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 }

@@ -114,6 +114,14 @@ agent and `farrier-server`. The overlay passes `FARRIER_AGENT_HOSTNAME` into the
 entrypoint adds it to the private server certificate's DNS names. If the name changes, a restart issues
 a replacement server certificate from the existing CA.
 
+The same name also becomes `--agent-url`, which is a second and unrelated setting: the address the
+interface's enrolment instructions tell an operator to type. It is configured rather than derived from
+the request, because the UI overlay below serves that interface on a hostname where the agent API is
+deliberately refused — so instructions built from the browser's own address would name the one hostname
+an agent must not be pointed at. Set `FARRIER_AGENT_URL` instead when agents reach the control plane on
+another port. Unset, the panel shows the browser's address and says it may be wrong, which is an honest
+answer rather than a confident one.
+
 That is not a preference. The agent protocol authenticates a host with a client certificate, and the
 server identifies the host by that certificate's fingerprint on every request — which is also the whole
 revocation mechanism, since there is no CRL and no OCSP. A proxy that terminated TLS would end the

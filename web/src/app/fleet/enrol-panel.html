@@ -1,0 +1,110 @@
+<mat-card class="max-w-3xl">
+  <details class="group" (toggle)="load()">
+    <summary class="flex items-center gap-3 p-4 cursor-pointer list-none">
+      <mat-icon class="transition-transform group-open:rotate-90" aria-hidden="true">chevron_right</mat-icon>
+      <span class="font-medium">Add a host</span>
+      <span class="text-sm opacity-70">Three steps, run on the machine itself</span>
+    </summary>
+
+    <div class="px-4 pb-4">
+
+    @if (error()) {
+      <div class="flex items-start gap-3">
+        <mat-icon class="text-farrier-bad" aria-hidden="true">error_outline</mat-icon>
+        <p class="m-0">{{ error() }}</p>
+      </div>
+    } @else if (instructions() === null) {
+      <mat-progress-bar mode="indeterminate" aria-label="Loading the enrolment instructions" />
+    } @else {
+      <p class="m-0 mb-4 text-sm opacity-80">
+        Every command below runs on the host being enrolled. Nothing here reaches a machine — the
+        control plane has no path to one, before enrolment or after it.
+      </p>
+
+      @if (instructions()!.agentUrlIsAGuess) {
+        <div class="mb-4 p-3 rounded bg-farrier-warn/15 flex items-start gap-3 text-sm">
+          <mat-icon class="text-farrier-warn" aria-hidden="true">info_outline</mat-icon>
+          <p class="m-0">
+            Nobody has told this control plane which address agents reach it at, so the commands below
+            use the one this page was loaded from. If the interface has a hostname of its own — the
+            Traefik deployment gives it one, and refuses the agent API on it — that is the wrong
+            address. Set <code>--agent-url</code> or <code>FARRIER_AGENT_URL</code> to the agent
+            hostname.
+          </p>
+        </div>
+      }
+
+      <ol class="m-0 pl-0 list-none flex flex-col gap-6">
+        <li class="flex flex-col gap-2">
+          <h3 class="m-0 text-base font-medium">1. Install the agent</h3>
+          <p class="m-0 text-sm opacity-80">
+            The repository is signed with a key held only by the release workflow, and the agent
+            installs with no trusted signers and a policy that permits security updates and nothing
+            else.
+          </p>
+          <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ installCommand() }}</code></pre>
+          <button mat-stroked-button type="button" class="self-start"
+                  (click)="copy('install', installCommand())">
+            <mat-icon aria-hidden="true">{{ copied() === 'install' ? 'check' : 'content_copy' }}</mat-icon>
+            {{ copied() === 'install' ? 'Copied' : 'Copy' }}
+          </button>
+        </li>
+
+        <li class="flex flex-col gap-2">
+          <h3 class="m-0 text-base font-medium">2. Trust this control plane</h3>
+          <p class="m-0 text-sm opacity-80">
+            The agent verifies the control plane against this certificate rather than the system roots,
+            which is what makes a private authority work. It is a public document: it is handed to
+            every enrolling agent before that agent has any credential at all.
+          </p>
+          <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ caCommand() }}</code></pre>
+          <div class="flex flex-wrap gap-2">
+            <button mat-stroked-button type="button" (click)="copy('ca', caCommand())">
+              <mat-icon aria-hidden="true">{{ copied() === 'ca' ? 'check' : 'content_copy' }}</mat-icon>
+              {{ copied() === 'ca' ? 'Copied' : 'Copy' }}
+            </button>
+            <a mat-stroked-button [href]="caDownloadUrl()" download="farrier-ca.crt">
+              <mat-icon aria-hidden="true">download</mat-icon>
+              Download the certificate
+            </a>
+          </div>
+        </li>
+
+        <li class="flex flex-col gap-2">
+          <h3 class="m-0 text-base font-medium">3. Enrol</h3>
+          <p class="m-0 text-sm opacity-80">
+            A token authorises exactly one enrolment and expires. Only its hash is stored, so it is
+            shown once here and cannot be recovered afterwards — minting another costs one click.
+          </p>
+
+          @if (minted(); as token) {
+            <p class="m-0 text-sm">
+              <span class="font-medium">Shown once.</span>
+              This token is not stored and cannot be shown again. It expires
+              {{ token.expiresAt | date: 'medium' }}.
+            </p>
+          }
+
+          <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ enrolCommand() }}</code></pre>
+
+          @if (mintError()) {
+            <p class="m-0 text-sm text-farrier-bad">{{ mintError() }}</p>
+          }
+
+          <div class="flex flex-wrap gap-2">
+            <button mat-flat-button type="button" [disabled]="busy()" (click)="mint()">
+              {{ minted() ? 'Generate another token' : 'Generate token' }}
+            </button>
+            <button mat-stroked-button type="button" [disabled]="!minted()"
+                    matTooltip="Generate a token first; the command carries it."
+                    (click)="copy('enrol', enrolCommand())">
+              <mat-icon aria-hidden="true">{{ copied() === 'enrol' ? 'check' : 'content_copy' }}</mat-icon>
+              {{ copied() === 'enrol' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+        </li>
+      </ol>
+    }
+    </div>
+  </details>
+</mat-card>

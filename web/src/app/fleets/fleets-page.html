@@ -129,8 +129,9 @@
             <input matInput autocomplete="off" spellcheck="false" [ngModel]="fleet.webhookUrl"
                    (change)="setWebhook(fleet, $any($event.target).value)" />
             <mat-hint>
-              Where this fleet's events are posted, empty for nowhere. Sinks send data out; nothing
-              sends anything in.
+              An https URL where this fleet's events are posted, empty for nowhere. An event carries
+              hostnames and job summaries, so plaintext is refused. Sinks send data out; nothing sends
+              anything in.
             </mat-hint>
           </mat-form-field>
 
@@ -138,6 +139,38 @@
             Give this fleet an operator on the control plane:
           </p>
           <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ accountCommand(fleet.slug) }}</code></pre>
+
+          <div class="mt-2 pt-4 border-t border-black/10 dark:border-white/10 flex flex-col gap-3">
+            <div class="flex flex-wrap items-center gap-3">
+              <p class="m-0 text-sm opacity-80 flex-1 min-w-48">
+                Retiring this fleet removes its hosts, certificates, enrolment tokens, jobs, results
+                and accounts. It reaches no machine — nothing in Farrier does — so its agents keep
+                running on their own local policy and are refused at their next request.
+              </p>
+              <button mat-stroked-button type="button" class="!text-farrier-bad"
+                      (click)="askToRetire(fleet)">
+                {{ retiring() === fleet.id ? 'Keep it' : 'Retire fleet' }}
+              </button>
+            </div>
+
+            @if (retiring() === fleet.id) {
+              <mat-form-field appearance="outline">
+                <mat-label>Type {{ fleet.slug }} to confirm</mat-label>
+                <input matInput autocomplete="off" spellcheck="false"
+                       [ngModel]="retireConfirmation()"
+                       (ngModelChange)="retireConfirmation.set($event)" />
+                <mat-hint>
+                  This cannot be undone, and the history goes with it. The slug is what logs and
+                  support tickets refer to this fleet by.
+                </mat-hint>
+              </mat-form-field>
+
+              <button mat-flat-button type="button" class="self-start !bg-farrier-bad"
+                      [disabled]="!canRetire()" (click)="retire(fleet)">
+                Retire {{ fleet.slug }}
+              </button>
+            }
+          </div>
         }
       </mat-card-content>
     </mat-card>

@@ -29,12 +29,17 @@ type acceptance struct {
 	// params are the decoded, validated parameters.
 	params intent.Params
 
-	// raw is the parameter object exactly as it arrived, for a privileged job to forward.
+	// raw is the parameter object as JSON, for a privileged job to forward to the helper.
 	//
-	// The helper decodes it again itself, as root, with the same catalogue decoder. Handing it the
-	// bytes rather than a re-encoding of the decoded value is what makes the two decodes the same
-	// decode: a round trip through a Go struct is a place where a field could be dropped, and the
-	// helper's validation would then be of something the agent had already altered.
+	// It is a re-encoding of job.Params, not the bytes off the wire — the agent decodes a response
+	// body once, into protocol.Job, and there is no arrived-bytes copy of this field to keep. Saying
+	// otherwise here would describe a property the helper's decode does not have.
+	//
+	// What forwarding JSON rather than the decoded intent.Params buys is real and is the reason the
+	// field exists: the helper runs intent.Decode itself, as root, over this object. It therefore
+	// validates the same shape the agent validated rather than a Go struct the agent produced, so a
+	// field the agent's own round trip dropped or coerced cannot become the thing root acts on. The
+	// helper trusts its caller for none of it — see docs/SECURITY.md §6.
 	raw []byte
 
 	// status is the protocol status to report when the job is refused.
@@ -122,6 +127,33 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *s
 	case spec.Class.RequiresOnlineSignature():
 		if err := verifyOnlineSignature(job, hostID, online); err != nil {
 			return acceptance{status: protocol.StatusRefusedUnsigned, reason: err.Error()}
+		}
+	}
+
+	// 4a. Refuse a signed privileged job whose window is not a window.
+	//
+	//     Three separate replay defences each degrade to "no bound" on a zero time, and they degrade
+	//     together: step 3 treats a zero notAfter as open forever, effectiveIssueTime falls back to the
+	//     *unsigned* issuedAt when notBefore is zero so max_job_age_seconds measures from a number the
+	//     control plane chooses, and the nonce record would expire on a schedule of its own. A
+	//     compromised control plane holding one such job could then redeliver it indefinitely, and it
+	//     would be a validly signed destructive job every time — without ever holding the offline key.
+	//
+	//     Nothing shipped produces one: `farrier sign` sets both edges and refuses --valid-for ≤ 0. That
+	//     is the point of checking here rather than trusting it. The agent is the side that has to
+	//     survive a signer it did not write, and this is the one check that closes all three at once.
+	//
+	//     After the signature rather than before it, so that an unsigned job is refused for being
+	//     unsigned — the message an operator can act on — rather than for a window it was never going
+	//     to have.
+	if job.Signature != "" && spec.Class.Privileged() {
+		switch {
+		case job.NotBefore.IsZero():
+			return acceptance{status: protocol.StatusRefusedUnsigned,
+				reason: "the signature covers no start time, so nothing bounds how old this job may be"}
+		case job.NotAfter.IsZero():
+			return acceptance{status: protocol.StatusRefusedUnsigned,
+				reason: "the signature covers no expiry, so the authorisation would never lapse"}
 		}
 	}
 

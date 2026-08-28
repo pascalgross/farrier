@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +100,147 @@ func TestGuaranteeTheAllowlistHoldsNoInterpreters(t *testing.T) {
 	}
 }
 
+// TestGuaranteeEveryAllowlistedProgramHasACaller keeps the runnable set equal to the reachable set.
+//
+// An allowlisted program with no call site is not harmless. It is a decision taken early and out of
+// sight: the review that should ask "may this program run on a managed host at all" has already
+// happened by the time somebody adds the first caller, and what that reviewer sees instead is one line
+// naming something the allowlist already blesses. /usr/bin/systemctl sat here in exactly that state —
+// flag-rich, reachable by nothing, with a doc comment describing a fallback that had never been
+// written — while every unit operation went over D-Bus.
+//
+// So the rule is that the two sets are the same one, and the way to add a program is in the commit that
+// calls it.
+func TestGuaranteeEveryAllowlistedProgramHasACaller(t *testing.T) {
+	root := repoRoot(t)
+
+	declared := allowlistConstantNames(t, root)
+	if len(declared) != len(Allowlist()) {
+		t.Fatalf("run.go declares %d Program constants and the allowlist holds %d entries.\n"+
+			"Every declared program must be in the allowlist and every allowlisted program must be "+
+			"declared, or one of the two lists is not the set it claims to be.",
+			len(declared), len(Allowlist()))
+	}
+
+	used := programNamesUsedOutsideThisPackage(t, root)
+	for _, name := range declared {
+		if !used[name] {
+			t.Errorf("run.%s is in the allowlist and nothing outside internal/run names it.\n"+
+				"Remove it until the commit that adds a caller, so that whether this program may run "+
+				"is decided by whoever reviews that caller rather than in advance.", name)
+		}
+	}
+}
+
+// allowlistConstantNames returns the identifiers of the Program constants declared in run.go.
+//
+// It reads the source rather than the map because the map is keyed by path and the rest of the
+// repository names these by identifier: `run.AptGet`, not "/usr/bin/apt-get". Matching on the
+// identifier is what lets the caller scan below be a plain AST walk with no type information.
+func allowlistConstantNames(t *testing.T, root string) []string {
+	t.Helper()
+
+	path := filepath.Join(root, "internal", "run", "run.go")
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	var names []string
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			ident, ok := vs.Type.(*ast.Ident)
+			if !ok || ident.Name != "Program" {
+				continue
+			}
+			for _, name := range vs.Names {
+				names = append(names, name.Name)
+			}
+		}
+	}
+	if len(names) == 0 {
+		t.Fatalf("no Program constants found in %s; this check would pass vacuously", path)
+	}
+	return names
+}
+
+// programNamesUsedOutsideThisPackage returns every `run.X` identifier shipped code refers to.
+//
+// Non-test files only, and internal/run's own files excluded. A test that named a program would keep
+// an otherwise dead entry alive, which is the state this check exists to find.
+func programNamesUsedOutsideThisPackage(t *testing.T, root string) map[string]bool {
+	t.Helper()
+
+	used := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, sub := range []string{"cmd", "internal", "helpers"} {
+		base := filepath.Join(root, sub)
+		err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			if filepath.Dir(path) == filepath.Join(root, "internal", "run") {
+				return nil
+			}
+			f, parseErr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if parseErr != nil {
+				return parseErr
+			}
+			ast.Inspect(f, func(node ast.Node) bool {
+				sel, ok := node.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "run" {
+					used[sel.Sel.Name] = true
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", base, err)
+		}
+	}
+	return used
+}
+
+// repoRoot walks up from the working directory until it finds the directory holding go.mod.
+//
+// The working directory is the package's own source directory under go test, which is a handle the
+// module root can be reached from. It is deliberately not runtime.Caller: under -trimpath, which every
+// binary this project ships is built with, a caller's file name is module-relative and the walk finds
+// no go.mod at all.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("cannot determine the working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("walked to the filesystem root without finding go.mod")
+		}
+		dir = parent
+	}
+}
+
 // TestGuaranteeAptIsNeverUsedInsteadOfAptGet pins one of the verified traps.
 //
 // apt 3.0, shipped in Ubuntu 25.04, reorganised apt's output into colourised columns; 26.04 ships apt
@@ -142,12 +286,12 @@ func TestCommandReplacesTheEnvironment(t *testing.T) {
 // An apt operation blocked on a conffile prompt waits for input that never arrives. An agent that
 // waited with it would stop reporting on the host, which is the opposite of what it is for.
 func TestCommandTimesOut(t *testing.T) {
-	if _, err := os.Stat(string(Systemctl)); err != nil {
-		t.Skipf("%s is not installed here", Systemctl)
+	if _, err := os.Stat(string(AptGet)); err != nil {
+		t.Skipf("%s is not installed here", AptGet)
 	}
 	ctx := context.Background()
 	// A one-nanosecond timeout expires before the process can finish, whatever it is.
-	_, err := CommandWith(ctx, Options{Timeout: time.Nanosecond}, Systemctl, "--version")
+	_, err := CommandWith(ctx, Options{Timeout: time.Nanosecond}, AptGet, "--version")
 	if err == nil {
 		t.Fatal("an invocation with a one-nanosecond timeout succeeded")
 	}

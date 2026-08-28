@@ -253,7 +253,7 @@ func TestRoutingHonoursALostCooldownClaim(t *testing.T) {
 	}
 
 	h.server.routeToRules(context.Background(), h.scoped,
-		notify.Event{Kind: string(notify.KindJobFailed), HostID: "host-1", Hostname: "web-01"},
+		notify.Event{Kind: notify.KindJobFailed, HostID: "host-1", Hostname: "web-01"},
 		store.ConditionJobFailed, []store.AlertRule{rule}, nil)
 
 	// Nothing was attempted, so nothing was recorded. This installation has no relay, so a rule that
@@ -270,7 +270,7 @@ func TestRoutingMailsTheRuleThatWinsItsClaim(t *testing.T) {
 	rule := h.routingFixture(t)
 
 	h.server.routeToRules(context.Background(), h.scoped,
-		notify.Event{Kind: string(notify.KindJobFailed), HostID: "host-1", Hostname: "web-01"},
+		notify.Event{Kind: notify.KindJobFailed, HostID: "host-1", Hostname: "web-01"},
 		store.ConditionJobFailed, []store.AlertRule{rule}, nil)
 
 	after := h.deliveryOutcome(t, rule.ID)

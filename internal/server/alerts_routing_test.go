@@ -78,7 +78,7 @@ func (h *alertHarness) unitRule(t *testing.T, id string) store.AlertRule {
 // routing rather than re-stating the convention it depends on.
 func unitEvent(kind notify.Kind, hostID, unit string) notify.Event {
 	return notify.Event{
-		Kind: string(kind), HostID: hostID, Hostname: "web-01", At: time.Now().UTC(),
+		Kind: kind, HostID: hostID, Hostname: "web-01", At: time.Now().UTC(),
 		Summary: "web-01: " + unit + " failed (failed)",
 		Detail:  map[string]any{"unit": unit},
 	}

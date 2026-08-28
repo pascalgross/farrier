@@ -99,6 +99,11 @@ func serve(argv []string) int {
 	tlsKey := fs.String("tls-key", "", "PEM key for this server's own HTTPS identity")
 	tlsServerName := fs.String("tls-server-name", envOr("FARRIER_TLS_SERVER_NAME", ""),
 		"additional DNS name for the automatically issued server certificate")
+	agentURL := fs.String("agent-url", envOr("FARRIER_AGENT_URL", ""),
+		"the base URL agents reach this control plane at, shown in the enrolment instructions. "+
+			"It is not derived from the request, because the interface may be served on a second "+
+			"hostname that deliberately refuses the agent API; unset means the instructions show the "+
+			"address the browser is using and say it may be the wrong one")
 	tenantSlug := fs.String("tenant", envOr("FARRIER_TENANT", "default"),
 		"the fleet this control plane serves; created on first start if it does not exist")
 	bootstrapEmail := fs.String("bootstrap-email", envOr("FARRIER_BOOTSTRAP_EMAIL", "admin@localhost"),
@@ -260,6 +265,7 @@ func serve(argv []string) int {
 		HeartbeatSeconds: *heartbeat,
 		TokenTTL:         24 * time.Hour,
 		SMTP:             smtp,
+		AgentURL:         *agentURL,
 	})
 	if err != nil {
 		slog.Error("could not build the server", "error", err)

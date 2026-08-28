@@ -304,7 +304,7 @@ func (s *Server) notifyBatch(ctx context.Context, scoped store.Scoped, rule stor
 				names = append(names, f.host.Hostname)
 			}
 			s.record(ctx, scoped.Tenant(), notify.Event{
-				Kind:     string(kind),
+				Kind:     kind,
 				HostID:   f.host.ID,
 				Hostname: f.host.Hostname,
 				At:       now,
@@ -319,7 +319,7 @@ func (s *Server) notifyBatch(ctx context.Context, scoped store.Scoped, rule stor
 			verb = conditionPhrase(rule)
 		}
 		return s.notifyAlert(ctx, scoped, rule, notify.Event{
-			Kind: string(kind),
+			Kind: kind,
 			At:   now,
 			Summary: strconv.Itoa(len(batch)) + " hosts " + verb + ": " +
 				strings.Join(names, ", ") + ", …",
@@ -332,7 +332,7 @@ func (s *Server) notifyBatch(ctx context.Context, scoped store.Scoped, rule stor
 	var refused string
 	for _, f := range batch {
 		if reason := s.notifyAlert(ctx, scoped, rule, notify.Event{
-			Kind:     string(kind),
+			Kind:     kind,
 			HostID:   f.host.ID,
 			Hostname: f.host.Hostname,
 			At:       now,
@@ -601,7 +601,7 @@ func (s *Server) recordDelivery(scoped store.Scoped, ruleID, failure string) {
 // noisiest case — a restart-looping unit — is event-shaped: each loop is a fresh transition, and a
 // rule that mailed every flap would train its recipients to filter the folder.
 func (s *Server) routeEventMail(ctx context.Context, scoped store.Scoped, ev notify.Event) {
-	condition, firing, routed := routedCondition(notify.Kind(ev.Kind))
+	condition, firing, routed := routedCondition(ev.Kind)
 	if !routed {
 		return
 	}

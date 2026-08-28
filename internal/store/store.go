@@ -32,6 +32,13 @@ var (
 	// ErrConflict reports a uniqueness violation, such as a second host with the same machine id.
 	ErrConflict = errors.New("store: conflict")
 
+	// ErrTooManyCertificates reports a host already holding as many live certificates as it may.
+	//
+	// A distinct error because the caller answers it differently from a failure: it is transient by
+	// construction — the certificates in the way are superseded or expiring — so it is a 429 rather
+	// than a 500, and the agent's existing backoff does the right thing with no change on the host.
+	ErrTooManyCertificates = errors.New("store: too many live certificates for this host")
+
 	// ErrTokenUnusable reports a bootstrap token that is unknown, expired or already consumed.
 	//
 	// It deliberately covers all three. Telling an attacker which of the three applies is free
@@ -519,6 +526,46 @@ type Certificate struct {
 
 	// RevokedAt is when it was revoked, zero if it was not.
 	RevokedAt time.Time
+
+	// SupersededAt is when a renewal's replacement takes over, zero if this certificate is current.
+	//
+	// It is distinct from Revoked because the two say different things and an operator reading a host's
+	// history needs to tell them apart: revoked is somebody withdrawing a host's identity, and
+	// superseded is the ordinary end of a certificate that has been renewed. The value is a short
+	// overlap after the renewal rather than the renewal itself, because the agent promotes its new
+	// credential with one rename and a host interrupted between the two has to be able to come back on
+	// the old one.
+	SupersededAt time.Time
+}
+
+// Renewal is everything one certificate renewal writes, so it can be written at once.
+//
+// It is a struct rather than five arguments because the fields have to travel together: a caller that
+// could pass a replacement without a fingerprint to retire, or a cap without a clock to measure it
+// against, would be a caller that could half-perform the operation this type exists to make whole.
+type Renewal struct {
+	// Replacement is the certificate to record.
+	Replacement Certificate
+
+	// Presented is the fingerprint of the certificate that asked for the renewal.
+	//
+	// It comes from the connection and never from the request body. Taking it from anything the caller
+	// sent would let one host retire a certificate belonging to another.
+	Presented string
+
+	// SupersedeAt is when the presented certificate stops being accepted.
+	//
+	// A short overlap after the renewal rather than the renewal itself: the agent promotes its new
+	// credential with one rename, and a host interrupted between obtaining a certificate and promoting
+	// it has to be able to come back on the old one.
+	SupersedeAt time.Time
+
+	// MaxLive is how many of the host's certificates may authenticate at once, counted before insert.
+	MaxLive int
+
+	// Now is the instant liveness is measured against, so the decision is the caller's clock and not
+	// the database's.
+	Now time.Time
 }
 
 // Account is one person who signs in, with an address and a password.
@@ -1018,6 +1065,17 @@ type Store interface {
 	// agents reconnect every twenty-five seconds accumulates one dead waiter per poll.
 	Subscribe(hostID string) (<-chan struct{}, func())
 
+	// Ping reports whether the database is reachable, and reads nothing.
+	//
+	// It exists because the health endpoint is unauthenticated, and the query behind it used to be a
+	// tenant listing: one row per fleet, read in full, on every hit from anybody who could reach the
+	// port. That is a load an unauthenticated caller chooses for the shared database, and it answers a
+	// question nobody asked — liveness is whether a round trip completes, not what the rows say.
+	//
+	// It carries no tenant for the same reason it reads nothing: there is no fleet whose health this
+	// is, and a probe that named one would be answering about that fleet rather than about the process.
+	Ping(ctx context.Context) error
+
 	// Close releases the store's resources.
 	Close() error
 }
@@ -1098,6 +1156,46 @@ type Scoped interface {
 
 	// AddCertificate records an issued certificate by fingerprint.
 	AddCertificate(ctx context.Context, c Certificate) error
+
+	// SupersedeCertificate sets when a renewed-away certificate stops being accepted.
+	//
+	// Setting it again on an already-superseded certificate keeps the earlier time. A host that renews
+	// twice in quick succession must not be able to extend the life of the credential it has already
+	// replaced.
+	//
+	// The renewal path does not use this; it uses RenewCertificate, which does the same thing in the
+	// transaction that records the replacement. This stays for the operations that retire a certificate
+	// on its own — and for tests, which is the only caller today.
+	SupersedeCertificate(ctx context.Context, fingerprint string, at time.Time) error
+
+	// RenewCertificate admits a replacement certificate and retires the one that asked for it.
+	//
+	// One operation rather than three, and every part of that is load-bearing.
+	//
+	// The cap is checked and the replacement inserted in the same transaction, under a lock on the
+	// host. Counting and then inserting in two transactions is check-then-act: the renewal limiter
+	// permits a burst, so several requests for one host can each observe a count below the cap and
+	// each insert — leaving more live certificates than the cap advertises, after which honest
+	// renewals are refused until the extra ones expire.
+	//
+	// The supersession is in the same transaction for a sharper reason. If the replacement were
+	// recorded and the retirement failed, no later renewal could correct it: a renewal retires the
+	// fingerprint *it* presents, which by then is the replacement, and the forgotten certificate would
+	// stay valid to its natural expiry — which is the whole of what the 48-hour bound exists to
+	// prevent. Either both writes land or neither does, and the caller must not acknowledge a renewal
+	// it did not get.
+	//
+	// It returns ErrTooManyCertificates when the host is at the cap, which the caller answers 429: the
+	// certificates in the way are superseded or expiring, so it clears on its own.
+	RenewCertificate(ctx context.Context, r Renewal) error
+
+	// CountLiveCertificates returns how many of a host's certificates could still authenticate.
+	//
+	// Live means not revoked, not expired, and not past a supersession that has taken effect — the same
+	// three conditions requireAgent applies, asked as a count rather than about one row. It exists for
+	// the cap on renewals: without one, a host holding a valid certificate can mint rows in a table
+	// every tenant shares, and the CA will sign each of them.
+	CountLiveCertificates(ctx context.Context, hostID string, now time.Time) (int, error)
 
 	// RevokeHost marks a host and all its certificates as revoked, taking effect on the next request.
 	RevokeHost(ctx context.Context, hostID string) error

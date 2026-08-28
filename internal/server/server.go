@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,6 +110,19 @@ type Config struct {
 
 	// TokenTTL is how long a newly issued enrolment token remains usable.
 	TokenTTL time.Duration
+
+	// AgentURL is the base URL agents reach this control plane at, empty when nobody has said.
+	//
+	// It is configuration rather than something derived from a request, and the reason is the shape of
+	// the deployment this project documents. The Traefik overlay serves the interface on a second
+	// hostname and refuses the agent API on it with a 403 — so instructions built from the address a
+	// browser is using would name the one hostname an agent must not be pointed at, confidently and
+	// wrongly.
+	//
+	// Empty is a supported state and not a broken one: the interface then shows the browser's own
+	// address and says plainly that it may be the wrong one, which is a better answer than refusing to
+	// render the instructions at all.
+	AgentURL string
 }
 
 // Server is the running control plane.
@@ -150,6 +164,21 @@ type Server struct {
 	// different numbers: enrolment is a fleet being built and should tolerate a burst, and a sign-in
 	// costs this process 64 MiB of Argon2id per attempt.
 	signInLimiter *rateLimiter
+
+	// renewLimiter bounds certificate renewals, per host.
+	//
+	// Keyed on the host id rather than the source address, because the caller is authenticated: the id
+	// comes from the presented certificate's row, is not a value the request chooses, and does not
+	// collapse into one bucket behind a proxy the way an address does. It is the one authenticated
+	// endpoint with an unbounded per-caller cost — a CA signature and a row in a shared table.
+	renewLimiter *rateLimiter
+
+	// healthLimiter bounds the third route that needs no credential at all.
+	//
+	// Its own limiter rather than a share of the enrolment one, because the two must not be able to
+	// exhaust each other: a load balancer probing every second is ordinary traffic, and a fleet
+	// enrolling a rack at once is ordinary traffic, and neither should turn the other into a refusal.
+	healthLimiter *rateLimiter
 
 	// passwordLimiter bounds password changes, per account.
 	//
@@ -239,6 +268,8 @@ func New(cfg Config) (*Server, error) {
 		hasUI:           statErr == nil,
 		enrolLimiter:    newRateLimiter(enrollBurst, enrollRefill),
 		signInLimiter:   newRateLimiter(signInBurst, signInRefill),
+		healthLimiter:   newRateLimiter(healthBurst, healthRefill),
+		renewLimiter:    newRateLimiter(renewBurst, renewRefill),
 		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
 		accounts:        cfg.Accounts,
 		paths:           http.NewServeMux(),
@@ -272,6 +303,13 @@ func (s *Server) routes() {
 	s.route(http.MethodGet, "/api/v1/tokens", s.requireOperator(s.handleListTokens))
 	s.route(http.MethodPost, "/api/v1/tokens", s.requireOperator(s.handleCreateToken))
 	s.route(http.MethodGet, "/api/v1/catalogue", s.requireOperator(s.handleCatalogue))
+	s.route(http.MethodGet, "/api/v1/enrolment", s.requireOperator(s.handleEnrolmentInstructions))
+
+	// The one unauthenticated route under /api/v1, and deliberately so. A CA certificate is handed to
+	// every enrolling agent before that agent has any credential at all, so it is already a public
+	// document; what serving it here buys is the second step of enrolment being one command on the host
+	// rather than a browser download and a copy over scp.
+	s.route(http.MethodGet, CACertificatePath, http.HandlerFunc(s.handleCACertificate))
 	s.route(http.MethodGet, "/api/v1/jobs", s.requireOperator(s.handleListJobs))
 	s.route(http.MethodPost, "/api/v1/jobs", s.requireOperator(s.handleCreateJob))
 	s.route(http.MethodGet, "/api/v1/jobs/{id}", s.requireOperator(s.handleGetJob))
@@ -394,9 +432,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 //
 // Client certificates are verified against Farrier's own CA only. Using the system roots would mean any
 // publicly trusted certificate could authenticate as an agent.
+//
+// The floor and the 1.2 cipher list come from internal/protocol, which is also where the agent's client
+// reads them, so the two ends of the connection cannot be hardened apart. See docs/SECURITY.md §4.2.
 func (s *Server) TLSConfig() *tls.Config {
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   protocol.TLSMinVersion,
+		CipherSuites: protocol.TLSCipherSuites,
 		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    s.cfg.Authority.ClientCAPool(),
 		NextProtos:   []string{"h2", "http/1.1"},
@@ -588,6 +630,13 @@ type caller struct {
 	// Host is the machine that authenticated.
 	Host store.Host
 
+	// Fingerprint identifies the certificate this request arrived on.
+	//
+	// Carried because renewal has to retire the credential that asked for the renewal, and the only
+	// honest source for which one that is, is the connection. Taking it from the CSR or from anything in
+	// the body would let a host retire a certificate belonging to somebody else.
+	Fingerprint string
+
 	// Store reaches that host's tenant and nothing else.
 	Store store.Scoped
 }
@@ -626,6 +675,17 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 		case cert.Revoked:
 			writeError(w, http.StatusUnauthorized, "revoked", "certificate has been revoked")
 			return
+		case !cert.SupersededAt.IsZero() && !time.Now().Before(cert.SupersededAt):
+			// A renewal replaced this certificate and the overlap has passed. Refused here rather than
+			// left to expire, because the agent generates a fresh key at every renewal and the whole
+			// value of that is lost if the key it rotated away from keeps working until day ninety.
+			//
+			// A distinct code from "revoked": an operator reading a log needs to tell a withdrawn host
+			// from one whose agent is presenting a credential it should already have replaced, which is
+			// a bug in the agent or a copy of a file somewhere it should not be.
+			writeError(w, http.StatusUnauthorized, "superseded",
+				"this certificate was replaced by a renewal; present the current one")
+			return
 		}
 
 		scoped := s.cfg.Store.In(cert.TenantID)
@@ -643,7 +703,7 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 			return
 		}
 
-		who := caller{Host: host, Store: scoped}
+		who := caller{Host: host, Fingerprint: fingerprint, Store: scoped}
 		ctx := context.WithValue(r.Context(), agentContextKey{}, who)
 		next(w, r.WithContext(ctx), who)
 	})
@@ -772,21 +832,36 @@ func Fingerprint(cert *x509.Certificate) string {
 }
 
 // handleHealth reports that the process is up and can reach its database.
+//
+// Three things about it follow from the one fact that it is unauthenticated, and each was once the
+// other way round.
+//
+// It pings rather than listing tenants. The listing read one row per fleet on every hit, so anybody
+// who could reach the port could choose load for the shared database — and it answered more than
+// liveness, which is whether a round trip completes at all.
+//
+// It says "ok" and nothing else. The exact version and commit are what somebody matching a deployment
+// against a published advisory wants, and handing that to an unauthenticated caller is doing the first
+// half of their work for them. An operator gets it from /api/v1/whoami, which knows who is asking.
+//
+// It is rate-limited, per source, like the other two routes that need no credential. A probe is meant
+// to be cheap for a load balancer calling it every few seconds and is not meant to be a free round trip
+// to the database for everybody else.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.healthLimiter.allow(auth.RequestSource(r), time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.healthLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many health checks from here")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// The tenant list rather than a tenant's data, because this endpoint is unauthenticated and
-	// therefore belongs to no tenant. Only the error is looked at; nothing about any tenant leaves here.
-	if _, err := s.cfg.Store.ListTenants(ctx); err != nil {
+	if err := s.cfg.Store.Ping(ctx); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "database", "the database is not reachable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": buildinfo.Version,
-		"commit":  buildinfo.Revision(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 // writeJSON writes a JSON response.

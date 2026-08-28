@@ -57,9 +57,22 @@ func Marshal(v any) ([]byte, error) {
 
 // Normalize rewrites already-encoded JSON into canonical form.
 //
-// It is exported separately from Marshal because the agent receives job payloads as bytes and must
-// canonicalise exactly what arrived, not a re-encoding of its own decoded view. Those are usually the
-// same and the difference is exactly where a signature-verification bug would live.
+// It is the whole of Marshal's second half and is exported because it is also the entry point for
+// bytes that are already JSON — a stored payload, a fuzz corpus, a body read from a file — where
+// encoding a Go value first would be a round trip with nothing to gain.
+//
+// What it is *not* is a way to verify a signature against the bytes a job arrived in. Nothing in
+// Farrier does that, and the shape of the protocol is why: a signature is computed over
+// protocol.Job.SignedPayload, a map both the signer and the agent build from decoded fields, so both
+// sides canonicalise their own view by construction. Byte-identity end to end is not available to be
+// checked either — a job's params reach the agent through a jsonb column, which normalises key order,
+// whitespace and duplicate keys before the agent sees anything.
+//
+// The property that does hold is narrower and is the one worth stating: this package is the single
+// implementation of the encoding, so signer and verifier cannot disagree by each having their own. If
+// a value ever did survive one side's encoder and not the other's, the outcome is a signature that
+// fails to verify — a refusal, never an acceptance. FuzzNormalize is what keeps the encoder itself
+// total, and the float rejection above is what keeps the one ambiguous case from being guessed at.
 func Normalize(raw []byte) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()

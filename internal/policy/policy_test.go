@@ -320,6 +320,38 @@ func TestParseWindowRejectsNonsense(t *testing.T) {
 	}
 }
 
+// TestGuaranteeAZeroLengthWindowIsRefusedUnlessItIsAllDay separates a typo from an idiom.
+//
+// Both spellings reach the same arithmetic — an end equal to its start adds 24 hours, which is right
+// for the midnight-crossing rule the same line implements — and only one of them is ever what somebody
+// meant. "00:00-00:00" is the documented way to write an all-day window on purpose, and it has to keep
+// working: reboot = "window" refuses an empty window, so it is the only way to say "always" there, and
+// packaging/policy.toml and the test fleet both use it.
+//
+// "Sun 03:00-03:00" is a typo for a narrow Sunday slot. What it silently produced was a window open
+// from Sunday 03:00 to Monday 03:00 — with reboot = "window", a full day in which a validly signed
+// reboot could execute, on a host whose administrator believed they had allowed two hours.
+func TestGuaranteeAZeroLengthWindowIsRefusedUnlessItIsAllDay(t *testing.T) {
+	for _, spec := range []string{"Sun 03:00-03:00", "03:00-03:00", "daily 12:30-12:30"} {
+		if _, err := ParseWindow(spec, time.UTC); err == nil {
+			t.Errorf("%q was accepted; it means a full 24 hours and reads as a narrow slot", spec)
+		}
+	}
+
+	for _, spec := range []string{"00:00-00:00", "daily 00:00-00:00", "Sun 00:00-00:00"} {
+		w, err := ParseWindow(spec, time.UTC)
+		if err != nil {
+			t.Fatalf("%q is the documented all-day spelling and was refused: %v", spec, err)
+		}
+		// Sunday, so that the day-scoped form is inside its own day rather than outside it.
+		at := time.Date(2026, 8, 23, 13, 0, 0, 0, time.UTC)
+		if !w.Contains(at) {
+			t.Errorf("%q is not open at %s; an all-day window that is not open all day is worse "+
+				"than the refusal above", spec, at)
+		}
+	}
+}
+
 // TestWindowBehaviourAcrossDaylightSavingTransitions pins what happens on the two awkward days.
 //
 // It is not asserting that the behaviour is ideal — it is asserting what the behaviour *is*, so that a

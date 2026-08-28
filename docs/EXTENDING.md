@@ -248,6 +248,15 @@ because what that field distinguishes is not where the identity came from but wh
 other end of the request. [`SECURITY.md` §4.5](SECURITY.md#45-who-the-operator-is) is the specification
 for what the shipped pair actually do.
 
+**`Identity.Subject` must name one person.** It is the half of `Principal()` that distinguishes
+operators, and the two-person approval rule is `created_by <> approver`, evaluated as a string
+comparison in one `UPDATE`. A provider returning a group, a role, or any subject two people share makes
+that comparison false for every pair of them — so `second_person` becomes unsatisfiable, quietly and
+fail-closed: the job sits awaiting approval, the operator who switched the rule on believes a second
+person is reviewing destructive work, and no second person can. `StaticToken` was exactly that shape,
+which is why it is gone rather than configurable. An OIDC `sub` claim is a per-person subject; a group
+claim is not, and belongs in `Display` or nowhere.
+
 ### The Angular application
 
 Standalone components and lazily loaded routes, in `web/src/app`. There is no panel registry: it would
@@ -261,6 +270,14 @@ refuses a cookie-authenticated request without `X-Farrier-Session`, which is the
 forgery defence and is not something `EventSource` can supply. The usual workaround puts a credential
 into the query string, and from there into every access log and proxy trace it passes. The cost is the
 reconnect loop in `core/event-stream.ts`, which `EventSource` would otherwise have supplied.
+
+The bundle carries a size budget in `angular.json`, and it is worth knowing which kind it is. The
+warning threshold is a tripwire for growth somebody should look at, not a limit: the error threshold is
+a long way above it. Raising the warning is a normal thing to do when a page adds a real feature, and
+raising it without noticing what grew is not — the enrolment panel on the fleet page moved it once, for
+about a kilobyte, and the check that made that a decision rather than an accident was reading which
+module the kilobyte came from. It came from a Material expansion panel, for one disclosure widget, and
+a native `<details>` does the same job for nothing.
 
 Whatever it grows into, the UI reads the API and can reach no host directly — it has no credential that
 any agent would accept, because agents authenticate the *control plane* by certificate and authorise

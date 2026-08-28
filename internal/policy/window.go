@@ -57,6 +57,12 @@ var weekdayNames = map[string]time.Weekday{
 // The accepted forms are a day specification followed by a time range, or a bare time range meaning
 // every day. The day specification may be a list, a range, or one of the keywords daily, any and *.
 // An empty string means no window, which is to say always open.
+//
+// A range whose end is not after its start crosses midnight and runs into the next day: "Sat
+// 22:00-02:00" is four hours ending on Sunday morning. The degenerate case of that rule — an end equal
+// to its start — would be a full 24 hours, which is what somebody writing "00:00-00:00" means and is
+// never what somebody writing "03:00-03:00" means, so only the first is accepted. The second is a
+// parse error naming both ways to say what they meant.
 func ParseWindow(spec string, loc *time.Location) (Window, error) {
 	if loc == nil {
 		loc = time.UTC
@@ -84,6 +90,23 @@ func ParseWindow(spec string, loc *time.Location) (Window, error) {
 	start, end, err := parseTimeRange(timespec)
 	if err != nil {
 		return Window{}, err
+	}
+
+	// An equal start and end is the whole day, and that is only ever what somebody meant when they
+	// wrote midnight to midnight. `daily 00:00-00:00` is the spelling this package documents for an
+	// all-day window an operator wrote on purpose — packaging/policy.toml, the test fleet and
+	// decide_test all use it, and it exists because reboot = "window" refuses an empty window.
+	//
+	// `Sun 03:00-03:00` reaches the same arithmetic and nobody has ever meant it. It is a typo for a
+	// narrow Sunday slot, and what it silently produces is a window open from Sunday 03:00 until
+	// Monday 03:00 — which, with reboot = "window", is a whole day in which a validly signed reboot
+	// may execute. So the two are separated here rather than left to arithmetic that cannot tell them
+	// apart.
+	if start == end && start != 0 {
+		return Window{}, fmt.Errorf(
+			"%q opens and closes at the same time, which would mean a full 24 hours rather than the "+
+				"narrow slot it reads as. Write the closing time you meant, or \"00:00-00:00\" for a "+
+				"window that is open all day", timespec)
 	}
 
 	length := end - start

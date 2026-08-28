@@ -75,6 +75,14 @@ to misconfigure.
   certificate atomically (write to a temporary file in the same directory, `fsync`, `rename`) and MUST
   keep using the old pair until the new one is durably on disk.
 - The private key never leaves the host. Enrolment and renewal both send a CSR.
+- **A successful renewal retires the certificate that asked for it, after a 48-hour overlap.** Past that
+  the old certificate is refused with `401` and the code `superseded`. The overlap outlasts the agent's
+  renewal jitter, so a host interrupted between obtaining a certificate and promoting it can still come
+  back on the old pair; what it does not outlast is a copy of `agent.pem` somebody took, which without
+  this would have kept working until the ninetieth day and made key rotation worth almost nothing.
+- **A host may hold a small number of valid certificates at once**, and renewal is rate-limited per
+  host. Both are `429`: a certificate lasts ninety days and is renewed at sixty, so an agent never
+  approaches either bound, and a host that does is looping.
 
 ## 3. `POST /agent/v1/enroll`
 
@@ -430,11 +438,22 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
      signature** and MUST NOT be accepted as one;
    - `destructive` — signature by a key present in this host's `/etc/farrier/trusted-signers`
      required. A signature by the online key is **not** acceptable for this class.
-6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **check the
-   nonce** against the persisted nonce store and refuse replays. In that order: recording the nonce
-   first would let anyone who can reach the agent burn one with a garbage signature, and the store is
-   persistent, so the genuine job bearing that nonce would be refused as a replay for as long as its
-   signature remained valid.
+6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **refuse a
+   signed privileged job whose `notBefore` or `notAfter` is absent**, then **check the nonce** against
+   the persisted nonce store and refuse replays.
+
+   The order is load-bearing twice over. Recording the nonce first would let anyone who can reach the
+   agent burn one with a garbage signature, and the store is persistent, so the genuine job bearing
+   that nonce would be refused as a replay for as long as its signature remained valid. And the window
+   requirement comes after the signature so that an unsigned job is refused for being unsigned, which
+   is the message an operator can act on.
+
+   A missing edge is not a wide window; it is no window. Three defences degrade to "no bound" on it and
+   they degrade together: the check in step 4 admits everything, step 7's age limit falls back to
+   measuring from the unsigned `issuedAt`, and the nonce record's lifetime stops coming from the
+   signature. A control plane that had been taken over could then redeliver one such job for ever, and
+   it would be validly signed every time. Signers MUST set both edges; agents MUST NOT assume they did,
+   and refuse with `refused_unsigned`.
 7. **Check job age** against the local policy's `limits.max_job_age_seconds`.
    `issuedAt` is **not** covered by the signature (see [§8](#8-canonical-json)), so for a signed job the
    age is measured from `notBefore`, which is. A control plane that has been taken over could otherwise
@@ -545,6 +564,16 @@ Response `200`:
 The server MUST issue only for the host identity in the presenting certificate. It MUST NOT honour a
 CSR whose subject names a different host.
 
+Response `429` when the host has renewed too often, or already holds the maximum number of valid
+certificates. Both carry `Retry-After`; the second clears as superseded certificates pass their overlap.
+
+The server records the new certificate and retires the presenting one **in one transaction**, and does
+not answer `200` unless both landed. A host that receives an error therefore keeps its current pair and
+retries, which is the only safe reading: acknowledging a renewal whose retirement failed would leave a
+certificate valid to its natural expiry that no later renewal could reach, because a renewal retires the
+fingerprint it presents and that is by then the replacement. An agent MUST keep using its current pair
+until the new one is durably on disk ([§2.3](#23-certificates)).
+
 ## 8. Canonical JSON
 
 Signatures and digests are computed over a canonical encoding, so that two implementations produce
@@ -599,11 +628,11 @@ could not phone home would have made the fleet less safe by being installed.
 | Status | Where it is returned | Agent behaviour |
 | --- | --- | --- |
 | `400` | Any endpoint, for a body that does not parse | Log and drop. An unparseable request will not become parseable on a retry |
-| `401` | Any authenticated endpoint | Certificate rejected or revoked. Stop calling; log loudly. Do **not** re-enrol automatically — a host that re-enrols itself on `401` is a host an attacker can cause to re-enrol. Keep patching from local policy |
+| `401` | Any authenticated endpoint | Certificate rejected, revoked, or superseded by a renewal whose overlap has passed. Stop calling; log loudly. Do **not** re-enrol automatically — a host that re-enrols itself on `401` is a host an attacker can cause to re-enrol. Keep patching from local policy |
 | `404` | `POST /jobs/{id}/result` | The job does not exist, or belongs to another host. Drop the result |
 | `409` | `POST /enroll` | A host with this `machineIdHash` is already enrolled. Stop and require operator action: revoking or deleting the existing host releases the machine |
 | `413` | `POST /heartbeat`, `POST /jobs/{id}/result` | Body too large. Truncate further, set the affected section's truncated flag, retry once, then drop |
-| `429` | `POST /enroll` | Honour `Retry-After`, then full-jitter backoff. Only enrolment is rate limited: it is the one endpoint reachable without a client certificate, and throttling an authenticated fleet is a good way to break it during the incident when every host reconnects at once |
+| `429` | `POST /enroll`, `POST /renew` | Honour `Retry-After`, then full-jitter backoff. Those two only: enrolment is the endpoint reachable without a client certificate, and renewal is the authenticated one whose per-caller cost is unbounded — a CA signature and a row in a shared table. Throttling the rest of an authenticated fleet is a good way to break it during the incident when every host reconnects at once |
 | `5xx` | Any endpoint | Full-jitter backoff, retry indefinitely |
 
 A server MUST distinguish `400` from `413`. Returning one status for both makes a malformed body look

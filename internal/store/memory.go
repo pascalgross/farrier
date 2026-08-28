@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -205,6 +206,9 @@ func NewMemory() *Memory {
 // Migrate does nothing; an empty map is already up to date, and NewMemory seeded the default tenant.
 func (m *Memory) Migrate(_ context.Context) error { return nil }
 
+// Ping always succeeds; the store is this process's memory, so it is reachable whenever this is.
+func (m *Memory) Ping(_ context.Context) error { return nil }
+
 // Close does nothing; there is nothing to release.
 func (m *Memory) Close() error { return nil }
 
@@ -248,7 +252,15 @@ func normaliseApprovalMode(mode ApprovalMode) (ApprovalMode, error) {
 // A repeated id or a slug somebody else already holds is ErrConflict, matching the primary key and the
 // UNIQUE constraint on slug. A zero CreatedAt is filled in, as the column's default does, so that
 // ListTenants has something to order by.
+//
+// An empty id is refused here too, matching both the PostgreSQL store's own guard and the
+// tenants_id_nonempty constraint migration 0011 adds. The reason is a PostgreSQL one and does not
+// apply to a map — but a store that accepted a value the other refuses would let a test pass here and
+// fail there, which is the one thing an in-memory stand-in must not do.
 func (m *Memory) CreateTenant(_ context.Context, t Tenant) error {
+	if t.ID == "" {
+		return errors.New("store: a tenant needs an id")
+	}
 	mode, err := normaliseApprovalMode(t.ApprovalMode)
 	if err != nil {
 		return err
@@ -532,6 +544,25 @@ func (m *Memory) Enqueue(tenant TenantID, hostID string, job protocol.Job) {
 	// fails on the assertion that follows rather than here, with a better message than this could
 	// produce.
 	_ = m.In(tenant).CreateJob(context.Background(), NewJob{Job: job, HostID: hostID})
+}
+
+// CertificateFingerprints returns one host's certificates that carry a supersession, for tests.
+//
+// Only the superseded ones, because the caller is a test moving a supersession into the past rather
+// than enumerating a host's credentials — a helper that returned every fingerprint would invite a test
+// to retire a certificate no renewal had replaced, which is a state the server never produces.
+func (m *Memory) CertificateFingerprints(tenant TenantID, hostID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var found []string
+	for fingerprint, cert := range m.certs {
+		if cert.TenantID == tenant && cert.HostID == hostID && !cert.SupersededAt.IsZero() {
+			found = append(found, fingerprint)
+		}
+	}
+	sort.Strings(found)
+	return found
 }
 
 // Result returns a recorded result, for tests.
@@ -882,6 +913,100 @@ func (s *scopedMemory) AddCertificate(_ context.Context, c Certificate) error {
 	}
 	m.certs[cert.Fingerprint] = cert
 	return nil
+}
+
+// SupersedeCertificate sets when a renewed-away certificate stops being accepted.
+//
+// The earlier time wins, matching the PostgreSQL LEAST: a host that renews twice in quick succession
+// must not be able to push back the moment the credential it already replaced stops working.
+func (s *scopedMemory) SupersedeCertificate(_ context.Context, fingerprint string, at time.Time) error {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cert, ok := m.certs[fingerprint]
+	if !ok || cert.TenantID != s.tenant {
+		return nil
+	}
+	if cert.SupersededAt.IsZero() || at.Before(cert.SupersededAt) {
+		cert.SupersededAt = at
+		m.certs[fingerprint] = cert
+	}
+	return nil
+}
+
+// RenewCertificate admits a replacement certificate and retires the one that asked for it.
+//
+// One lock held across the count and both writes, which is this store's whole answer to the question
+// the PostgreSQL implementation answers with a row lock: nothing else runs in between. A store that
+// released the lock between the count and the insert would let a test pass here and the shipped store
+// exceed its own cap under the burst the renewal limiter permits.
+func (s *scopedMemory) RenewCertificate(_ context.Context, r Renewal) error {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := s.host(r.Replacement.HostID); !ok {
+		return ErrNotFound
+	}
+
+	live := 0
+	for _, cert := range m.certs {
+		switch {
+		case cert.TenantID != s.tenant || cert.HostID != r.Replacement.HostID:
+		case cert.Revoked:
+		case !cert.NotAfter.After(r.Now):
+		case !cert.SupersededAt.IsZero() && !cert.SupersededAt.After(r.Now):
+		default:
+			live++
+		}
+	}
+	if live >= r.MaxLive {
+		return ErrTooManyCertificates
+	}
+
+	replacement, err := s.stampCertificate(r.Replacement)
+	if err != nil {
+		return err
+	}
+	if _, exists := m.certs[replacement.Fingerprint]; !exists {
+		m.certs[replacement.Fingerprint] = replacement
+	}
+
+	// The earlier time wins, so a host renewing twice in quick succession cannot push back the moment
+	// the credential it already replaced stops working.
+	if presented, ok := m.certs[r.Presented]; ok && presented.TenantID == s.tenant {
+		if presented.SupersededAt.IsZero() || r.SupersedeAt.Before(presented.SupersededAt) {
+			presented.SupersededAt = r.SupersedeAt
+			m.certs[r.Presented] = presented
+		}
+	}
+	return nil
+}
+
+// CountLiveCertificates returns how many of a host's certificates could still authenticate.
+//
+// The three conditions are written out rather than shared with a helper, and they are the same three
+// the PostgreSQL query applies and the same three requireAgent applies. A count that disagreed with the
+// middleware would give a cap that refused a host holding one working certificate, or admitted one
+// holding twenty.
+func (s *scopedMemory) CountLiveCertificates(_ context.Context, hostID string, now time.Time) (int, error) {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	live := 0
+	for _, cert := range m.certs {
+		switch {
+		case cert.TenantID != s.tenant || cert.HostID != hostID:
+		case cert.Revoked:
+		case !cert.NotAfter.After(now):
+		case !cert.SupersededAt.IsZero() && !cert.SupersededAt.After(now):
+		default:
+			live++
+		}
+	}
+	return live, nil
 }
 
 // RevokeHost marks a host and all its certificates as revoked.

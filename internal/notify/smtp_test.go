@@ -26,7 +26,7 @@ import (
 // the whole of what an operator sees before deciding whether to open the mail, and a fixture reading
 // "test" would let a subject that said "test" pass.
 var testEvent = Event{
-	Kind:     string(KindUpdatesPending),
+	Kind:     KindUpdatesPending,
 	HostID:   "01JHOST",
 	Hostname: "web-01",
 	Summary:  "web-01: 3 security updates pending, 14 days old",
@@ -93,7 +93,7 @@ func TestTheSubjectLineIsTheEventsSummary(t *testing.T) {
 	// And the body says the rest, because a subject is one line and an incident is not: the kind, the
 	// host under both its names, and the detail fields the rule carried.
 	body := string(message[len(block)+4:])
-	for _, want := range []string{testEvent.Summary, testEvent.Kind, "web-01", "01JHOST", "days: 14"} {
+	for _, want := range []string{testEvent.Summary, string(testEvent.Kind), "web-01", "01JHOST", "days: 14"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the body does not carry %q:\n%s", want, body)
 		}
@@ -114,7 +114,7 @@ func TestTheSubjectLineIsTheEventsSummary(t *testing.T) {
 // substitution is asserted directly below rather than only through its effect here.
 func TestASummaryCannotInjectMailHeaders(t *testing.T) {
 	hostile := Event{
-		Kind:     string(KindJobFailed),
+		Kind:     KindJobFailed,
 		Hostname: "web-01",
 		Summary: "web-01: unattended-upgrade failed\r\nBcc: attacker@example.net\r\n" +
 			"\r\nPay this invoice immediately.",
@@ -176,7 +176,7 @@ func TestSanitizeHeaderReplacesEveryLineBreak(t *testing.T) {
 func TestANonASCIISubjectIsEncodedRatherThanSentRaw(t *testing.T) {
 	summary := "wörter-01: Dienst fehlgeschlagen — Größe überschritten"
 	message := renderMail("farrier@example.org", []string{"oncall@example.org"},
-		Event{Kind: string(KindServiceFailed), Summary: summary, At: testEvent.At})
+		Event{Kind: KindServiceFailed, Summary: summary, At: testEvent.At})
 	block := headerBlock(t, message)
 
 	subject, ok := headerNamed(block, "Subject")

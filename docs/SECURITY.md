@@ -292,6 +292,19 @@ authenticated by the current certificate.
 stops being able to talk to the control plane on its next request, with no distribution delay and no
 stapling infrastructure.
 
+The same lookup retires a certificate a renewal has replaced. The agent generates a fresh key each time
+it renews, and that was worth almost nothing while the certificate it rotated away from stayed valid to
+its ninetieth day: somebody who read `agent.pem` on day ten kept a working authentication path for
+eighty more, and could spend the renewals themselves to extend it indefinitely. A renewal now stamps the
+presenting certificate with the moment it stops being accepted, 48 hours out — long enough that a host
+interrupted between obtaining a certificate and promoting it can come back on the old pair, and short
+enough that a copied credential is worth two days rather than three months. Renewal is also rate-limited
+per host and a host may hold only a few valid certificates at once, because a caller who can mint rows
+in a table every tenant shares, and a CA signature with each, should not be able to do so without bound.
+The cap and both writes are one transaction under a lock on the host: counting and then inserting
+separately is check-then-act, and the burst the limiter permits is exactly the concurrency that reaches
+it.
+
 Revoking a host also releases its machine — the salted `/etc/machine-id` hash a host claims at
 enrolment — so the same physical machine can enrol again under a new identity. The revoked row and its
 history stay. Without that release, any host row that outlived its certificate would wedge the machine
@@ -304,6 +317,18 @@ leaves a matching pair on disk rather than half of a new one.
 The CA private key is the control plane's most sensitive secret. Compromising it lets an attacker
 impersonate *hosts to the server* — it does **not** let them run code on a host, because the agent
 authorises jobs by intent class and signature, not by who asked.
+
+**The transport floor is TLS 1.2 with AEAD suites only.** Both numbers are stated once, in
+`internal/protocol`, and read by the listener and by the agent's client, so the two ends of a
+connection cannot be hardened apart. TLS 1.3 is preferred and needs nothing said about it: its suites
+are not negotiable. What is configured is the 1.2 fallback, where Go's default selection would
+otherwise include ECDHE with AES-CBC and a SHA-1 HMAC — the encrypt-then-MAC construction a decade of
+padding-oracle results have been about. The list here is forward-secret and AEAD only.
+
+The floor is 1.2 rather than 1.3 because of the listener rather than the protocol: one port carries
+enrolling agents, enrolled agents and an operator's browser, and only the first two are built from this
+repository. Nothing rests on the difference. A downgrade cannot forge a client certificate the
+fingerprint lookup accepts, which is what actually authenticates an agent.
 
 ### 4.3 Clock skew
 
@@ -445,7 +470,17 @@ Three layers, and the order matters, because only the last of them is a rule rat
    becomes known: the certificate on an agent request and the enrolment token from a machine that is
    not yet a host. Rather than exempting those two tables, their policies admit exactly one row — the
    row whose key the caller can already name, through a second session setting. Naming a SHA-256 you
-   already hold is not an enumeration path.
+   already hold is not an enumeration path. The sign-in path added two more of the same shape: an
+   address on a form, and an account id read out of a session.
+
+   **That exemption is read-only, and never appears in a `WITH CHECK`.** The reason is the whole reason
+   it is narrow at all. A resolve-key transaction is precisely one where no tenant is set, so in a write
+   check the tenant half of the predicate is NULL and the key half becomes the entire rule: a writer
+   could then place a row in *any* fleet, provided its key matched the one they named. One policy
+   carried the disjunct on both halves; migration 0011 removed it, and
+   `TestGuaranteeTheResolveKeyExemptionIsReadOnly` sweeps `pg_policies` so that no future one can
+   reintroduce it — the database's own account of what is in force, rather than the migration files,
+   which are what somebody meant to put there.
 
 Composite foreign keys carry the tenant alongside every reference, so a row claiming one tenant while
 pointing at another's host is refused by the database rather than noticed in review.
@@ -476,9 +511,16 @@ platform administrator able to authenticate as any customer, which is precisely 
 exists to keep. This is why a fleet's accounts are created with `farrier-server accounts`, on the
 machine, and by no route: see [§4.5](#45-who-the-operator-is).
 
-The interface it reaches is one screen: the fleets, and their names, approval modes and webhooks. There
-is no host list on it, no job list and no way to reach one, because there is no route behind it that
-would answer — which is the same statement as the paragraph above rather than a second one. `whoami` is
+The interface it reaches is one screen: the fleets, their names, approval modes and webhooks, and the
+one destructive control in the whole application — retiring a fleet, which requires its slug to be typed
+back. That bar is not decoration. It is the only action in the interface that destroys anything, a
+dialog with a Yes in it is a dialog people click through, and typing the name is the smallest bar that
+requires having read which fleet this is. What it removes is in [§5.4](#54-what-deleting-a-tenant-does-not-do),
+and what it does not reach is every machine.
+
+There is no host list on the screen, no job list and no way to reach one, because there is no route
+behind it that would answer — which is the same statement as the paragraph above rather than a second
+one. `whoami` is
 the single route that answers both credentials, and it hands a platform credential no tenant at all;
 it exists so the interface can say *what this credential is for* instead of rendering an empty console
 to somebody whose account administers the installation rather than a fleet in it. The one other route
@@ -553,6 +595,31 @@ A helper also refuses an intent it does not serve. systemd routes a connection t
 but the request arriving on it still names an intent, and nothing about the socket would stop a
 compromised agent from sending `host.reboot` to the one that restarts units.
 
+### What the root boundary does not check
+
+**No helper verifies the offline signature.** The request crossing the socket carries a job id, an
+intent, a parameter object and an issue time, and nothing else — no signature, no nonce, no validity
+window. `verifyOfflineSignature` runs in exactly one place, the unprivileged agent process, and this
+section says so rather than leaving it to be discovered.
+
+That is a decision and not an oversight, and it follows from [§2.2](#22-local-policy-sovereignty). What
+survives a compromised agent is *policy*, not the signature: an attacker with code execution as
+`farrier` is in the `farrier` group, so they can reach the sockets and invoke any routed intent without
+one — and the helper still performs `min(request, policy)` against the root-owned file it read itself.
+A host whose policy forbids reboot does not reboot, whoever is asking and whatever they claim to hold.
+
+Moving the check into the helper would not close that. The signed payload binds a host id, and the
+host id lives in `/var/lib/farrier`, which the agent can write; a helper verifying a signature would be
+verifying it against an identity the attacker chose. It would also require `privsep.Request` to grow
+four fields, which is the property in point 2 above — a caller names an intent and never anything else
+— given up for a check that does not hold. `TestGuaranteeARequestCannotNameAProgram` asserts the field
+set, and would fail.
+
+So the offline signature is what stands between a *taken-over control plane* and a destructive
+operation, which is the adversary [§1](#1-the-guarantee) names. Local policy is what stands between a
+*taken-over agent* and one. They are two controls against two adversaries, and neither is the other's
+backstop.
+
 The helper units themselves are **not** sandboxed, and that is deliberate rather than an omission: a
 program whose job is to install packages cannot be confined against writing to `/usr` and `/etc`. What
 bounds them is the root-owned policy file and the closed catalogue, not a systemd directive.
@@ -614,14 +681,24 @@ rather than continuing as though something had been applied. Every one of these 
 
 1. Explicit `--bootstrap NAME` on that specific invocation. Never implicit, never a server default,
    never a group setting.
-2. The full text is printed to the terminal, written to the journal, and recorded in
+2. The full text is printed to the terminal and recorded in
    `/var/lib/farrier/bootstrap-applied.json` **before** execution. The record is fsynced — file and
    directory — before anything runs, because it is the only thing that survives a template that
    crashes the machine halfway, and "what was attempted" is the question an incident asks.
+
+   The **journal gets the template's name, version, signer, length and SHA-256, and not its body.** A
+   template legitimately carries credentials — a break-glass account's hashed password, a static deploy
+   key, the shapes `provision.Warnings` flags — and journald keeps a structured, indexed, root-readable
+   copy for as long as the journal is retained, on every host enrolled from that template. The fsynced
+   record is the verbatim copy this guardrail is about; the digest is what lets an operator prove the
+   two are the same document without the journal holding the second.
 3. It is signed by a key already present in that host's `trusted-signers`.
 4. It runs exactly once, enforced by an on-disk interlock — which is the record itself, one file, so
    the two cannot disagree. A crash between "decided to apply" and "applied" refuses a second attempt
-   rather than permitting one; re-enrolling a bootstrapped host does not re-apply.
+   rather than permitting one; re-enrolling a bootstrapped host does not re-apply. The record is
+   created with `link(2)`, which fails when the file exists, so two concurrent enrolments sharing a
+   state directory produce one application and one refusal rather than two applications — a rename
+   would have let the second silently replace the first's record.
 5. **cloud-init does the applying.** Farrier writes the verified body into cloud-init's NoCloud seed
    directory under a fresh instance-id and runs cloud-init's own stages with argument vectors fixed in
    the agent; no byte of a template ever reaches a command line. Farrier never ships a hand-written
@@ -641,9 +718,10 @@ Two honest limits on guardrail 2. The record is written by `farrier enroll`, whi
 lives in a directory the unprivileged `farrier` user owns — so it defends the audit trail against the
 adversary [§1](#1-the-guarantee) is about, the control plane, and not against local code running as the
 agent, which [§2.2](#22-local-policy-sovereignty) already assumes may be compromised and which is above
-this file in the trust hierarchy. And "written to the journal" means written to standard error, which
-systemd routes to the journal when enrolment is run from a unit; an operator running it by hand sees it
-on their terminal, which is where guardrail 2 wanted it anyway.
+this file in the trust hierarchy. And the terminal copy is standard output, which systemd also routes to
+the journal when enrolment is run from a unit — so a host enrolled by a unit rather than by a person
+still has the body in its journal, unstructured. An operator running `farrier enroll` by hand, which is
+what guardrail 2 is written for, sees it on their terminal and nowhere else.
 
 The chicken-and-egg problem is that `trusted-signers` is empty on a fresh install. It is solved by
 establishing the anchor from a local, administrator-chosen file **before** anything is fetched:
@@ -722,6 +800,21 @@ control plane whose heartbeats time out.
 Scoping is the same as everywhere else. An event carries its tenant, reaches that tenant's endpoint and
 that tenant's tabs, and nothing else; the stream is authorised exactly like any other read of
 control-plane state ([§5](#5-tenants)).
+
+**A webhook is https, is not redirected, and is not link-local.** An event carries hostnames, job
+summaries and the principal of whoever queued the work, which is exactly the reasoning that makes the
+mail sink refuse a relay offering no STARTTLS — so the same data is not posted in cleartext either. The
+scheme is refused where a webhook is configured, so an operator learns of the mistake in the second it
+takes to read the response, and again in the sink, because a row written before this rule existed is
+the one that would still be posting. A redirect is refused rather than followed: the sink reads only
+the status code, so a redirected POST is a destination nobody chose and an outcome nobody sees. And the
+address the connection is actually made to is checked at the socket rather than in the URL, because a
+name resolves at dial time and can resolve differently on the next attempt.
+
+The destination rule is link-local only — `169.254.0.0/16` and `fe80::/10`, where the cloud metadata
+services live — and deliberately not the strictest available. Loopback and private ranges stay
+reachable, because a self-hosted control plane posting to a chat relay on its own network is the
+ordinary deployment, and breaking it would buy nothing the paragraph above has not already bought.
 
 A rule that fires across many hosts at once collapses into a **digest**, because three hundred identical
 pages during a partition are how the one different page gets missed. The collapse is a property of the

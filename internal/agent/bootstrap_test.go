@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -8,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pascalgross/farrier/internal/canonical"
@@ -412,5 +416,100 @@ func TestGuaranteeTheSeedCannotBeInjectedThroughTheHostID(t *testing.T) {
 		if protocol.ValidHostID(bad) {
 			t.Errorf("%q was accepted as a host id", bad)
 		}
+	}
+}
+
+// TestGuaranteeTwoConcurrentEnrolmentsApplyOnce closes the check-then-act gap in the interlock.
+//
+// checkBootstrapInterlock reads the record early — before the single-use token is spent, so an operator
+// gets a clear refusal rather than a phantom host — and applyBootstrap writes it late. On its own that
+// is check-then-act: two `farrier enroll --bootstrap X` processes sharing a state directory both read
+// "no record", both pass, and cloud-init runs twice on one machine. It is an unusual configuration and
+// it is reachable from an ordinary automation script.
+//
+// The record is created with link(2), which fails when the file exists, so exactly one of them proceeds.
+// A rename would have made the loser's record silently replace the winner's, leaving nothing on disk to
+// say the template had been applied twice — which is the lie the record exists to make impossible.
+//
+// Both applications are counted rather than asserting on errors alone: "one error" would also be what a
+// version that applied twice and failed once produced.
+func TestGuaranteeTwoConcurrentEnrolmentsApplyOnce(t *testing.T) {
+	stateDir := t.TempDir()
+
+	const racers = 8
+	var applied atomic.Int32
+	var refused atomic.Int32
+
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	for i := range racers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			opts := EnrollOptions{
+				StateDir: stateDir,
+				seedDir:  t.TempDir(),
+				applyUserData: func(_ context.Context) error {
+					applied.Add(1)
+					return nil
+				},
+			}
+			start.Wait()
+			if err := applyBootstrap(context.Background(), opts, testBootstrap, testKey,
+				"01JHOST"+strconv.Itoa(i)); err != nil {
+				refused.Add(1)
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	if got := applied.Load(); got != 1 {
+		t.Errorf("cloud-init was driven %d times by %d concurrent enrolments, want exactly 1", got, racers)
+	}
+	if got := refused.Load(); got != racers-1 {
+		t.Errorf("%d of %d concurrent enrolments were refused, want %d", got, racers, racers-1)
+	}
+}
+
+// TestGuaranteeTheJournalGetsADigestAndNotTheBody is the other side of guardrail 2's display.
+//
+// A template legitimately carries credentials — a break-glass account's hashed password, a static
+// deploy key, the shapes provision.Warnings flags — and slog wrote the whole body into journald,
+// structured and indexed, on every host enrolled from that template, where it persists for as long as
+// the journal is retained. internal/provision's own doc says rendered material is a credential and is
+// never written to a log line; this is the line that made that untrue.
+//
+// What the journal keeps instead has to be enough to answer "which template ran here", so the digest is
+// asserted alongside the absence: an entry that identified nothing would be a different failure with
+// the same test passing. The verbatim copy is the fsynced record, which the test above covers.
+func TestGuaranteeTheJournalGetsADigestAndNotTheBody(t *testing.T) {
+	const secret = "hashed_passwd: $6$rounds=4096$SUPERSECRETHASHVALUE"
+	body := "#cloud-config\nusers:\n  - name: breakglass\n    " + secret + "\n"
+	signed, anchor := signTemplate(t, protocol.Bootstrap{Name: "standard-server", Body: body}, "ops-laptop")
+
+	var journal bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&journal, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	stateDir := t.TempDir()
+	captureStdout(t, func() {
+		if _, err := verifyBootstrap(stateDir, anchor, signed); err != nil {
+			t.Errorf("verifying: %v", err)
+		}
+	})
+
+	logged := journal.String()
+	if strings.Contains(logged, secret) || strings.Contains(logged, "breakglass") {
+		t.Errorf("the template body reached the journal:\n%s", logged)
+	}
+	if !strings.Contains(logged, canonical.DigestBytes([]byte(body))) {
+		t.Errorf("the journal entry carries no digest, so it identifies no particular template:\n%s",
+			logged)
+	}
+	if !strings.Contains(logged, "standard-server") {
+		t.Errorf("the journal entry does not name the template:\n%s", logged)
 	}
 }

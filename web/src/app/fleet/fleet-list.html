@@ -27,17 +27,14 @@
       </p>
     </header>
 
+    <farrier-enrol-panel class="block mb-6" />
+
     @if (hosts().length === 0) {
       <mat-card class="max-w-2xl">
-        <mat-card-header>
-          <mat-card-title>No hosts yet</mat-card-title>
-        </mat-card-header>
-        <mat-card-content class="!pt-4 flex flex-col gap-3 text-sm">
-          <p class="m-0">Create an enrolment token, then run this on the host:</p>
-          <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 overflow-x-auto"><code>sudo farrier enroll --server {{ '' }}https://this-control-plane --token &lt;TOKEN&gt;</code></pre>
-          <p class="m-0 opacity-80">
-            The token is single-use and time-limited. Only its hash is stored, so a database dump does
-            not let its holder enrol hosts.
+        <mat-card-content class="!pt-6 text-sm opacity-80">
+          <p class="m-0">
+            No hosts yet. Open <em>Add a host</em> above: it mints a token and gives you the three
+            commands to run on the machine.
           </p>
         </mat-card-content>
       </mat-card>

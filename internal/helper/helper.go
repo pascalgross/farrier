@@ -10,6 +10,26 @@
 // helper. That earlier check exists to save a round trip and to produce a good error message; this one
 // is the check the guarantee depends on, because it runs as root against the root-owned file and does
 // not trust its caller. Duplicating it is the entire point.
+//
+// # What this package deliberately does not check
+//
+// No helper verifies a job's offline signature, and nothing crossing the socket carries one. That is a
+// decision, written down here and in docs/SECURITY.md §6 so it is a reviewed one rather than a gap
+// somebody finds.
+//
+// The reason is that the two controls answer two different adversaries. The signature is what stands
+// between a taken-over *control plane* and a destructive operation, and it is verified in the agent,
+// which is the process that receives the job. Local policy is what stands between a taken-over *agent*
+// and one, and it is enforced here. An attacker holding the agent's account is in the farrier group and
+// can therefore reach these sockets and invoke any routed intent with no signature at all — and still
+// cannot exceed the root-owned policy file, which is exactly what docs/SECURITY.md §2.2 claims and all
+// it claims.
+//
+// Verifying the signature here would not add to that. The signed payload binds a host id, and the host
+// id lives in /var/lib/farrier, which the agent can write; a helper checking a signature would be
+// checking it against an identity its attacker chose. It would also require privsep.Request to carry a
+// signature, a nonce and a window — giving up the property that a caller names an intent and never
+// anything else, which TestGuaranteeARequestCannotNameAProgram exists to hold.
 package helper
 
 import (

@@ -98,6 +98,22 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 	}, nil
 }
 
+// Ping reports whether the database is reachable, and reads nothing.
+//
+// pgx's own Ping rather than a hand-written `SELECT 1`, because it is the same round trip and it is
+// the one the pool understands: it takes a connection from the pool and returns it, so what this
+// answers is "a pooled connection can complete a statement", which is exactly the question the health
+// endpoint is asking on behalf of whatever restarts this process.
+//
+// It sets no tenant, and it does not need to. Every statement that touches tenant data goes through
+// In(tenant) and runs inside a transaction that has set one; this reaches no table at all.
+func (p *Postgres) Ping(ctx context.Context) error {
+	if err := p.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("store: pinging the database: %w", err)
+	}
+	return nil
+}
+
 // Close releases the pool and stops the listener.
 func (p *Postgres) Close() error {
 	select {
@@ -299,11 +315,12 @@ func (p *Postgres) LookupCertificate(ctx context.Context, fingerprint string) (C
 	err := p.withResolveKey(ctx, "looking up a certificate", fingerprint, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
 			SELECT fingerprint, host_id, tenant_id, serial, issued_at, not_after, revoked,
-			       COALESCE(revoked_at, 'epoch'::timestamptz)
+			       COALESCE(revoked_at, 'epoch'::timestamptz),
+			       COALESCE(superseded_at, 'epoch'::timestamptz)
 			  FROM certificates
 			 WHERE fingerprint = $1`, fingerprint,
 		).Scan(&c.Fingerprint, &c.HostID, &c.TenantID, &c.Serial, &c.IssuedAt, &c.NotAfter,
-			&c.Revoked, &c.RevokedAt)
+			&c.Revoked, &c.RevokedAt, &c.SupersededAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -314,6 +331,9 @@ func (p *Postgres) LookupCertificate(ctx context.Context, fingerprint string) (C
 	}
 	if c.RevokedAt.Unix() == 0 {
 		c.RevokedAt = time.Time{}
+	}
+	if c.SupersededAt.Unix() == 0 {
+		c.SupersededAt = time.Time{}
 	}
 	return c, nil
 }
@@ -763,6 +783,103 @@ func (s *scopedPostgres) AddCertificate(ctx context.Context, c Certificate) erro
 			c.Fingerprint, c.HostID, string(s.tenant), c.Serial, c.IssuedAt, c.NotAfter)
 		return wrap(err, "recording a certificate")
 	})
+}
+
+// SupersedeCertificate sets when a renewed-away certificate stops being accepted.
+//
+// COALESCE keeps the earliest time rather than the latest, which is what makes a second renewal unable
+// to extend the life of a credential the first one already replaced. Setting it on a certificate that
+// is not this tenant's does nothing, because the policy admits no such row — the WHERE clause is the
+// optimisation and the policy is the rule.
+func (s *scopedPostgres) SupersedeCertificate(ctx context.Context, fingerprint string, at time.Time) error {
+	return s.withTenant(ctx, "superseding a certificate", func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE certificates
+			   SET superseded_at = LEAST(COALESCE(superseded_at, $2::timestamptz), $2::timestamptz)
+			 WHERE fingerprint = $1 AND tenant_id = $3`,
+			fingerprint, at, string(s.tenant))
+		return wrap(err, "superseding a certificate")
+	})
+}
+
+// RenewCertificate admits a replacement certificate and retires the one that asked for it.
+//
+// The lock is a row lock on the host, taken first. It is the host that is being renewed, it is a row
+// that exists by construction — requireAgent loaded it to get here — and locking it serialises every
+// renewal for that host across every replica, which is what makes the count below a decision rather
+// than a guess. An advisory lock on a hash of the id would do the same thing and would add a number to
+// keep and a collision to reason about.
+//
+// The count and both writes are inside that lock and inside one transaction, so the outcomes are: the
+// cap refuses and nothing is written, or the replacement is recorded and the presented certificate is
+// retired together. There is no third state in which a host holds a credential the control plane has
+// forgotten to retire.
+func (s *scopedPostgres) RenewCertificate(ctx context.Context, r Renewal) error {
+	return s.withTenant(ctx, "renewing a certificate", func(tx pgx.Tx) error {
+		var locked string
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM hosts WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+			r.Replacement.HostID, string(s.tenant)).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return wrap(err, "locking the host to renew it")
+		}
+
+		var live int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM certificates
+			 WHERE host_id = $1 AND tenant_id = $2
+			   AND NOT revoked
+			   AND not_after > $3
+			   AND (superseded_at IS NULL OR superseded_at > $3)`,
+			r.Replacement.HostID, string(s.tenant), r.Now).Scan(&live); err != nil {
+			return wrap(err, "counting live certificates")
+		}
+		if live >= r.MaxLive {
+			return ErrTooManyCertificates
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO certificates (fingerprint, host_id, tenant_id, serial, issued_at, not_after)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (fingerprint) DO NOTHING`,
+			r.Replacement.Fingerprint, r.Replacement.HostID, string(s.tenant),
+			r.Replacement.Serial, r.Replacement.IssuedAt, r.Replacement.NotAfter); err != nil {
+			return wrap(err, "recording the replacement certificate")
+		}
+
+		// LEAST keeps the earlier time, so a host renewing twice in quick succession cannot push back
+		// the moment the credential it already replaced stops working.
+		if _, err := tx.Exec(ctx, `
+			UPDATE certificates
+			   SET superseded_at = LEAST(COALESCE(superseded_at, $2::timestamptz), $2::timestamptz)
+			 WHERE fingerprint = $1 AND tenant_id = $3`,
+			r.Presented, r.SupersedeAt, string(s.tenant)); err != nil {
+			return wrap(err, "retiring the presented certificate")
+		}
+		return nil
+	})
+}
+
+// CountLiveCertificates returns how many of a host's certificates could still authenticate.
+//
+// The three conditions are the three requireAgent applies, which is why they are written out here
+// rather than approximated: a count that disagreed with the middleware would produce a cap that either
+// refused a host with one working certificate or admitted one with twenty.
+func (s *scopedPostgres) CountLiveCertificates(ctx context.Context, hostID string, now time.Time) (int, error) {
+	var live int
+	err := s.withTenant(ctx, "counting live certificates", func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM certificates
+			 WHERE host_id = $1 AND tenant_id = $2
+			   AND NOT revoked
+			   AND not_after > $3
+			   AND (superseded_at IS NULL OR superseded_at > $3)`,
+			hostID, string(s.tenant), now).Scan(&live)
+	})
+	return live, err
 }
 
 // RevokeHost marks a host and all its certificates as revoked.

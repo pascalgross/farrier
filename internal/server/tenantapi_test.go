@@ -3,6 +3,7 @@ package server_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -249,5 +250,65 @@ func TestChangingAFleetsApprovalModeAppliesToTheNextJobAndNotTheLast(t *testing.
 	}
 	if view := jobViewOf(t, body); view["state"] != "queued" {
 		t.Errorf("a job created under approval mode none is in state %v, want queued", view["state"])
+	}
+}
+
+// TestRetiringAFleetRemovesItAndRejectsAWebhookNobodyShouldConfigure covers the two writes the fleets
+// screen makes and the API had no test for.
+//
+// Deletion was reachable and untested, which is the combination the interface has now made ordinary:
+// there is a control for it, so the route is what stands between a mistyped confirmation and a
+// customer's history. The webhook check is here rather than in internal/notify because this is where an
+// operator meets it — the sink's own refusal is the backstop for rows written before the rule.
+func TestRetiringAFleetRemovesItAndRejectsAWebhookNobodyShouldConfigure(t *testing.T) {
+	h := newHarness(t)
+
+	status, body := h.adminJSON(t, h.platformToken, http.MethodPost, "/api/v1/tenants", map[string]any{
+		"slug": "acme",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("creating a tenant returned %d: %s", status, body)
+	}
+	var created struct {
+		// ID is what the delete and patch routes name.
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decoding the tenant: %v", err)
+	}
+
+	// An http webhook is refused where it is configured, so an operator learns of it now rather than
+	// from an event that did not arrive.
+	if status, body := h.adminJSON(t, h.platformToken, http.MethodPatch,
+		"/api/v1/tenants/"+created.ID, map[string]any{
+			"webhookUrl": "http://hooks.example.org/acme",
+		}); status != http.StatusBadRequest {
+		t.Errorf("a plaintext webhook was accepted with %d: %s", status, body)
+	}
+	if status, body := h.adminJSON(t, h.platformToken, http.MethodPatch,
+		"/api/v1/tenants/"+created.ID, map[string]any{
+			"webhookUrl": "https://hooks.example.org/acme",
+		}); status != http.StatusOK {
+		t.Errorf("an https webhook was refused with %d: %s", status, body)
+	}
+
+	// The delete itself, and then the same delete again: the second must be a 404 rather than a second
+	// success, or "it worked" would be what a retirement of something already gone looks like.
+	if status, body := h.adminJSON(t, h.platformToken, http.MethodDelete,
+		"/api/v1/tenants/"+created.ID, nil); status != http.StatusNoContent && status != http.StatusOK {
+		t.Fatalf("retiring the fleet returned %d: %s", status, body)
+	}
+	if status, _ := h.adminJSON(t, h.platformToken, http.MethodDelete,
+		"/api/v1/tenants/"+created.ID, nil); status != http.StatusNotFound {
+		t.Errorf("retiring an already-retired fleet returned %d, want 404", status)
+	}
+
+	// And it is gone from the listing, which is what the screen reads.
+	status, body = h.adminJSON(t, h.platformToken, http.MethodGet, "/api/v1/tenants", nil)
+	if status != http.StatusOK {
+		t.Fatalf("listing tenants returned %d: %s", status, body)
+	}
+	if strings.Contains(string(body), created.ID) {
+		t.Errorf("the retired fleet is still listed: %s", body)
 	}
 }

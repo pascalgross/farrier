@@ -100,9 +100,24 @@ func applyBootstrap(ctx context.Context, opts EnrollOptions, b protocol.Bootstra
 	if err != nil {
 		return err
 	}
-	// WriteFileAtomic syncs the file and its directory: a rename is not durable until the directory
-	// entry is, and an interlock that a power cut could un-write is not an interlock.
-	if err := WriteFileAtomic(recordPath, encoded, 0o600); err != nil {
+	// Exclusive rather than atomic, and the difference is a second concurrent enrolment.
+	//
+	// checkBootstrapInterlock reads this file early and this writes it late, so on its own that is
+	// check-then-act: two `farrier enroll --bootstrap X` processes sharing a state directory can both
+	// read "no record", both pass, and both drive cloud-init — and a rename-based write would let the
+	// second silently replace the first's record, so nothing afterwards would say it had happened
+	// twice. link(2) fails with EEXIST instead, which turns the race into a refusal by the loser.
+	//
+	// Both calls stay: the early read is what gives an operator a clear refusal before anything is
+	// touched, and this is what makes "applied at most once" true rather than usually true.
+	//
+	// The file and its directory are fsynced, because a link is not durable until the directory entry
+	// is, and an interlock a power cut could un-write is not an interlock.
+	if err := WriteFileExclusive(recordPath, encoded, 0o600); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("agent: another enrolment recorded a bootstrap at %s first; this host "+
+				"applies a template at most once and nothing has executed here: %w", recordPath, err)
+		}
 		return fmt.Errorf("agent: recording the bootstrap before applying it: %w", err)
 	}
 	fmt.Printf("Recorded the template in %s; applying it via cloud-init now.\n", recordPath)

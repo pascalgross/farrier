@@ -54,13 +54,22 @@ services:
       # or misconfiguration on it can become one. The agent hostname is unaffected: it is a TCP router
       # and never sees an HTTP rule.
       #
-      # A higher priority than the router above, because both match this host and the longer rule does
-      # not win automatically once priorities are in play.
+      # Neither router sets a priority, and that is what makes this one win.
+      #
+      # Both match this hostname, so one has to outrank the other, and Traefik's default rank is the
+      # length of the rule. This router's rule is the other one's rule plus ` && PathPrefix(`/agent`)`,
+      # so it is strictly longer for every hostname there can ever be — which is a property of the two
+      # strings rather than a number somebody has to keep ahead of.
+      #
+      # It used to say `priority: "100"`, and that was a bug of exactly the shape this repository tries
+      # not to ship: plausible, quiet, and wrong only at the edge. A fixed priority does not stop the
+      # *other* router computing its own from its rule length, and a DNS name may be 253 characters, so
+      # a UI hostname of about ninety pushed `Host(`…`)` past 100 and the deny router silently stopped
+      # applying. Nothing would have looked broken; the belt-and-braces layer would just have been gone.
       traefik.http.routers.farrier-ui-no-agents.rule: Host(`${FARRIER_UI_HOSTNAME:?set FARRIER_UI_HOSTNAME in .env}`) && PathPrefix(`/agent`)
       traefik.http.routers.farrier-ui-no-agents.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
       traefik.http.routers.farrier-ui-no-agents.tls: "true"
       traefik.http.routers.farrier-ui-no-agents.tls.certresolver: ${FARRIER_CERT_RESOLVER:-letsencrypt}
-      traefik.http.routers.farrier-ui-no-agents.priority: "100"
       traefik.http.routers.farrier-ui-no-agents.service: farrier-ui
       traefik.http.routers.farrier-ui-no-agents.middlewares: farrier-no-agents
       # An allow-list of one address that is never the source of a proxied request. Traefik has no

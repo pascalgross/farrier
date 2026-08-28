@@ -11,6 +11,7 @@ import { RouterLink } from '@angular/router';
 import { catchError, of, startWith } from 'rxjs';
 
 import { Host } from '../core/api.models';
+import { EnrolPanel } from './enrol-panel';
 import { ApiService } from '../core/api.service';
 import { describeError } from '../core/errors';
 import { formatAge, formatDuration, formatOffset } from '../core/format';
@@ -33,6 +34,7 @@ type LoadState = 'loading' | 'loaded' | 'failed';
 @Component({
   selector: 'farrier-fleet-list',
   imports: [
+    EnrolPanel,
     MatButtonModule,
     MatCardModule,
     MatChipsModule,
