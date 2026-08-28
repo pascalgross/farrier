@@ -123,6 +123,12 @@ export class FleetsPage {
   /** The slug of the fleet created most recently, so the page can name its next step. */
   protected readonly created = signal('');
 
+  /** The fleet whose retirement is being confirmed, empty for none. */
+  protected readonly retiring = signal('');
+
+  /** The slug typed into the retirement confirmation. */
+  protected readonly retireConfirmation = signal('');
+
   /**
    * The sentence explaining the mode currently chosen on the new-fleet form.
    *
@@ -138,6 +144,19 @@ export class FleetsPage {
   protected readonly canCreate = computed(
     () => !this.busy() && SLUG_PATTERN.test(this.newSlug().trim()),
   );
+
+  /**
+   * Whether the retirement now being confirmed may proceed.
+   *
+   * The typed slug has to match the fleet being retired. This is the one control on the page that
+   * destroys something — hosts, certificates, tokens, jobs, results and accounts, permanently — and a
+   * dialog with a Yes in it is a dialog people click through. Typing the name is the smallest bar that
+   * requires having read which fleet this is.
+   */
+  protected readonly canRetire = computed(() => {
+    const target = this.fleets()?.find((fleet) => fleet.id === this.retiring());
+    return !this.busy() && target !== undefined && this.retireConfirmation().trim() === target.slug;
+  });
 
   /** Loads the fleets. */
   constructor() {
@@ -238,6 +257,47 @@ export class FleetsPage {
   /** The command that gives a fleet its first operator, which is the step this page cannot take. */
   protected accountCommand(slug: string): string {
     return `farrier-server accounts add --tenant ${slug} --email ops@example.org`;
+  }
+
+  /** Opens or closes the retirement confirmation for one fleet, clearing whatever was typed. */
+  protected askToRetire(fleet: Tenant): void {
+    this.retireConfirmation.set('');
+    this.actionError.set('');
+    this.retiring.update((held) => (held === fleet.id ? '' : fleet.id));
+  }
+
+  /**
+   * Retires a fleet, once its slug has been typed back.
+   *
+   * The guard is repeated here rather than left to the disabled button, because a disabled button is a
+   * statement about the interface and this is the one action on the page that cannot be undone.
+   *
+   * What it does not do is reach the machines. Their agents keep running, keep applying their own
+   * local policy, and are refused at the next request as an unknown certificate — which is the correct
+   * end state for a customer who has left, and is worth saying because "delete the fleet" sounds like
+   * it uninstalls something.
+   */
+  protected retire(fleet: Tenant): void {
+    if (!this.canRetire() || this.retiring() !== fleet.id) {
+      return;
+    }
+    this.busy.set(true);
+    this.actionError.set('');
+    this.api.deleteTenant(fleet.id).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.retiring.set('');
+        this.retireConfirmation.set('');
+        if (this.created() === fleet.slug) {
+          this.created.set('');
+        }
+        this.reload();
+      },
+      error: (err: unknown) => {
+        this.busy.set(false);
+        this.actionError.set(describeError(err));
+      },
+    });
   }
 }
 

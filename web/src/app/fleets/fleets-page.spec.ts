@@ -31,6 +31,9 @@ interface Recorded {
 
   /** The patches the page made, as (id, body) pairs. */
   patched: [string, unknown][];
+
+  /** The fleets the page asked to have deleted, by id. */
+  deleted: string[];
 }
 
 /** The page, and the record of what it asked the control plane to do. */
@@ -44,7 +47,7 @@ interface Rendered {
 
 /** Renders the page against one fixed answer, with the control plane stubbed out. */
 function render(fleets: Tenant[] | 'fails'): Rendered {
-  const recorded: Recorded = { created: [], patched: [] };
+  const recorded: Recorded = { created: [], patched: [], deleted: [] };
   TestBed.configureTestingModule({
     providers: [
       provideZonelessChangeDetection(),
@@ -62,6 +65,10 @@ function render(fleets: Tenant[] | 'fails'): Rendered {
           updateTenant: (id: string, request: unknown) => {
             recorded.patched.push([id, request]);
             return of(fleet({}));
+          },
+          deleteTenant: (id: string) => {
+            recorded.deleted.push(id);
+            return of(null);
           },
         } as unknown as ApiService,
       },
@@ -93,6 +100,18 @@ interface PageInternals {
 
   /** The slug being typed, which the form binds to. */
   newSlug: SlugSignal;
+
+  /** Opens one fleet's settings, which is where the retirement control lives. */
+  toggle(target: Tenant): void;
+
+  /** Opens or closes the retirement confirmation for one fleet. */
+  askToRetire(target: Tenant): void;
+
+  /** Retires a fleet, if the typed slug matches. */
+  retire(target: Tenant): void;
+
+  /** The slug typed into the retirement confirmation. */
+  retireConfirmation: SlugSignal;
 }
 
 describe('FleetsPage', () => {
@@ -155,5 +174,72 @@ describe('FleetsPage', () => {
     expect(shown).toContain('Acme Ltd');
     expect(shown).toContain('acme');
     expect(shown).toContain('A second person must release it');
+  });
+});
+
+describe('FleetsPage retirement', () => {
+  /** Opens one fleet's settings and its retirement confirmation, which is where the control lives. */
+  function openRetirement(rendered: Rendered, target: Tenant): PageInternals {
+    const page = rendered.fixture.componentInstance as unknown as PageInternals;
+    page.toggle(target);
+    page.askToRetire(target);
+    rendered.fixture.detectChanges();
+    return page;
+  }
+
+  /**
+   * The confirmation is the control, not a formality.
+   *
+   * This is the one action in the interface that destroys something — a fleet's hosts, certificates,
+   * tokens, jobs, results and accounts, permanently — and a dialog with a Yes in it is a dialog people
+   * click through. The bar is typing the slug, which is the smallest one that requires having read
+   * which fleet this is.
+   *
+   * The request is what is asserted rather than the button's disabled attribute: a guard that lived
+   * only in the template would be a statement about the interface, and this one has to hold when the
+   * method is called.
+   */
+  it('does not retire a fleet until its slug has been typed back', () => {
+    const target = fleet({ id: '01JACME', slug: 'acme' });
+    const rendered = render([target]);
+    const page = openRetirement(rendered, target);
+
+    page.retire(target);
+    expect(rendered.recorded.deleted).withContext('retired with nothing typed').toEqual([]);
+
+    page.retireConfirmation.set('acm');
+    rendered.fixture.detectChanges();
+    page.retire(target);
+    expect(rendered.recorded.deleted).withContext('retired on a partial slug').toEqual([]);
+
+    // The other fleet's slug must not do either, which is the mistake the bar exists to catch: two
+    // fleets open in two tabs, and the confirmation typed into the wrong one.
+    page.retireConfirmation.set('beta');
+    rendered.fixture.detectChanges();
+    page.retire(target);
+    expect(rendered.recorded.deleted).withContext("retired on another fleet's slug").toEqual([]);
+
+    page.retireConfirmation.set('acme');
+    rendered.fixture.detectChanges();
+    page.retire(target);
+    expect(rendered.recorded.deleted).toEqual(['01JACME']);
+  });
+
+  /**
+   * The page says what retirement does and what it does not reach.
+   *
+   * "Delete the fleet" sounds like it uninstalls something. It does not: nothing in Farrier reaches a
+   * machine, so those agents keep running on their own local policy and are refused at their next
+   * request. Somebody about to press this needs to know that before they press it rather than after,
+   * because the expectation it corrects is the one that makes the action sound reversible.
+   */
+  it('says that retiring a fleet reaches no machine', () => {
+    const target = fleet({ id: '01JACME', slug: 'acme' });
+    const rendered = render([target]);
+    openRetirement(rendered, target);
+
+    const rendered_text = text(rendered.fixture.nativeElement);
+    expect(rendered_text).toContain('reaches no machine');
+    expect(rendered_text).toContain('cannot be undone');
   });
 });

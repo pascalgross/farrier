@@ -508,9 +508,16 @@ platform administrator able to authenticate as any customer, which is precisely 
 exists to keep. This is why a fleet's accounts are created with `farrier-server accounts`, on the
 machine, and by no route: see [§4.5](#45-who-the-operator-is).
 
-The interface it reaches is one screen: the fleets, and their names, approval modes and webhooks. There
-is no host list on it, no job list and no way to reach one, because there is no route behind it that
-would answer — which is the same statement as the paragraph above rather than a second one. `whoami` is
+The interface it reaches is one screen: the fleets, their names, approval modes and webhooks, and the
+one destructive control in the whole application — retiring a fleet, which requires its slug to be typed
+back. That bar is not decoration. It is the only action in the interface that destroys anything, a
+dialog with a Yes in it is a dialog people click through, and typing the name is the smallest bar that
+requires having read which fleet this is. What it removes is in [§5.4](#54-what-deleting-a-tenant-does-not-do),
+and what it does not reach is every machine.
+
+There is no host list on the screen, no job list and no way to reach one, because there is no route
+behind it that would answer — which is the same statement as the paragraph above rather than a second
+one. `whoami` is
 the single route that answers both credentials, and it hands a platform credential no tenant at all;
 it exists so the interface can say *what this credential is for* instead of rendering an empty console
 to somebody whose account administers the installation rather than a fleet in it. The one other route
