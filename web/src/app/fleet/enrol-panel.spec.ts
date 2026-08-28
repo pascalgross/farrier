@@ -31,8 +31,8 @@ interface PanelInternals {
   /** Mints one enrolment token. */
   mint(): void;
 
-  /** Where the page is served from, which the CA command is built against. */
-  origin(): string;
+  /** The page's own address, which the CA command is built against. */
+  pageBase(): string;
 }
 
 /**
@@ -42,7 +42,10 @@ interface PanelInternals {
  * address is one property, and splitting it into two specs would let either half pass alone while the
  * panel said the same thing in both cases.
  */
-function render(details: EnrolmentInstructions, origin = 'https://farrier.example.org'): ComponentFixture<EnrolPanel> {
+function render(
+  details: EnrolmentInstructions,
+  pageBase = 'https://farrier.example.org/',
+): ComponentFixture<EnrolPanel> {
   TestBed.resetTestingModule();
   TestBed.configureTestingModule({
     providers: [
@@ -67,7 +70,7 @@ function render(details: EnrolmentInstructions, origin = 'https://farrier.exampl
   // The page's own address decides where the certificate is fetched from, and under Karma it is the
   // test runner's. Stubbed rather than asserted around, because the two-hostname and single-hostname
   // deployments differ in exactly this value and both have to be exercised.
-  panel.origin = () => origin;
+  panel.pageBase = () => pageBase;
   fixture.detectChanges();
   panel.load();
   fixture.detectChanges();
@@ -124,7 +127,7 @@ describe('EnrolPanel', () => {
    */
   it('warns when the certificate would be fetched from the name it authenticates', () => {
     const shared = text(
-      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org')
+      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org/')
         .nativeElement,
     );
     expect(shared).toContain('unable to get local issuer certificate');
@@ -144,7 +147,7 @@ describe('EnrolPanel', () => {
    */
   it('pairs an unverified fetch with a fingerprint check that fails closed', () => {
     const rendered = text(
-      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org')
+      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org/')
         .nativeElement,
     );
 
@@ -216,5 +219,58 @@ describe('EnrolPanel', () => {
     const rendered = text(render(instructions()).nativeElement);
     expect(rendered).toContain('/etc/farrier/server-ca.crt');
     expect(rendered).toContain('-o root -g root -m 0644');
+  });
+  /**
+   * A failed install is never reported as a fingerprint mismatch.
+   *
+   * `test && install || echo` reads correctly and is wrong: the `||` binds to the whole list, so a
+   * missing sudo or a full disk prints an attack that did not happen and then exits 0, leaving a
+   * script free to enrol against a certificate that was never installed. The two outcomes have to be
+   * distinguishable, and the install has to keep its own exit status.
+   */
+  it('separates a fingerprint mismatch from a failed installation', () => {
+    const command = text(
+      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org/')
+        .nativeElement,
+    );
+
+    expect(command).not.toContain('|| echo "FINGERPRINT MISMATCH');
+    expect(command).toContain('if [');
+    expect(command).toContain('else');
+  });
+
+  /**
+   * A path prefix or a port does not make a single-hostname deployment look like a two-hostname one.
+   *
+   * The agent URL is a full base URL and the page's is a document address, so comparing them as
+   * strings answered "can this fetch be verified?" wrongly whenever the deployment carried either —
+   * and wrongly in the unsafe direction, claiming verifiable when it was not. The command it then
+   * built dropped the prefix too. Both halves are asserted here because either alone would pass with
+   * the other still broken.
+   */
+  it('compares origins, and keeps the path a control plane is published under', () => {
+    const prefixed = text(
+      render(
+        instructions({ agentUrl: 'https://farrier.example.org/control' }),
+        'https://farrier.example.org/control/',
+      ).nativeElement,
+    );
+
+    expect(prefixed).toContain('unable to get local issuer certificate');
+    expect(prefixed).toContain('https://farrier.example.org/control/api/v1/ca.crt');
+  });
+
+  /**
+   * The verifiable branch keeps the prefix too, for a two-hostname deployment behind a path.
+   *
+   * The same bug in the other direction: an interface published under a path would have been handed a
+   * download URL at the bare origin, which is a 404 rather than a certificate.
+   */
+  it('keeps the interface path when the fetch can be verified', () => {
+    const rendered = text(
+      render(instructions(), 'https://farrier.example.org/control/').nativeElement,
+    );
+
+    expect(rendered).toContain('curl -fsSL https://farrier.example.org/control/api/v1/ca.crt');
   });
 });

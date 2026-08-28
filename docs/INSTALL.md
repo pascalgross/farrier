@@ -307,15 +307,21 @@ in — it knows its own, and your session is the channel that carries it. Writte
 
 ```bash
 curl -fsSLk https://agents.farrier.example.org/api/v1/ca.crt -o /tmp/farrier-ca.crt
-test "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \
-  = "sha256 Fingerprint=<the digest the panel shows>" \
-  && sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt \
-  || echo "FINGERPRINT MISMATCH - do not install this certificate"
+if [ "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \
+     = "sha256 Fingerprint=<the digest the panel shows>" ]; then
+  sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt
+else
+  echo "FINGERPRINT MISMATCH - do not install this certificate" >&2
+  false
+fi
 ```
 
 The comparison is in the shell rather than in your eyes on purpose: two 64-character hex strings are
-compared by looking at the first four characters, and that is not a comparison. If you have no panel to
-read the digest from, take it from the control plane itself:
+compared by looking at the first four characters, and that is not a comparison. It is an `if` rather
+than the shorter `test … && install || echo`, because in that form the `||` binds to the whole list —
+so a missing `sudo` or a full disk fails the install, prints an attack that did not happen, and then
+exits 0, leaving a script free to enrol against a certificate it never installed. If you have no panel
+to read the digest from, take it from the control plane itself:
 
 ```bash
 docker compose exec farrier-server \
