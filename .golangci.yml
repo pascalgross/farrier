@@ -48,6 +48,13 @@ linters:
                 Every process Farrier starts goes through internal/run, which holds the closed
                 allowlist the guarantee in docs/SECURITY.md section 1 rests on. internal/run itself is
                 excluded below.
+            - pkg: golang.org/x/sys/unix
+              desc: >-
+                The same rule as os/exec, for the same reason and one spelling further out. This
+                package offers Exec, Execve and Fexecve, so importing it makes execve reachable without
+                importing os/exec at all - and it is already an indirect dependency, so the import
+                would compile. Nothing in Farrier needs it: the one raw system call the code makes is
+                SO_PEERCRED in internal/privsep, through the standard library's syscall package.
 
     revive:
       # Farrier's own rule is stricter than any of these; revive covers the exported half and the

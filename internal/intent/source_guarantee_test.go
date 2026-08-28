@@ -6,17 +6,97 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// scannedRoots are the directories whose Go source must contain no path from a message to a shell.
+// unscannedRoots are the top-level directories whose Go source is deliberately not held to this rule.
 //
-// web/ is absent because it is TypeScript and cannot invoke a process on a managed host; testfleet/ is
-// absent because it is the harness that deliberately drives real machines over SSH, and holding it to
-// this rule would only teach people to add exemptions.
-var scannedRoots = []string{"cmd", "internal", "helpers"}
+// It is stated as an exclusion rather than as a list of what *is* scanned, and the difference is the
+// point. A fixed inclusion list covers the directories that existed when somebody wrote it: move the
+// agent's process-spawning code into a new top-level package and the check quietly stops seeing it,
+// with nothing red to say so. Deriving the scanned set from the layout means a new directory is
+// scanned by default and a directory that should not be has to be named here, in a commit somebody
+// reviews.
+//
+// Two names are in it. tools/ is build tooling that never runs on a managed host and legitimately runs
+// other programs — the doc-comment checker and the site generator — which is the same judgement
+// .golangci.yml records for depguard. testfleet/ is the harness that deliberately drives real machines
+// over SSH; it holds no Go today, and it is named so that it stays exempt if it ever does.
+//
+// web/ needs no entry: it is TypeScript, and this walk only looks at Go.
+var unscannedRoots = map[string]string{
+	"tools":     "build tooling, which runs on a maintainer's machine and never on a managed host",
+	"testfleet": "the integration harness, whose whole job is driving real machines over SSH",
+}
+
+// scannedRoots returns every top-level directory holding shipped Go source.
+//
+// It fails rather than returning a short list, in each of the two ways this could quietly go wrong: a
+// repository with no scannable root at all, and an exclusion above naming a directory that no longer
+// exists. The second is the one that rots — an exemption outlives the thing it exempted, and what is
+// left is a name that would silently exempt some future directory that happened to be called the same.
+func scannedRoots(t *testing.T, root string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("reading %s: %v", root, err)
+	}
+
+	var roots []string
+	present := map[string]bool{}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		present[entry.Name()] = true
+		if _, excluded := unscannedRoots[entry.Name()]; excluded {
+			continue
+		}
+		if holdsShippedGo(t, filepath.Join(root, entry.Name())) {
+			roots = append(roots, entry.Name())
+		}
+	}
+
+	for name, reason := range unscannedRoots {
+		if !present[name] {
+			t.Fatalf("unscannedRoots names %q (%s), and there is no such directory.\n"+
+				"An exemption that outlives the code it exempted is one that will silently cover "+
+				"whatever is next given that name. Remove it.", name, reason)
+		}
+	}
+	if len(roots) == 0 {
+		t.Fatal("no top-level directory holds shipped Go source; this check would pass vacuously")
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+// holdsShippedGo reports whether a directory tree contains any non-test Go file.
+//
+// Non-test only, and the exclusion is the same one goFilesUnder makes: a test may legitimately need a
+// shell to build a fixture, and a directory holding nothing but tests has no shipped code to check.
+func holdsShippedGo(t *testing.T, dir string) bool {
+	t.Helper()
+	found := false
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", dir, err)
+	}
+	return found
+}
 
 // interpreterBasenames are program names that turn their arguments into code.
 //
@@ -98,11 +178,8 @@ func repoRoot(t *testing.T) string {
 func goFilesUnder(t *testing.T, root string) map[string][]string {
 	t.Helper()
 	byDir := map[string][]string{}
-	for _, sub := range scannedRoots {
+	for _, sub := range scannedRoots(t, root) {
 		base := filepath.Join(root, sub)
-		if _, err := os.Stat(base); os.IsNotExist(err) {
-			continue
-		}
 		err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -167,31 +244,30 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 					return true
 				}
 
-				var programArg ast.Expr
-				switch {
-				case pkg == "exec" && fn == "Command":
-					if len(call.Args) > 0 {
-						programArg = call.Args[0]
-					}
-				case pkg == "exec" && fn == "CommandContext":
-					if len(call.Args) > 1 {
-						programArg = call.Args[1]
-					}
-				case pkg == "syscall" && (fn == "Exec" || fn == "ForkExec"):
-					if len(call.Args) > 0 {
-						programArg = call.Args[0]
-					}
-				case pkg == "os" && fn == "StartProcess":
-					if len(call.Args) > 0 {
-						programArg = call.Args[0]
-					}
-				default:
+				shape, isExec := classifyExecCall(pkg, fn)
+				if !isExec {
 					return true
 				}
 
 				pos := fset.Position(call.Pos())
 				if rel == execChokepoint {
 					return true
+				}
+
+				// A shape whose program this check cannot read is refused outright rather than
+				// examined. A raw trap number and a pointer say nothing a reviewer of *this* test
+				// could act on, and "the check did not recognise it" must not be the same outcome as
+				// "the check found nothing wrong".
+				if shape.opaque {
+					t.Errorf("%s:%d: %s.%s executes through a shape this check cannot read.\n"+
+						"%s Every process Farrier starts goes through internal/run. "+
+						"See docs/SECURITY.md §2.1.", rel, pos.Line, pkg, fn, shape.why)
+					return true
+				}
+
+				var programArg ast.Expr
+				if len(call.Args) > shape.programArg {
+					programArg = call.Args[shape.programArg]
 				}
 				if programArg == nil {
 					t.Errorf("%s:%d: %s.%s called with no program argument", rel, pos.Line, pkg, fn)
@@ -238,6 +314,112 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 						"invocation, in any form.", rel, frag)
 				}
 			}
+		}
+	}
+}
+
+// execShape describes what one recognised way of starting a process looks like to this check.
+//
+// The two fields are alternatives rather than a pair: either the program is an argument this check can
+// resolve to a compile-time string, or the shape is one whose program is not readable here at all and
+// the call is refused for that reason alone.
+type execShape struct {
+	// programArg is the index of the argument naming the program.
+	programArg int
+
+	// opaque marks a shape whose program cannot be read from the call site.
+	opaque bool
+
+	// why explains, in the failure message, what makes the shape unreadable.
+	why string
+}
+
+// classifyExecCall recognises a call that starts a process, and says what this check can learn from it.
+//
+// The list is longer than the obvious four, and every addition beyond them closes a hole the earlier
+// version had: os/exec is denied by depguard, but golang.org/x/sys/unix is an indirect dependency that
+// would compile, and `syscall` is imported by shipped files already. So `unix.Exec(shell, []string{
+// shell, "-c", cmd}, env)` used to pass every check in this file — the switch did not match it, the
+// import was not denied, and the text scan saw no literal shell fragment. That is a general remote
+// execution primitive introduced with `make guarantee` green, which is the one outcome this file
+// exists to make impossible.
+//
+// Unrecognised shapes on the two packages that can reach execve are refused rather than ignored, which
+// is why this returns a shape for `Exec`-prefixed names it has never heard of.
+func classifyExecCall(pkg, fn string) (execShape, bool) {
+	switch pkg {
+	case "exec":
+		switch fn {
+		case "Command":
+			return execShape{programArg: 0}, true
+		case "CommandContext":
+			return execShape{programArg: 1}, true
+		}
+	case "os":
+		if fn == "StartProcess" {
+			return execShape{programArg: 0}, true
+		}
+	case "syscall", "unix":
+		switch fn {
+		case "Exec", "ForkExec", "Execve":
+			return execShape{programArg: 0}, true
+		case "Fexecve":
+			return execShape{opaque: true,
+				why: "it executes an open file descriptor, so the program has no name at the call site."}, true
+		}
+		// Everything else on these two packages that could reach execve. A raw syscall names its
+		// operation with an integer and its arguments with pointers, so there is nothing here to
+		// resolve to a path — and Execveat's directory-relative form is the same problem with a
+		// nicer spelling.
+		if strings.HasPrefix(fn, "Syscall") || strings.HasPrefix(fn, "RawSyscall") ||
+			strings.HasPrefix(fn, "Exec") {
+			return execShape{opaque: true,
+				why: "its program is a trap number or a descriptor rather than a path this check can read."}, true
+		}
+	}
+	return execShape{}, false
+}
+
+// TestGuaranteeNoExecCommandIsBuiltAsAStructLiteral closes the one exec route that is not a call.
+//
+// exec.Cmd can be constructed directly — `&exec.Cmd{Path: p, Args: a}` — and then Run, Start or Output
+// called on it. That is a method call on a value, which the selector-based scan above cannot follow to
+// a program argument, so it is refused at construction instead. Today the os/exec import is denied
+// everywhere but internal/run, which already stops this; the check is here so that the AST test states
+// the property on its own rather than resting on a linter configuration a commit could edit.
+func TestGuaranteeNoExecCommandIsBuiltAsAStructLiteral(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	for _, files := range goFilesUnder(t, root) {
+		for _, path := range files {
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				rel = path
+			}
+			if rel == execChokepoint {
+				continue
+			}
+			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatalf("parsing %s: %v", path, err)
+			}
+			ast.Inspect(f, func(node ast.Node) bool {
+				lit, ok := node.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				pkg, name, ok := selectorParts(lit.Type)
+				if !ok || pkg != "exec" || name != "Cmd" {
+					return true
+				}
+				pos := fset.Position(lit.Pos())
+				t.Errorf("%s:%d: an exec.Cmd is constructed here as a struct literal.\n"+
+					"A command built field by field escapes the argument check on exec.Command, and "+
+					"every process Farrier starts goes through internal/run. See docs/SECURITY.md §2.1.",
+					rel, pos.Line)
+				return true
+			})
 		}
 	}
 }
@@ -537,7 +719,7 @@ func moduleImportGraph(t *testing.T, root string) map[string][]string {
 
 	graph := map[string][]string{}
 	fset := token.NewFileSet()
-	for _, sub := range []string{"cmd", "internal", "helpers"} {
+	for _, sub := range scannedRoots(t, root) {
 		base := filepath.Join(root, sub)
 		err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
