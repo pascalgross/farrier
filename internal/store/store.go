@@ -519,6 +519,16 @@ type Certificate struct {
 
 	// RevokedAt is when it was revoked, zero if it was not.
 	RevokedAt time.Time
+
+	// SupersededAt is when a renewal's replacement takes over, zero if this certificate is current.
+	//
+	// It is distinct from Revoked because the two say different things and an operator reading a host's
+	// history needs to tell them apart: revoked is somebody withdrawing a host's identity, and
+	// superseded is the ordinary end of a certificate that has been renewed. The value is a short
+	// overlap after the renewal rather than the renewal itself, because the agent promotes its new
+	// credential with one rename and a host interrupted between the two has to be able to come back on
+	// the old one.
+	SupersededAt time.Time
 }
 
 // Account is one person who signs in, with an address and a password.
@@ -1109,6 +1119,26 @@ type Scoped interface {
 
 	// AddCertificate records an issued certificate by fingerprint.
 	AddCertificate(ctx context.Context, c Certificate) error
+
+	// SupersedeCertificate sets when a renewed-away certificate stops being accepted.
+	//
+	// Separate from AddCertificate rather than a field on it, because the two are about different
+	// certificates: one records the replacement, this retires the one that asked for it. A renewal that
+	// recorded the new certificate and failed to retire the old is a host with two working credentials,
+	// which is the state before this existed and is recoverable; the reverse would be a host with none.
+	//
+	// Setting it again on an already-superseded certificate keeps the earlier time. A host that renews
+	// twice in quick succession must not be able to extend the life of the credential it has already
+	// replaced.
+	SupersedeCertificate(ctx context.Context, fingerprint string, at time.Time) error
+
+	// CountLiveCertificates returns how many of a host's certificates could still authenticate.
+	//
+	// Live means not revoked, not expired, and not past a supersession that has taken effect — the same
+	// three conditions requireAgent applies, asked as a count rather than about one row. It exists for
+	// the cap on renewals: without one, a host holding a valid certificate can mint rows in a table
+	// every tenant shares, and the CA will sign each of them.
+	CountLiveCertificates(ctx context.Context, hostID string, now time.Time) (int, error)
 
 	// RevokeHost marks a host and all its certificates as revoked, taking effect on the next request.
 	RevokeHost(ctx context.Context, hostID string) error

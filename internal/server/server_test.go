@@ -328,6 +328,58 @@ func (h *harness) agentClient(t *testing.T, state *agent.State) *agent.Client {
 	return client
 }
 
+// copyCredential duplicates an enrolled host's state directory, credential and all.
+//
+// It is how a test holds a certificate after the host has rotated away from it, which is the thing the
+// supersession rule is about: a copy of agent.pem somebody took, still being presented. Copying the
+// directory rather than reaching into the client is deliberate — what an attacker has is the file.
+func (h *harness) copyCredential(t *testing.T, from *agent.State, name string) *agent.State {
+	t.Helper()
+
+	dir := filepath.Join(h.dir, "hosts", name)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("creating a state directory: %v", err)
+	}
+	entries, err := os.ReadDir(from.Dir())
+	if err != nil {
+		t.Fatalf("reading %s: %v", from.Dir(), err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(from.Dir(), entry.Name()))
+		if err != nil {
+			t.Fatalf("reading %s: %v", entry.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, entry.Name()), raw, 0o600); err != nil {
+			t.Fatalf("writing %s: %v", entry.Name(), err)
+		}
+	}
+	copied, err := agent.LoadState(dir)
+	if err != nil {
+		t.Fatalf("loading the copied state: %v", err)
+	}
+	return copied
+}
+
+// expireSupersession moves every one of a host's pending supersessions into the past.
+//
+// The alternative is waiting out renewalOverlap, which is two days. Rewriting the stored time is the
+// same thing the clock would have done and leaves the assertion about the middleware rather than about
+// the calendar.
+func (h *harness) expireSupersession(t *testing.T, state *agent.State) {
+	t.Helper()
+
+	scoped := h.store.In(h.tenant)
+	past := time.Now().Add(-time.Hour)
+	for _, fingerprint := range h.store.CertificateFingerprints(h.tenant, state.HostID) {
+		if err := scoped.SupersedeCertificate(context.Background(), fingerprint, past); err != nil {
+			t.Fatalf("expiring a supersession: %v", err)
+		}
+	}
+}
+
 // TestEnrolmentIssuesAWorkingCertificate is the end-to-end path a new host takes.
 //
 // It asserts the whole chain in one test because the pieces are only meaningful together: a certificate
@@ -1030,5 +1082,90 @@ func TestDeletingAHostAlsoReleasesItsMachine(t *testing.T) {
 		Hostname:  "web-01",
 	}); err != nil {
 		t.Fatalf("enrolling a machine whose host was deleted: %v", err)
+	}
+}
+
+// TestGuaranteeARenewedAwayCertificateStopsWorking is what makes the agent's key rotation worth
+// something.
+//
+// The agent generates a fresh key at every renewal, which bounds what a leaked agent.pem is worth — and
+// it bounded nothing, because the certificate it rotated away from stayed valid until its ninetieth
+// day. Somebody who read the file on day ten kept a working authentication path for eighty more, and
+// could spend the renewals themselves to keep it indefinitely.
+//
+// The old credential keeps working during the overlap, which is asserted first: the agent promotes its
+// new credential with one rename, and a host interrupted between obtaining a certificate and promoting
+// it has to be able to come back on the old one. What must not survive is the overlap.
+func TestGuaranteeARenewedAwayCertificateStopsWorking(t *testing.T) {
+	h := newHarness(t)
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+
+	// A second client on the *original* credential, built before the renewal replaces the file on
+	// disk. This stands in for the copy somebody took: the same certificate and key, still presented
+	// after the host has rotated away from them.
+	stolen := h.agentClient(t, h.copyCredential(t, state, "stolen"))
+
+	if _, err := h.agentClient(t, state).Renew(context.Background(), csrNaming(t, state.HostID)); err != nil {
+		t.Fatalf("renewing: %v", err)
+	}
+
+	// Inside the overlap the old certificate still authenticates, which is what keeps an interrupted
+	// renewal from stranding a host.
+	if _, err := stolen.Heartbeat(context.Background(), protocol.HeartbeatRequest{
+		AgentVersion: "0.0.0-test", BootID: "boot-1",
+	}); err != nil {
+		t.Fatalf("the superseded certificate stopped working immediately, which strands a host "+
+			"interrupted mid-renewal: %v", err)
+	}
+
+	// Past it, it does not. The clock is moved by rewriting the stored supersession rather than by
+	// waiting two days.
+	h.expireSupersession(t, state)
+
+	_, err := stolen.Heartbeat(context.Background(), protocol.HeartbeatRequest{
+		AgentVersion: "0.0.0-test", BootID: "boot-1",
+	})
+	if err == nil {
+		t.Fatal("a certificate the host renewed away from still authenticates after the overlap; " +
+			"rotating the key bought nothing")
+	}
+}
+
+// TestGuaranteeAHostCannotAccumulateCertificates is the other half of the renewal bound.
+//
+// A rate limit bounds how fast a host may renew and not how many certificates it ends up holding, and
+// the total is what fills a table every tenant of a hosted installation shares — and what widens the
+// window in which any one leaked key still works. Both are refusals rather than silent successes, so a
+// host in this state is visible.
+func TestGuaranteeAHostCannotAccumulateCertificates(t *testing.T) {
+	h := newHarness(t)
+	state := h.enrolHost(t, "web-01", h.issueToken(t, "web-prod"))
+	client := h.agentClient(t, state)
+
+	// Comfortably more attempts than either bound allows, from a host that keeps presenting a valid
+	// credential. The count is a literal rather than the constants, which this package cannot see, and
+	// the assertion is that renewal stops rather than where: the limiter and the cap are two separate
+	// bounds and either one refusing is the correct outcome.
+	const attempts = 20
+	refused := 0
+	for range attempts {
+		if _, err := client.Renew(context.Background(), csrNaming(t, state.HostID)); err != nil {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("a host renewed 20 times without a refusal; every call signs with the CA key and adds " +
+			"a row to a table every tenant shares")
+	}
+
+	live, err := h.store.In(h.tenant).CountLiveCertificates(context.Background(), state.HostID, time.Now())
+	if err != nil {
+		t.Fatalf("counting certificates: %v", err)
+	}
+	// The cap is a small number and this asserts the shape rather than its value, so that raising it
+	// does not fail a test about accumulation. What must not happen is one certificate per attempt.
+	if live >= attempts {
+		t.Errorf("the host holds %d live certificates after %d renewals; nothing bounded the total",
+			live, attempts)
 	}
 }

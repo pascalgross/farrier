@@ -521,6 +521,35 @@ func TestGuaranteeOneTenantCannotSeeAnother(t *testing.T) {
 					t.Fatal("alpha issued a certificate against a host belonging to beta")
 				}
 			},
+			"SupersedeCertificate": func(t *testing.T) {
+				// Retiring a certificate is a write, and the one worth probing is a write against
+				// somebody else's row: alpha must not be able to end beta's host's authentication.
+				// A no-op rather than an error is the correct outcome — it is what the policy produces,
+				// since a row alpha cannot see is a row alpha's UPDATE does not match.
+				betaCert := "fp-" + string(beta.Tenant()) + "-" + betaHostID
+				if err := alpha.SupersedeCertificate(ctx, betaCert, time.Now().Add(-time.Hour)); err != nil {
+					t.Fatalf("alpha superseding beta's certificate returned %v; want a no-op", err)
+				}
+				live, err := beta.CountLiveCertificates(ctx, betaHostID, time.Now())
+				if err != nil {
+					t.Fatalf("counting beta's certificates: %v", err)
+				}
+				if live == 0 {
+					t.Fatal("alpha retired a certificate belonging to beta, and beta's host can no " +
+						"longer authenticate")
+				}
+			},
+			"CountLiveCertificates": func(t *testing.T) {
+				// Each tenant sees its own host's certificate and nothing of the other's — including
+				// when it names the other's host id, which is the shape a caller reaches by accident.
+				if live, err := beta.CountLiveCertificates(ctx, betaHostID, time.Now()); err != nil || live != 1 {
+					t.Fatalf("beta counts %d of its own certificates (err %v); want 1", live, err)
+				}
+				if live, err := alpha.CountLiveCertificates(ctx, betaHostID, time.Now()); err != nil || live != 0 {
+					t.Fatalf("alpha counts %d certificates for a host belonging to beta (err %v); want 0",
+						live, err)
+				}
+			},
 			"GetEnrollmentToken": func(t *testing.T) {
 				// A token issued by beta must be unusable from alpha — the same one answer unknown,
 				// expired and consumed get, so holding another fleet's token teaches nothing.

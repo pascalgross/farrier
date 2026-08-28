@@ -129,8 +129,9 @@
             <input matInput autocomplete="off" spellcheck="false" [ngModel]="fleet.webhookUrl"
                    (change)="setWebhook(fleet, $any($event.target).value)" />
             <mat-hint>
-              Where this fleet's events are posted, empty for nowhere. Sinks send data out; nothing
-              sends anything in.
+              An https URL where this fleet's events are posted, empty for nowhere. An event carries
+              hostnames and job summaries, so plaintext is refused. Sinks send data out; nothing sends
+              anything in.
             </mat-hint>
           </mat-form-field>
 

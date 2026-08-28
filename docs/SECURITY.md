@@ -292,6 +292,16 @@ authenticated by the current certificate.
 stops being able to talk to the control plane on its next request, with no distribution delay and no
 stapling infrastructure.
 
+The same lookup retires a certificate a renewal has replaced. The agent generates a fresh key each time
+it renews, and that was worth almost nothing while the certificate it rotated away from stayed valid to
+its ninetieth day: somebody who read `agent.pem` on day ten kept a working authentication path for
+eighty more, and could spend the renewals themselves to extend it indefinitely. A renewal now stamps the
+presenting certificate with the moment it stops being accepted, 48 hours out — long enough that a host
+interrupted between obtaining a certificate and promoting it can come back on the old pair, and short
+enough that a copied credential is worth two days rather than three months. Renewal is also rate-limited
+per host and a host may hold only a few valid certificates at once, because a caller who can mint rows
+in a table every tenant shares, and a CA signature with each, should not be able to do so without bound.
+
 Revoking a host also releases its machine — the salted `/etc/machine-id` hash a host claims at
 enrolment — so the same physical machine can enrol again under a new identity. The revoked row and its
 history stay. Without that release, any host row that outlived its certificate would wedge the machine
@@ -755,6 +765,21 @@ control plane whose heartbeats time out.
 Scoping is the same as everywhere else. An event carries its tenant, reaches that tenant's endpoint and
 that tenant's tabs, and nothing else; the stream is authorised exactly like any other read of
 control-plane state ([§5](#5-tenants)).
+
+**A webhook is https, is not redirected, and is not link-local.** An event carries hostnames, job
+summaries and the principal of whoever queued the work, which is exactly the reasoning that makes the
+mail sink refuse a relay offering no STARTTLS — so the same data is not posted in cleartext either. The
+scheme is refused where a webhook is configured, so an operator learns of the mistake in the second it
+takes to read the response, and again in the sink, because a row written before this rule existed is
+the one that would still be posting. A redirect is refused rather than followed: the sink reads only
+the status code, so a redirected POST is a destination nobody chose and an outcome nobody sees. And the
+address the connection is actually made to is checked at the socket rather than in the URL, because a
+name resolves at dial time and can resolve differently on the next attempt.
+
+The destination rule is link-local only — `169.254.0.0/16` and `fe80::/10`, where the cloud metadata
+services live — and deliberately not the strictest available. Loopback and private ranges stay
+reachable, because a self-hosted control plane posting to a chat relay on its own network is the
+ordinary deployment, and breaking it would buy nothing the paragraph above has not already bought.
 
 A rule that fires across many hosts at once collapses into a **digest**, because three hundred identical
 pages during a partition are how the one different page gets missed. The collapse is a property of the

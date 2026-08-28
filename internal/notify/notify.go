@@ -13,8 +13,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"syscall"
 	"time"
 )
 
@@ -78,14 +83,101 @@ type Webhook struct {
 	client *http.Client
 }
 
+// ErrWebhookURL reports a webhook URL this control plane will not post to.
+//
+// A distinct error because the two places that produce it want different things from it: the tenant API
+// refuses the configuration with the reason in the response, and Deliver refuses a row that was stored
+// before this rule existed. Both need to tell one apart from an endpoint that is merely down.
+var ErrWebhookURL = errors.New("notify: unusable webhook URL")
+
+// ValidateWebhookURL reports whether a URL may be configured as a tenant's webhook.
+//
+// It exists as a function rather than as a check inside NewWebhook because it has to run twice, in two
+// different places, and the second is the one that matters. Refusing at configuration time is what tells
+// an operator; refusing at delivery time is what covers the rows written before this rule existed, and
+// what makes the rule a property of the sink rather than of one code path into it.
+//
+// The scheme is the whole of what can be checked from a string. https only, and the argument is the one
+// smtp.go already makes for the same data: an event legitimately carries hostnames, job summaries and
+// operator principals, and the SMTP sink refuses to send that in plaintext. A webhook posting the same
+// payload over http:// was the same disclosure with nobody having decided on it.
+//
+// Where the destination is checked is at the socket, not here — see dialGuard. A hostname resolves at
+// dial time and can resolve differently the second time, so a check on the string would be a check on
+// what the name meant when somebody typed it.
+func ValidateWebhookURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrWebhookURL, err.Error())
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("%w: the scheme is %q and must be https. An event carries hostnames, job "+
+			"summaries and the name of whoever queued the work", ErrWebhookURL, parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("%w: no host", ErrWebhookURL)
+	}
+	return nil
+}
+
+// dialGuard refuses a connection to a link-local address, whatever name resolved to it.
+//
+// It is a Control function rather than a check on the URL because it runs after resolution, on the
+// address the kernel is about to connect to. A hostname is not a destination: it resolves at dial time,
+// it can resolve differently on the next attempt, and a check on the string would be a statement about
+// what the name meant when an operator typed it.
+//
+// Link-local only, which is a deliberate line rather than the strictest one available. 169.254.0.0/16
+// and fe80::/10 hold the cloud metadata services — 169.254.169.254 is the address the issue that
+// produced this rule names — and nothing an operator would legitimately post events to. Loopback and
+// RFC1918 are not blocked, because a self-hosted control plane posting to a chat relay on its own
+// private network is the ordinary deployment, and refusing it would break real installations to close a
+// hole the paragraph above has already closed.
+func dialGuard(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: %s is not an address", ErrWebhookURL, address)
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		// Control is documented as receiving a resolved address, so this is unreachable. Refusing is
+		// the right answer to being wrong about that.
+		return fmt.Errorf("%w: %s did not resolve to an address", ErrWebhookURL, host)
+	}
+	if addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
+		return fmt.Errorf("%w: %s is link-local, where the cloud metadata services live", ErrWebhookURL, addr)
+	}
+	return nil
+}
+
 // NewWebhook returns a sink that posts events as JSON.
+//
+// The client is built here rather than defaulted, and every departure from http.DefaultClient is a
+// refusal. It follows no redirects: a 302 is an endpoint the operator did not configure, and the sink
+// reads only the status code, so a redirected POST is a request whose destination nobody chose and whose
+// outcome nobody sees. And it refuses to dial a link-local address, whatever the name resolved to.
 func NewWebhook(name, url string) *Webhook {
 	return &Webhook{
 		name: name,
 		url:  url,
 		// A short timeout on purpose. An event that did not reach a chat channel is a small loss; a
 		// control plane whose event loop is held open by an unresponsive endpoint is a large one.
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				return fmt.Errorf("%w: it redirected to %s, and a webhook is the endpoint an operator "+
+					"configured rather than wherever that endpoint points", ErrWebhookURL, req.URL.Redacted())
+			},
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   5 * time.Second,
+					KeepAlive: 30 * time.Second,
+					Control:   dialGuard,
+				}).DialContext,
+				TLSHandshakeTimeout: 5 * time.Second,
+				ForceAttemptHTTP2:   true,
+			},
+		},
 	}
 }
 
@@ -93,7 +185,17 @@ func NewWebhook(name, url string) *Webhook {
 func (w *Webhook) Name() string { return w.name }
 
 // Deliver posts one event as JSON.
+//
+// The URL is validated here as well as where it was configured, and the repetition is the point: a
+// tenant row written before that rule existed still holds whatever it holds, and this is the check that
+// stands between such a row and a cleartext POST of a fleet's hostnames. It fails loudly — the failure
+// is recorded as a delivery.failed event in the operator's own inbox — rather than being cleared by a
+// migration, because a webhook that silently stopped existing is the shape of failure the delivery
+// notice was added to prevent.
 func (w *Webhook) Deliver(ctx context.Context, ev Event) error {
+	if err := ValidateWebhookURL(w.url); err != nil {
+		return err
+	}
 	body, err := json.Marshal(ev)
 	if err != nil {
 		return fmt.Errorf("notify: encoding event: %w", err)

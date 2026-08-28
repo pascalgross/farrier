@@ -29,6 +29,45 @@ const (
 	enrollIdleTTL = time.Hour
 )
 
+// Renewal rate limits and the cap that goes with them.
+//
+// Renewal is authenticated, so it is not the endpoint the limiter above defends — and it is the one
+// authenticated endpoint whose cost is unbounded per caller. Every call signs a certificate with the CA
+// key and inserts a row into a table every tenant of a hosted installation shares, and a host holding
+// one valid certificate can call it in a loop.
+//
+// The numbers come from what an honest agent does. A certificate lasts ninety days and is renewed at
+// two-thirds of that, so a host renews about six times a year: five in a burst and one back per minute
+// is four orders of magnitude above any real fleet and still turns a loop into a refusal. The cap is
+// the other half — a limiter alone bounds the rate and not the total, and the total is what fills a
+// table.
+//
+// The buckets are per replica, like every other limiter here, so a fleet behind N control planes gets
+// roughly N times the burst. Against a renewal cadence measured in months that is not a distinction
+// worth building shared state for; the cap is a database question and is exact.
+const (
+	// renewBurst is how many renewals one host may make at once.
+	renewBurst = 5
+
+	// renewRefill is how long one renewal takes to come back.
+	renewRefill = time.Minute
+
+	// maxLiveCertificatesPerHost bounds how many of a host's certificates may authenticate at once.
+	//
+	// Three, and the arithmetic is: the one in use, the one a renewal just issued, and one more for a
+	// renewal that was interrupted between obtaining a certificate and promoting it. A host needing a
+	// fourth is a host whose renewals are failing, which is a thing to fix rather than to accumulate.
+	maxLiveCertificatesPerHost = 3
+
+	// renewalOverlap is how long a renewed-away certificate keeps working.
+	//
+	// It has to outlast the agent's renewal jitter, which is up to a day, so that a host interrupted
+	// between obtaining its new certificate and promoting it is certain to have a working one to come
+	// back on. Two days rather than one for that reason: at or below the jitter, this would reintroduce
+	// the stranding it exists to avoid.
+	renewalOverlap = 48 * time.Hour
+)
+
 // Health-check rate limits.
 //
 // The endpoint is unauthenticated because a health check that needs a credential is one the load

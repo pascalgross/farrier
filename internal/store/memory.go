@@ -546,6 +546,25 @@ func (m *Memory) Enqueue(tenant TenantID, hostID string, job protocol.Job) {
 	_ = m.In(tenant).CreateJob(context.Background(), NewJob{Job: job, HostID: hostID})
 }
 
+// CertificateFingerprints returns one host's certificates that carry a supersession, for tests.
+//
+// Only the superseded ones, because the caller is a test moving a supersession into the past rather
+// than enumerating a host's credentials — a helper that returned every fingerprint would invite a test
+// to retire a certificate no renewal had replaced, which is a state the server never produces.
+func (m *Memory) CertificateFingerprints(tenant TenantID, hostID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var found []string
+	for fingerprint, cert := range m.certs {
+		if cert.TenantID == tenant && cert.HostID == hostID && !cert.SupersededAt.IsZero() {
+			found = append(found, fingerprint)
+		}
+	}
+	sort.Strings(found)
+	return found
+}
+
 // Result returns a recorded result, for tests.
 //
 // It takes the tenant for the same reason the job maps are keyed on one: a job id identifies a job only
@@ -894,6 +913,51 @@ func (s *scopedMemory) AddCertificate(_ context.Context, c Certificate) error {
 	}
 	m.certs[cert.Fingerprint] = cert
 	return nil
+}
+
+// SupersedeCertificate sets when a renewed-away certificate stops being accepted.
+//
+// The earlier time wins, matching the PostgreSQL LEAST: a host that renews twice in quick succession
+// must not be able to push back the moment the credential it already replaced stops working.
+func (s *scopedMemory) SupersedeCertificate(_ context.Context, fingerprint string, at time.Time) error {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cert, ok := m.certs[fingerprint]
+	if !ok || cert.TenantID != s.tenant {
+		return nil
+	}
+	if cert.SupersededAt.IsZero() || at.Before(cert.SupersededAt) {
+		cert.SupersededAt = at
+		m.certs[fingerprint] = cert
+	}
+	return nil
+}
+
+// CountLiveCertificates returns how many of a host's certificates could still authenticate.
+//
+// The three conditions are written out rather than shared with a helper, and they are the same three
+// the PostgreSQL query applies and the same three requireAgent applies. A count that disagreed with the
+// middleware would give a cap that refused a host holding one working certificate, or admitted one
+// holding twenty.
+func (s *scopedMemory) CountLiveCertificates(_ context.Context, hostID string, now time.Time) (int, error) {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	live := 0
+	for _, cert := range m.certs {
+		switch {
+		case cert.TenantID != s.tenant || cert.HostID != hostID:
+		case cert.Revoked:
+		case !cert.NotAfter.After(now):
+		case !cert.SupersededAt.IsZero() && !cert.SupersededAt.After(now):
+		default:
+			live++
+		}
+	}
+	return live, nil
 }
 
 // RevokeHost marks a host and all its certificates as revoked.

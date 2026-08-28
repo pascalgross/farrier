@@ -577,11 +577,48 @@ func firstLine(s string) string {
 // The identity comes from the presenting certificate and never from the CSR. A CSR is an untrusted
 // document: honouring the subject in it would let a host re-key a certificate for a different host
 // entirely, which is a full compromise of the fleet's identity from one enrolled machine.
+//
+// Three bounds surround the issuing, and each closes something the other two do not. The limiter bounds
+// the rate at which one host may spend a CA signature and a row in a table every tenant shares. The cap
+// bounds the total, because a rate limit alone permits an unbounded number of certificates given
+// enough time. And the presenting certificate is superseded after a short overlap, which is what makes
+// the agent's key rotation worth anything: without it, somebody who read agent.pem on day ten kept a
+// working authentication path until day ninety, and could spend the renewals themselves to keep it.
+//
+// The order matters. The old certificate is retired *after* the new one is recorded, so a failure
+// between the two leaves a host with two working credentials — recoverable, and the state this endpoint
+// was in before — rather than with none.
 func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller) {
 	host := who.Host
+	now := time.Now()
+
+	if !s.renewLimiter.allow(host.ID, now) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.renewLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"this host has renewed too often; a certificate lasts 90 days")
+		return
+	}
+
 	var req protocol.RenewRequest
 	if err := decodeJSON(w, r, protocol.MaxEnrollBytes, &req); err != nil || req.CSR == "" {
 		writeError(w, http.StatusBadRequest, "malformed", "a csr is required")
+		return
+	}
+
+	// 429 rather than 409, because it is transient by construction: the certificates in the way are
+	// superseded or expiring, and the agent's existing handling of 429 does the right thing without a
+	// change on the host side.
+	switch live, err := who.Store.CountLiveCertificates(r.Context(), host.ID, now); {
+	case err != nil:
+		slog.Error("could not count a host's live certificates", "error", err, "host", host.ID)
+		writeError(w, http.StatusInternalServerError, "internal", "could not check the certificate count")
+		return
+	case live >= maxLiveCertificatesPerHost:
+		slog.Warn("refused a renewal: too many live certificates",
+			"host", host.ID, "live", live, "cap", maxLiveCertificatesPerHost)
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.renewLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "too_many_certificates",
+			"this host already holds the maximum number of valid certificates")
 		return
 	}
 
@@ -596,7 +633,7 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller)
 		HostID:      host.ID,
 		TenantID:    who.Store.Tenant(),
 		Serial:      cert.SerialNumber.Text(16),
-		IssuedAt:    time.Now(),
+		IssuedAt:    now,
 		NotAfter:    cert.NotAfter,
 	}); err != nil {
 		slog.Error("could not record a renewed certificate", "error", err, "host", host.ID)
@@ -604,7 +641,19 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller)
 		return
 	}
 
-	slog.Info("certificate renewed", "host", host.ID, "not_after", cert.NotAfter.Format(time.RFC3339))
+	// After the new one is recorded, and not fatal if it fails. The failure leaves a host with two
+	// working credentials, which is the state this endpoint was in before the overlap existed and is
+	// corrected by the next renewal; refusing the request instead would hand back an error to a host
+	// that already has its new certificate, and it would retry with a fresh CSR against the cap.
+	supersedeAt := now.Add(renewalOverlap)
+	if err := who.Store.SupersedeCertificate(r.Context(), who.Fingerprint, supersedeAt); err != nil {
+		slog.Error("a renewed-away certificate could not be retired and stays valid until it expires",
+			"error", err, "host", host.ID)
+	}
+
+	slog.Info("certificate renewed", "host", host.ID,
+		"not_after", cert.NotAfter.Format(time.RFC3339),
+		"previous_valid_until", supersedeAt.Format(time.RFC3339))
 	writeJSON(w, http.StatusOK, protocol.RenewResponse{
 		Certificate: string(certPEM),
 		CABundle:    string(s.cfg.Authority.CertificatePEM()),

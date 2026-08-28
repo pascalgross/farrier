@@ -315,11 +315,12 @@ func (p *Postgres) LookupCertificate(ctx context.Context, fingerprint string) (C
 	err := p.withResolveKey(ctx, "looking up a certificate", fingerprint, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
 			SELECT fingerprint, host_id, tenant_id, serial, issued_at, not_after, revoked,
-			       COALESCE(revoked_at, 'epoch'::timestamptz)
+			       COALESCE(revoked_at, 'epoch'::timestamptz),
+			       COALESCE(superseded_at, 'epoch'::timestamptz)
 			  FROM certificates
 			 WHERE fingerprint = $1`, fingerprint,
 		).Scan(&c.Fingerprint, &c.HostID, &c.TenantID, &c.Serial, &c.IssuedAt, &c.NotAfter,
-			&c.Revoked, &c.RevokedAt)
+			&c.Revoked, &c.RevokedAt, &c.SupersededAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -330,6 +331,9 @@ func (p *Postgres) LookupCertificate(ctx context.Context, fingerprint string) (C
 	}
 	if c.RevokedAt.Unix() == 0 {
 		c.RevokedAt = time.Time{}
+	}
+	if c.SupersededAt.Unix() == 0 {
+		c.SupersededAt = time.Time{}
 	}
 	return c, nil
 }
@@ -779,6 +783,42 @@ func (s *scopedPostgres) AddCertificate(ctx context.Context, c Certificate) erro
 			c.Fingerprint, c.HostID, string(s.tenant), c.Serial, c.IssuedAt, c.NotAfter)
 		return wrap(err, "recording a certificate")
 	})
+}
+
+// SupersedeCertificate sets when a renewed-away certificate stops being accepted.
+//
+// COALESCE keeps the earliest time rather than the latest, which is what makes a second renewal unable
+// to extend the life of a credential the first one already replaced. Setting it on a certificate that
+// is not this tenant's does nothing, because the policy admits no such row — the WHERE clause is the
+// optimisation and the policy is the rule.
+func (s *scopedPostgres) SupersedeCertificate(ctx context.Context, fingerprint string, at time.Time) error {
+	return s.withTenant(ctx, "superseding a certificate", func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE certificates
+			   SET superseded_at = LEAST(COALESCE(superseded_at, $2::timestamptz), $2::timestamptz)
+			 WHERE fingerprint = $1 AND tenant_id = $3`,
+			fingerprint, at, string(s.tenant))
+		return wrap(err, "superseding a certificate")
+	})
+}
+
+// CountLiveCertificates returns how many of a host's certificates could still authenticate.
+//
+// The three conditions are the three requireAgent applies, which is why they are written out here
+// rather than approximated: a count that disagreed with the middleware would produce a cap that either
+// refused a host with one working certificate or admitted one with twenty.
+func (s *scopedPostgres) CountLiveCertificates(ctx context.Context, hostID string, now time.Time) (int, error) {
+	var live int
+	err := s.withTenant(ctx, "counting live certificates", func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM certificates
+			 WHERE host_id = $1 AND tenant_id = $2
+			   AND NOT revoked
+			   AND not_after > $3
+			   AND (superseded_at IS NULL OR superseded_at > $3)`,
+			hostID, string(s.tenant), now).Scan(&live)
+	})
+	return live, err
 }
 
 // RevokeHost marks a host and all its certificates as revoked.

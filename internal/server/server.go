@@ -152,6 +152,14 @@ type Server struct {
 	// costs this process 64 MiB of Argon2id per attempt.
 	signInLimiter *rateLimiter
 
+	// renewLimiter bounds certificate renewals, per host.
+	//
+	// Keyed on the host id rather than the source address, because the caller is authenticated: the id
+	// comes from the presented certificate's row, is not a value the request chooses, and does not
+	// collapse into one bucket behind a proxy the way an address does. It is the one authenticated
+	// endpoint with an unbounded per-caller cost — a CA signature and a row in a shared table.
+	renewLimiter *rateLimiter
+
 	// healthLimiter bounds the third route that needs no credential at all.
 	//
 	// Its own limiter rather than a share of the enrolment one, because the two must not be able to
@@ -248,6 +256,7 @@ func New(cfg Config) (*Server, error) {
 		enrolLimiter:    newRateLimiter(enrollBurst, enrollRefill),
 		signInLimiter:   newRateLimiter(signInBurst, signInRefill),
 		healthLimiter:   newRateLimiter(healthBurst, healthRefill),
+		renewLimiter:    newRateLimiter(renewBurst, renewRefill),
 		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
 		accounts:        cfg.Accounts,
 		paths:           http.NewServeMux(),
@@ -601,6 +610,13 @@ type caller struct {
 	// Host is the machine that authenticated.
 	Host store.Host
 
+	// Fingerprint identifies the certificate this request arrived on.
+	//
+	// Carried because renewal has to retire the credential that asked for the renewal, and the only
+	// honest source for which one that is, is the connection. Taking it from the CSR or from anything in
+	// the body would let a host retire a certificate belonging to somebody else.
+	Fingerprint string
+
 	// Store reaches that host's tenant and nothing else.
 	Store store.Scoped
 }
@@ -639,6 +655,17 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 		case cert.Revoked:
 			writeError(w, http.StatusUnauthorized, "revoked", "certificate has been revoked")
 			return
+		case !cert.SupersededAt.IsZero() && !time.Now().Before(cert.SupersededAt):
+			// A renewal replaced this certificate and the overlap has passed. Refused here rather than
+			// left to expire, because the agent generates a fresh key at every renewal and the whole
+			// value of that is lost if the key it rotated away from keeps working until day ninety.
+			//
+			// A distinct code from "revoked": an operator reading a log needs to tell a withdrawn host
+			// from one whose agent is presenting a credential it should already have replaced, which is
+			// a bug in the agent or a copy of a file somewhere it should not be.
+			writeError(w, http.StatusUnauthorized, "superseded",
+				"this certificate was replaced by a renewal; present the current one")
+			return
 		}
 
 		scoped := s.cfg.Store.In(cert.TenantID)
@@ -656,7 +683,7 @@ func (s *Server) requireAgent(next func(http.ResponseWriter, *http.Request, call
 			return
 		}
 
-		who := caller{Host: host, Store: scoped}
+		who := caller{Host: host, Fingerprint: fingerprint, Store: scoped}
 		ctx := context.WithValue(r.Context(), agentContextKey{}, who)
 		next(w, r.WithContext(ctx), who)
 	})

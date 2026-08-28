@@ -9,6 +9,7 @@ import (
 
 	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/buildinfo"
+	"github.com/pascalgross/farrier/internal/notify"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -148,13 +149,18 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request, who 
 		return
 	}
 
+	webhook := valueOr(req.WebhookURL, "")
+	if !checkWebhookURL(w, webhook) {
+		return
+	}
+
 	tenant := store.Tenant{
 		ID:           store.TenantID(id),
 		Slug:         req.Slug,
 		DisplayName:  valueOr(req.DisplayName, req.Slug),
 		CreatedAt:    time.Now().UTC(),
 		ApprovalMode: mode,
-		WebhookURL:   valueOr(req.WebhookURL, ""),
+		WebhookURL:   webhook,
 	}
 	switch err := s.cfg.Store.CreateTenant(r.Context(), tenant); {
 	case errors.Is(err, store.ErrConflict):
@@ -213,6 +219,9 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, who 
 		tenant.DisplayName = *req.DisplayName
 	}
 	if req.WebhookURL != nil {
+		if !checkWebhookURL(w, *req.WebhookURL) {
+			return
+		}
 		tenant.WebhookURL = *req.WebhookURL
 	}
 	if req.ApprovalMode != nil {
@@ -305,6 +314,27 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, who auth.I
 	}
 	answer["tenant"] = toTenantView(tenant)
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// checkWebhookURL answers the request itself when a webhook URL is one Farrier will not post to.
+//
+// It returns whether the caller may continue, in the shape the handlers around it already use, so that
+// both write paths refuse the same values with the same message. The empty string is how a tenant says
+// it wants no webhook and is not a URL to check.
+//
+// The reason it is refused *here*, and not only where the delivery happens, is that an operator who
+// pasted an http:// endpoint has made a mistake they can fix in the second it takes to read this, and
+// discovering it later means discovering it from an event that did not arrive. The sink checks again
+// anyway, for the rows written before this rule existed.
+func checkWebhookURL(w http.ResponseWriter, raw string) bool {
+	if raw == "" {
+		return true
+	}
+	if err := notify.ValidateWebhookURL(raw); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed", err.Error())
+		return false
+	}
+	return true
 }
 
 // valueOr returns a pointer's value, or a fallback when it is nil.
