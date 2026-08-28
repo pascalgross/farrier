@@ -68,6 +68,28 @@ export const routes: Routes = [
     title: 'Templates — Farrier',
   },
   {
+    canMatch: [notPlatform],
+    path: 'wallboard',
+    loadComponent: () => import('./wallboard/wallboard').then((m) => m.Wallboard),
+    title: 'Wallboard — Farrier',
+  },
+  {
+    // The published board, and the only route in this application that renders without a session.
+    //
+    // `data.public` is what the shell reads to know that: it gates the outlet on `signedIn()`, and a
+    // screen in a corridor holds no session and never will. The flag is on the route rather than
+    // derived from the path because the shell would otherwise be matching on a string, which is the
+    // kind of check that survives a rename by continuing to compile.
+    //
+    // It carries no guard. `notPlatform` returns true for a browser that is not signed in, so adding
+    // one would say nothing here — and the credential this page needs is not one the router can see:
+    // it is in the address's fragment, which never leaves the browser.
+    data: { public: true },
+    path: 'board',
+    loadComponent: () => import('./wallboard/wallboard').then((m) => m.Wallboard),
+    title: 'Wallboard — Farrier',
+  },
+  {
     canMatch: [notOperator],
     path: 'fleets',
     loadComponent: () => import('./fleets/fleets-page').then((m) => m.FleetsPage),

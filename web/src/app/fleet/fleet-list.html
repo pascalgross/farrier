@@ -109,6 +109,15 @@
             @if (host.facts?.reboot; as reboot) {
               @if (reboot.required) {
                 <span class="text-farrier-warn font-medium">required</span>
+              } @else if (reboot.conclusive === false) {
+                <!--
+                  "No" and "nothing here can tell" are different answers. `/var/run/reboot-required`
+                  is an Ubuntu convention and needrestart is only a Recommends on Debian, so a bare
+                  `required: false` from a Debian host frequently means the question went unanswered
+                  — and rendering that as "not required" made a fleet of them read as fully patched.
+                -->
+                <span class="opacity-70"
+                      matTooltip="Nothing on this host can answer the reboot question: it has neither the reboot-required marker nor needrestart.">cannot be determined</span>
               } @else {
                 <span class="opacity-70">not required</span>
               }

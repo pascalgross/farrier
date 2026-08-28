@@ -417,6 +417,146 @@ person* queued a job rather than the word "operator"; a second-person approval r
 satisfied, because it compares two principals and a shared token makes them equal; and the ability to
 withdraw one person's access without rotating everybody's.
 
+---
+
+### 4.6 The wallboard and its link
+
+A wallboard is one screen of a fleet's own status — the counts, and the handful of machines something
+is wrong with — on a television in a corridor. What makes it a section in this document rather than
+another page in the interface is that **the room has no account**. Every other read of control-plane
+state is performed by somebody who signed in, and a screen on a wall cannot: a session dies twelve
+hours idle inside seven days absolute ([§4.5](#45-who-the-operator-is)), so a television lent an
+operator's session goes dark on the Tuesday, and until it does it is an unattended credential that can
+queue a reboot. So a share is a credential of its own kind. It reaches one fixed-shape summary of one
+fleet, over one endpoint, and there is no route from it to a second thing.
+
+That is a shared bearer credential in a URL, which is exactly what [§4.5](#45-who-the-operator-is)
+removed, so the comparison is owed rather than avoided. `FARRIER_ADMIN_TOKEN` was refused on five
+counts, and four of them are answered here. It could not be taken away from one person who had left; a
+share is withdrawn in one request, by deleting one row, and stops answering at the next poll — within
+fifteen seconds. It never expired; a share is given an expiry or it is not created, ninety days by
+default and 365 at the most, with deliberately no "never". It was changed only by restarting the
+control plane and telling everybody; a share is a row, so withdrawing one disturbs nothing else and
+nobody has to be told anything. And it made the second-person rule unsatisfiable by construction,
+because that rule compares two principals and one shared string made every principal the same one; a
+share cannot approve anything, create anything or reach a job at all, so the rule is untouched by it.
+One more thing is true that is not on that list of five: the old token wrote, and this one reads. The
+only write anywhere behind a share is the timestamp recording that a screen polled.
+
+**The first of the five is the one that survives, and it survives permanently.** A share does not name
+its readers. It records who published it — the one name attached to it, and the useful one, because
+the question a share can answer is who decided this fleet could go on a wall — but a link can be
+forwarded, and nothing in this design can tell that it was. There is no cleverer version of it
+available: the whole point of the credential is that the room does not sign in, and a reader nobody
+authenticates is a reader nobody can name. Saying that is the honest form of the trade-off. Counting
+polls, or recording the addresses they come from and calling the result an audit trail, would be
+answering a different question in a way that reads like an answer to this one.
+
+What makes it acceptable is the size of what leaks. **A leaked link discloses, to a remote party,
+roughly what somebody standing in the room already sees** — and it discloses it continuously, at
+fifteen-second resolution, for as long as the share lives. Both halves of that sentence do work. The
+first is why publishing one is defensible at all: if the screen may be read by anyone who walks past
+the lift, the marginal disclosure of a copy of the screen is small. The second is why the expiry is
+mandatory, why the list of live shares is kept short enough to read, and why the payload is what it is
+rather than whatever was convenient.
+
+So the payload is a **projection built field by field**, not a filtered version of what the fleet page
+returns. The distinction is a security property rather than a matter of style. `hostView` carries a
+host's facts document verbatim, so a public payload made by removing fields from it would put whatever
+a future collector adds onto a public page without anybody deciding, and the commit that did it would
+touch no file in this directory and mention none of this. A field has to be written into the
+projection to appear on the wall.
+
+What is on it: the fleet's size split three ways, the security backlog, how many hosts are waiting for
+a reboot, how many have a failed unit, and at most twelve hosts named with a one-word reason from a
+closed vocabulary and one short composed sentence. The split is three-valued — ok, bad and
+**unknown** — everywhere on the screen, because a wallboard that paints "not measured" the same colour
+as "healthy" is a wallboard that lies in the one direction nobody checks. What is not on it: no facts
+document in any form, no host identifiers, no unit, package, kernel or distribution names, no
+addresses, no container process names, no group names, and nothing about jobs — not a summary, not a
+principal, not an approval state. A hostname is the single host-reported string that reaches it, and
+it is there because a tile that names nothing sends somebody to a terminal to find out which machine
+it meant, which is the errand the screen exists to save.
+
+The operator's own wallboard is answered by the same projection, and differs only in its heading. That
+is deliberate: two payloads would in practice be one payload and a public subset of it, the subset
+would drift behind, and somebody would eventually and reasonably reuse the richer one on the route
+that does not authenticate.
+
+**The key travels in the URL fragment.** A published link is
+`https://farrier.example/board#frb_<tenant>.<secret>`, and the page reads the fragment and sends it as
+an `Authorization: Bearer` header. A fragment is never transmitted, so the secret is absent from this
+control plane's access log, from a reverse proxy's log, from `Referer` on anything the page links to,
+and from the fetch a chat client's link-preview crawler makes when somebody pastes the link into a
+channel — which, for a credential in a query string, is the single likeliest way one escapes. What a
+fragment does not do is disappear. It remains in browser history, in a bookmark, in whatever
+synchronises those between somebody's devices, and on a photograph of the address bar. The response
+that hands the link over says both halves of that, once, because that is the only moment anybody is
+reading.
+
+**The fleet's identifier is inside the key, and inside the digest.** That is what keeps this table out
+of [§5.2](#52-where-the-boundary-is-enforced)'s narrow exemption. Four tables have to be findable
+before the tenant is known, because finding them is *how* it becomes known, and each takes a read-only
+`farrier.resolve_key` disjunct admitting exactly the one row whose key the caller can already name. A
+fifth one, on a table reached by an unauthenticated request from the public internet, would be the
+widest of the set — and it is not needed: the server splits the key, opens a handle for the fleet the
+key names, and only then looks the secret up, so the lookup already runs inside a transaction that has
+set `farrier.tenant`. Naming the fleet in a credential a stranger holds is safe because the stored
+digest covers the *whole* key rather than its secret half: a key edited to name a neighbouring fleet
+hashes to a value no row holds, and is refused by the lookup before the tenant predicate and the
+row-level security policy are consulted at all. Both of those are still there, second and third. It is
+the fleet's identifier rather than its slug, because a slug is chosen to be readable and frequently
+names the customer, and the discipline of this whole feature is that it never says whose fleet is on
+the screen.
+
+A share may carry a passphrase, and what becomes of it afterwards is the part worth stating plainly.
+It is verified once, with Argon2id, and exchanged for a value the screen keeps in an `HttpOnly`,
+`Secure`, `SameSite=Strict` cookie. The exchange is not a shortcut around the password hash: one
+Argon2id derivation allocates 64 MiB, only a few may run at once, and a wallboard asks again every
+fifteen seconds for months, so a handful of screens would occupy the entire sign-in path's memory
+budget indefinitely. The consequence is the honest part. **An unlocked screen holds a credential
+equivalent to the link plus the passphrase**, and holds it until the share expires or its passphrase
+changes. There is no per-viewer revocation and there could not be: a television has no identity to
+revoke. What exists instead is that the value is derived from the presented key and the stored
+password hash rather than stored anywhere, so neither half produces it alone — whoever leaked the link
+cannot compute it without the database, whoever holds the database cannot compute it without the link
+— and changing the passphrase changes the hash, which drops every screen unlocked under the old one at
+its next poll.
+
+The rest is bounds, and each is chosen for what it makes noticeable rather than for what it prevents. A
+fleet may hold twenty live shares, which is not a capacity limit: it is the number that keeps the list
+something an operator reads down and recognises every line of, because "there is a share here I do not
+remember" is the only detection this feature has. `last_seen_at` records that a screen polled,
+throttled, and is read no more precisely than that; it exists so somebody can tell which of four links
+is still on a wall before revoking one and waiting to see who complains, and it is **not an access
+log**. Unlock attempts are rate limited per share rather than per source address — unlike every other
+limiter in this server — because a corridor, a NAT and a reverse proxy all put many screens behind one
+address, and the address is the wrong thing to punish. And every refusal on the public routes is the
+same refusal: an unknown key, a withdrawn share, an expired one, a share with no passphrase and a wrong
+passphrase are one answer down one path.
+
+**None of this touches [§1](#1-the-guarantee).** A share is a read of control-plane state. It reaches
+no host, carries no intent, produces no job, and there is no route from one to anything that writes to
+a fleet. The attacker §1 already concedes — the one who owns the control plane and its database — can
+publish a share, and could equally have read the same rows with `psql`; what that changes is the
+convenience of the crossing rather than its existence, and it is written down in
+[§9](#9-what-farrier-does-not-defend-against) rather than here.
+
+The limits, stated as limits rather than left to be inferred from what is not claimed:
+
+- **A share names no reader, and no version of it could.** Publishing is attributed; reading is not.
+- **A leaked link is a live feed and not a snapshot.** It keeps working, at fifteen-second resolution,
+  until it expires or somebody deletes the row — those are the only two things that stop it.
+- **The fragment keeps the key out of logs, not out of the world.** History, bookmarks, whatever
+  synchronises them, and a photograph of the address bar all keep a working copy.
+- **An unlocked screen holds link-plus-passphrase.** Expiry, a passphrase change and deleting the
+  share are the ways it is taken back, and none of them takes it back from one viewer.
+- **`last_seen_at` answers "is anybody still watching", not "who watched".** It is not an audit trail
+  and must not be quoted as one during an incident.
+- **There is no counters-only mode.** A board that says three hosts are offline and will not say which
+  starts the search it was built to end — so the names are on it, and a share is therefore not a thing
+  to publish outside the building it hangs in.
+
 ## 5. Tenants
 
 One control plane can serve many independent fleets. That is what makes hosting Farrier for other
@@ -432,9 +572,18 @@ was — and the failure it prevents is one customer seeing another's fleet.
 
 ### 5.1 What a tenant is
 
-A tenant owns hosts, enrolment tokens, jobs and results, and it chooses its own approval mode
+A tenant owns its hosts and the certificates that authenticate them, its enrolment tokens, its jobs
+and their results, its provisioning templates, its events and the unit-transition history behind them,
+its alerting rules and the firing state those rules keep, the accounts of its operators together with
+every session and API token those accounts hold, and the wallboard shares it has published
+([§4.6](#46-the-wallboard-and-its-link)). It chooses its own approval mode
 ([§3](#3-the-intent-catalogue)) and its own event webhook. A tenant is not a permission level: there is
 no hierarchy of tenants, and no tenant can see into another.
+
+The list is written out rather than summarised as "its data" because it has to stay true in two places
+at once — it is what [§5.2](#52-where-the-boundary-is-enforced) puts behind row-level security and
+what [§5.4](#54-what-deleting-a-tenant-does-not-do) has to remove — and a table added later that
+appears on neither list is exactly how this boundary would fail without anybody noticing.
 
 ### 5.2 Where the boundary is enforced
 
@@ -533,10 +682,27 @@ it by accident.
 
 ### 5.4 What deleting a tenant does not do
 
-It removes the tenant's hosts, certificates, tokens, jobs and results. It does not reach the machines —
-nothing in Farrier does. Their agents keep running, keep applying their own local policy, and are
-refused at the next request as an unknown certificate. That is the correct end state for a customer who
-has left, and it is worth saying out loud that deleting a tenant does not uninstall anything.
+It removes everything on [§5.1](#51-what-a-tenant-is)'s list: the hosts and their certificates, the
+enrolment tokens, the jobs and their results, the templates, the events and unit transitions, the
+alerting rules and their state, the accounts of that fleet's operators with every session and token
+those accounts hold, and the published wallboard shares. The cascade is declared in the schema rather
+than assembled in a handler, so the question a new table has to answer is one the migration asks rather
+than one review has to remember — which is the same reason §5.1 keeps a list instead of gesturing at
+one.
+
+A published wallboard link ([§4.6](#46-the-wallboard-and-its-link)) is worth naming on its own, because
+it is the one thing about a departed customer that a stranger may still be holding. Deleting the fleet
+deletes its shares, so the link stops **resolving**: the next poll finds no row and receives the same
+refusal as an unknown or withdrawn key. That is the required outcome and not merely a tidy one. A share
+that outlived its fleet would resolve to a fleet with no hosts in it, and a wallboard with no hosts in
+it renders as a *healthy* one — counters at zero and an all-clear panel where the failures would be. A
+green screen in a corridor for a customer who left three weeks ago is the worst failure this screen
+has, because a green screen is the one nobody investigates.
+
+It does not reach the machines — nothing in Farrier does. Their agents keep running, keep applying
+their own local policy, and are refused at the next request as an unknown certificate. That is the
+correct end state for a customer who has left, and it is worth saying out loud that deleting a tenant
+does not uninstall anything.
 
 ---
 
@@ -926,6 +1092,18 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   but they have `psql`. What §5 buys is that a bug cannot cross the boundary and that the feature set
   does not offer crossing it as a convenience; it does not turn a hosting provider into a party you do
   not have to trust. If you need that, run your own control plane; the binary is the same one.
+
+  The wallboard ([§4.6](#46-the-wallboard-and-its-link)) changes what that access is worth rather than
+  whether it exists, and the difference is worth stating. Somebody with `psql` could always read a
+  fleet's rows; what is new is that they can now write one — a row in `wallboard_shares`, with a digest
+  they chose — and then read that fleet's status screen from an ordinary browser, from anywhere,
+  holding no credential this installation issued, until somebody deletes the row. Nothing prevents
+  that, and nothing could: the row is the credential, and the party who can write rows is the party
+  this bullet is about. What exists is a mitigation, and it is worth what an operator's attention is
+  worth. The share appears in that fleet's own list of published links, with its label, its date and
+  the principal that published it, and the list is capped at twenty precisely so that it stays
+  something somebody reads down and recognises every line of. A share nobody remembers publishing is
+  the detection; there is no other, and it is a detection only for a fleet whose operators look.
 
   There is deliberately **no support path** across the boundary — no impersonation, no read-only view of
   a customer's hosts, no "open a ticket and we will look". A hosting provider who needs to see a

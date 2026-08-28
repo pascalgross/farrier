@@ -91,6 +91,18 @@ type factsProbe struct {
 	Reboot struct {
 		// Required reports whether a reboot is needed.
 		Required bool `json:"required"`
+
+		// Conclusive reports whether anything on the host could answer the question at all.
+		//
+		// It is here because `required: false` and "nothing here can tell" are different facts that
+		// look identical, and on Debian the second is common: the /var/run/reboot-required marker is an
+		// Ubuntu convention and needrestart is a Recommends. A reader that treats the two alike paints
+		// an unmeasurable fleet green, which is the one direction a status screen must not be wrong in.
+		//
+		// The alert evaluator deliberately does not consult it: `reboot_required` fires on an
+		// affirmative answer, and an absent answer is not one. The wallboard does, because its job is
+		// to count what is known and say how much is not.
+		Conclusive bool `json:"conclusive"`
 	} `json:"reboot"`
 
 	// Services is systemd unit state, truncated to the protocol's cap.

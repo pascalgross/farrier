@@ -2,8 +2,13 @@
   The toolbar is rendered only when there is something in it. Signed out, it held the mark and the
   word "Farrier" above a sign-in screen that says both again, larger — a header bar whose only content
   is a second copy of the heading underneath it.
+
+  A public route has nothing in it either, and for a stronger reason: the published board is read by a
+  room rather than by an operator, so every control here would be a control nobody can press and half
+  of them would be routes that answer a refusal. It is suppressed even for a signed-in operator who
+  opens the board, because what that operator is checking is what the screen on the wall will show.
 -->
-@if (session.signedIn()) {
+@if (!publicRoute() && session.signedIn()) {
   <mat-toolbar class="!flex items-center gap-4">
     <!--
       The mark goes where this credential can actually go. It used to be a fixed `/`, which for a
@@ -32,6 +37,7 @@
       <nav class="flex items-center gap-1 ml-4">
         <a mat-button routerLink="/" routerLinkActive="!font-semibold"
            [routerLinkActiveOptions]="{ exact: true }">Fleet</a>
+        <a mat-button routerLink="/wallboard" routerLinkActive="!font-semibold">Wallboard</a>
         <a mat-button routerLink="/services" routerLinkActive="!font-semibold">Services</a>
         <a mat-button routerLink="/jobs" routerLinkActive="!font-semibold">Jobs</a>
         <a mat-button routerLink="/templates" routerLinkActive="!font-semibold">Templates</a>
@@ -87,8 +93,20 @@
   </mat-toolbar>
 }
 
-<main class="p-6 max-w-7xl mx-auto">
-  @if (session.signedIn()) {
+<!--
+  The page's own frame, and none of it on a public route: a wallboard is sized in viewport units and
+  a centred column with six rems of padding around it is not one screen, it is a screen with a border
+  drawn on it.
+-->
+<main [class]="publicRoute() ? 'farrier-shell__bare' : 'p-6 max-w-7xl mx-auto'">
+  @if (publicRoute()) {
+    <!--
+      Rendered before the identity is known and without consulting it. The credential this route
+      needs is in the address's fragment and the shell has no business waiting on a session probe
+      that will answer 401 for a television.
+    -->
+    <router-outlet />
+  } @else if (session.signedIn()) {
     <router-outlet />
   } @else if (!session.ready()) {
     <!--
@@ -174,6 +192,11 @@
   }
 </main>
 
-@if (session.signedIn() && !session.isPlatform()) {
+<!--
+  Not on a public route either, whoever is signed in. A toast is addressed to the operator who caused
+  the thing it is about; on a wallboard it would be a notification nobody in the room can dismiss,
+  sitting over the one thing the screen exists to show.
+-->
+@if (!publicRoute() && session.signedIn() && !session.isPlatform()) {
   <farrier-toast-stack />
 }

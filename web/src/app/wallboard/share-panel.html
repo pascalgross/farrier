@@ -1,0 +1,137 @@
+<mat-card class="max-w-3xl" appearance="outlined">
+  <details class="group" (toggle)="open()">
+    <summary class="flex items-center gap-3 p-4 cursor-pointer list-none">
+      <mat-icon class="transition-transform group-open:rotate-90" aria-hidden="true">chevron_right</mat-icon>
+      <span class="font-medium">Put this board on a screen</span>
+      <span class="text-sm opacity-70">A link that shows this page and nothing else</span>
+    </summary>
+
+    <div class="px-4 pb-4 flex flex-col gap-4">
+      <p class="m-0 text-sm opacity-80">
+        A link reaches this one summary of this one fleet, expires on a date you choose here, and can
+        change nothing. It is a credential in an address, so whoever holds it sees roughly what
+        somebody standing in front of the screen sees — continuously, until it expires or you withdraw
+        it. It records who published it and cannot record who reads it.
+      </p>
+
+      <!--
+        Shown here and never again: only the key's digest is stored, so this is the one moment the
+        link exists anywhere but in whoever copies it.
+      -->
+      @if (published(); as fresh) {
+        <div class="rounded p-3 flex flex-col gap-2 bg-farrier-warn/15">
+          <div class="flex items-center gap-2 font-medium">
+            <mat-icon aria-hidden="true">link</mat-icon>
+            <span>{{ fresh.share.label }} — copy it now</span>
+          </div>
+
+          <code class="text-sm break-all">{{ fresh.link }}</code>
+
+          <p class="m-0 text-sm opacity-80">
+            Only the key's hash is stored, so this link will not be shown again and cannot be
+            recovered. If you lose it, revoke this share and publish another — that costs nothing.
+            Open it on the screen itself: the part after the <code>#</code> is the credential and is
+            never sent to the control plane in the address.
+          </p>
+
+          <div class="flex flex-wrap gap-2">
+            <button mat-stroked-button type="button" (click)="copy()">
+              <mat-icon aria-hidden="true">{{ copied() ? 'check' : 'content_copy' }}</mat-icon>
+              {{ copied() ? 'Copied' : 'Copy the link' }}
+            </button>
+            <button mat-button type="button" (click)="dismiss()">Done</button>
+          </div>
+        </div>
+      }
+
+      <div class="flex flex-wrap items-start gap-3">
+        <mat-form-field appearance="outline" class="grow min-w-60">
+          <mat-label>What is it for</mat-label>
+          <input matInput [ngModel]="label()" (ngModelChange)="label.set($event)"
+                 (keyup.enter)="publish()" placeholder="Operations wall, Frankfurt" />
+          <mat-hint>It is the heading the screen shows, and how you will recognise it below.</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="w-52">
+          <mat-label>Expires after</mat-label>
+          <mat-select [ngModel]="days()" (ngModelChange)="days.set($event)">
+            @for (lifetime of lifetimes; track lifetime.days) {
+              <mat-option [value]="lifetime.days">{{ lifetime.label }}</mat-option>
+            }
+          </mat-select>
+          <mat-hint>There is no "never".</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="w-64">
+          <mat-label>Passphrase (optional)</mat-label>
+          <input matInput type="password" autocomplete="new-password"
+                 [ngModel]="passphrase()" (ngModelChange)="passphrase.set($event)"
+                 (keyup.enter)="publish()" />
+          <mat-hint>Asked once per screen, then exchanged for a cookie that screen keeps.</mat-hint>
+        </mat-form-field>
+      </div>
+
+      @if (publishError(); as failure) {
+        <p class="m-0 text-sm text-farrier-bad">{{ failure }}</p>
+      }
+
+      <button mat-flat-button type="button" class="self-start" [disabled]="!canPublish()"
+              (click)="publish()">
+        {{ working() ? 'Publishing…' : 'Publish a link' }}
+      </button>
+
+      <h3 class="m-0 mt-2 text-base font-medium">Published links</h3>
+
+      @if (loadError(); as failure) {
+        <p class="m-0 text-sm text-farrier-bad">{{ failure }}</p>
+      } @else if (loading() && shares().length === 0) {
+        <mat-progress-bar mode="indeterminate" aria-label="Loading the published links" />
+      } @else if (shares().length === 0) {
+        <p class="m-0 text-sm opacity-70">
+          Nothing is published. This board is reachable only by somebody signed in.
+        </p>
+      } @else {
+        <!--
+          Expired shares stay in the list. A link that stopped working is the first thing somebody
+          looks for when the screen in the corridor has gone dark.
+        -->
+        <ul class="m-0 p-0 list-none flex flex-col gap-2">
+          @for (share of shares(); track share.id) {
+            <li class="flex items-start gap-3" [class.opacity-60]="share.expired">
+              <mat-icon aria-hidden="true">{{ share.passphrase ? 'lock' : 'public' }}</mat-icon>
+
+              <div class="grow">
+                <div class="font-medium">
+                  {{ share.label }}
+                  @if (share.expired) {
+                    <span class="text-xs opacity-70">· expired</span>
+                  }
+                  @if (share.passphrase) {
+                    <span class="text-xs opacity-70">· passphrase</span>
+                  }
+                </div>
+                <div class="text-xs opacity-70 farrier-numeric">
+                  Published {{ age(share.createdAt) }} by {{ share.createdBy }} ·
+                  {{ share.expired ? 'expired' : 'expires' }}
+                  {{ share.expiresAt | date: 'mediumDate' }} ·
+                  <!--
+                    The nearest thing to an access record, and not one: it says a screen polled, not
+                    which screen or from where. It is here so that "is anything still showing this"
+                    is answerable before somebody withdraws a link and waits to see who complains.
+                  -->
+                  last polled {{ age(share.lastSeenAt) }}
+                </div>
+              </div>
+
+              <button mat-icon-button [disabled]="working()" (click)="revoke(share)"
+                      matTooltip="Withdraw this link. Every screen holding it goes dark at its next poll."
+                      [attr.aria-label]="'Withdraw ' + share.label">
+                <mat-icon>delete_outline</mat-icon>
+              </button>
+            </li>
+          }
+        </ul>
+      }
+    </div>
+  </details>
+</mat-card>

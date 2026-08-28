@@ -180,6 +180,75 @@ from `FARRIER_SMTP_PASSWORD`, and never from a flag, because `argv` is world-rea
 Without a relay, every other route still works — the event inbox, the live feed in the interface, and
 each fleet's webhook — and a rule that names recipients says on the rule that its mail did not go out.
 
+### A screen, for the people who are
+
+The wallboard is the fleet in one glance — how many hosts are fine, how many are not, how many nobody
+can answer for, and the handful worth walking towards — refreshed every fifteen seconds and legible
+from the other side of a room. Operators reach it at `/wallboard` with the credential they already
+have. A television in a corridor cannot sign in, so it gets a **published link** instead:
+
+```bash
+# The label is the heading the screen shows, so name the fleet rather than the link.
+curl -sX POST https://farrier.example.org/api/v1/wallboard/shares \
+  -H "Authorization: Bearer $FARRIER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"label":"Production — Frankfurt","days":90,"passphrase":"the one on the sticker"}'
+```
+
+```json
+{
+  "share": {
+    "id": "01JAV0Q7X4M2R6P9T3K5N8W1YB",
+    "label": "Production — Frankfurt",
+    "createdAt": "2026-08-28T09:14:02Z",
+    "createdBy": "local-account:ops@example.org",
+    "expiresAt": "2026-11-26T09:14:02Z",
+    "lastSeenAt": null,
+    "passphrase": true,
+    "expired": false
+  },
+  "link": "https://farrier.example.org/board#frb_01JAV0….k7q2…"
+}
+```
+
+**Keep the link now — it is shown once and cannot be recovered.** Only its digest is stored, exactly as
+for an enrolment token and an API token, so there is nothing to print it from later. If you lose it,
+publish another and withdraw this one; that is a second of work and the only way back.
+
+The secret is the part after the `#`, and a fragment is never sent to a server. It is in no access log
+here, none at your reverse proxy, no `Referer`, and not in the fetch a chat client makes to build a
+preview when somebody pastes the link into a channel. It is still in the browser's history and still in
+the address bar, so treat a photograph of the screen as a copy of the link.
+
+`days` is optional — ninety by default, 365 at most, and deliberately no "never". `passphrase` is
+optional too: with one, the board asks for it once on that screen and remembers the answer in a cookie
+until the link expires or you change the passphrase, which drops every screen that was unlocked under
+the old one.
+
+Listing and withdrawing are the other two:
+
+```bash
+curl -s https://farrier.example.org/api/v1/wallboard/shares \
+  -H "Authorization: Bearer $FARRIER_TOKEN"
+
+# Withdrawing is a delete, and takes effect at the next poll — within fifteen seconds.
+curl -sX DELETE https://farrier.example.org/api/v1/wallboard/shares/01JAV0Q7X4M2R6P9T3K5N8W1YB \
+  -H "Authorization: Bearer $FARRIER_TOKEN"
+```
+
+The listing includes expired links as well as live ones, because a screen that has gone dark is the
+first thing somebody comes looking for and "there is no such link" is the wrong answer to give the
+person holding it. `lastSeenAt` says that a screen is still polling, roughly; it does not say who is
+watching, and cannot.
+
+A fleet may hold twenty live links at once. That is not a capacity limit — it keeps the list short
+enough that you recognise every line of it, which is how you would notice one you did not publish.
+
+Read [`SECURITY.md` §4.6](SECURITY.md#46-the-wallboard-and-its-link) before publishing a link outside
+the building it hangs in. The short version is that a leaked link shows a remote stranger roughly what
+somebody standing in the corridor already sees, continuously, until it expires or you delete it — and
+that it names whoever published it and can never name who read it.
+
 ### More than one fleet
 
 The command above gives you a fleet called `default`, and if that is all you want you can stop reading

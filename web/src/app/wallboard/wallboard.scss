@@ -1,0 +1,387 @@
+// The wallboard's own layout, which is the one place in this application where the geometry is part
+// of the argument rather than a presentation of it.
+//
+// Two rules hold the whole file together. Nothing here clips: there is no `overflow` declaration
+// anywhere, because the page fits one screen by virtue of the payload being bounded at twelve tiles,
+// and a stylesheet that hid the overflow instead would hide the thirteenth failing host — precisely
+// the thing the board exists to surface. And nothing here invents a colour: the four
+// `--color-farrier-*` tokens and Material's own system tokens are the entire palette, so a green here
+// means what a green means on every other page.
+
+:host {
+  display: block;
+  height: 100dvh;
+
+  // Type in viewport-height units with a rem floor, and no media queries anywhere. A breakpoint set
+  // asks "how wide is the screen", which on a wall is the wrong question — a 55-inch panel and a
+  // laptop report the same CSS pixels and are read from thirty times the distance apart. Height is
+  // the axis that tracks how much room there is to be large in; the rem floor is what keeps the same
+  // markup ordinary when it is opened in a tab.
+  --wb-label: max(0.875rem, 2.2vh);
+  --wb-host: max(1.25rem, 3.2vh);
+  --wb-counter: clamp(2.5rem, 11vh, 12rem);
+
+  // Every green on this board is this one variable, so that withdrawing the greens is one
+  // declaration rather than a hunt through the file. See `.wb--stale`.
+  --wb-ok: var(--color-farrier-ok);
+
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+}
+
+// Inside the shell the board is not the whole page: a toolbar sits above it and the share panel
+// below it. A host of exactly one viewport height would push its own footer under the fold and put
+// the panel a scroll away from a page that claims to fit one screen, so the board keeps a
+// screen-shaped block of its own and the host grows to hold both.
+:host(.farrier-wallboard--framed) {
+  height: auto;
+}
+
+.wb,
+.wb-alone {
+  height: 100%;
+}
+
+:host(.farrier-wallboard--framed) .wb,
+:host(.farrier-wallboard--framed) .wb-alone {
+  height: clamp(26rem, calc(100dvh - 12rem), 100dvh);
+}
+
+// Three rows: the counters take what their type needs, the tiles take everything that is left, and
+// the footer takes a line. `1fr` on the middle row is what makes the grid inside it able to be told
+// how tall a tile may be.
+.wb {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 2vh;
+  padding: 2.5vh 2.5vw;
+}
+
+// Stale, and the numbers are no longer being claimed as current. The greens go quiet rather than
+// red, because red says the fleet is bad and this says we do not know — a third thing, and the one
+// this board is most often in.
+.wb--stale {
+  --wb-ok: var(--color-farrier-quiet);
+}
+
+// An empty fleet is not a well fleet. Zero of zero hosts healthy is arithmetically an all-clear, so
+// the greens go with the same mechanism staleness uses rather than a second one.
+.wb--empty {
+  --wb-ok: var(--color-farrier-quiet);
+}
+
+.wb__band {
+  display: flex;
+  flex-direction: column;
+  gap: 1vh;
+}
+
+// The amber band. It is a band rather than a line of coloured text because it is a statement about
+// everything under it, and a sentence in the footer is a sentence nobody reads from a doorway.
+.wb__stale {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  font-size: var(--wb-label);
+  line-height: 1.3;
+  color: var(--mat-sys-on-surface);
+  background: color-mix(in oklab, var(--color-farrier-warn) 22%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-farrier-warn) 55%, transparent);
+
+  mat-icon {
+    color: var(--color-farrier-warn);
+    flex: none;
+  }
+}
+
+.wb__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 1ch;
+  margin: 0;
+  font-size: var(--wb-host);
+  line-height: 1.2;
+}
+
+.wb__title-name {
+  font-weight: 500;
+}
+
+.wb__title-total {
+  color: var(--mat-sys-on-surface-variant);
+  font-size: var(--wb-label);
+}
+
+.wb__counters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 clamp(1.5rem, 4vw, 5rem);
+}
+
+// One counter: a number and the word for it, stacked. The word is not a caption for the colour, it
+// is the other half of the same statement.
+.wb__counter {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  line-height: 0.95;
+}
+
+.wb__number {
+  font-size: var(--wb-counter);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.wb__word {
+  font-size: var(--wb-label);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.wb__counter--ok .wb__number {
+  color: var(--wb-ok);
+}
+
+.wb__counter--bad .wb__number {
+  color: var(--color-farrier-bad);
+}
+
+.wb__counter--unknown .wb__number {
+  color: var(--color-farrier-quiet);
+}
+
+// The three backlogs, set at hostname size rather than counter size. That hierarchy is the payload's
+// own: health is the question this screen answers, and a backlog is context somebody acts on during
+// working hours.
+.wb__minors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 clamp(1.25rem, 3vw, 3.5rem);
+}
+
+.wb__minor {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  line-height: 1.15;
+  color: var(--wb-ok);
+}
+
+.wb__minor--warn {
+  color: var(--color-farrier-warn);
+}
+
+.wb__minor--bad {
+  color: var(--color-farrier-bad);
+}
+
+.wb__minor-number {
+  font-size: var(--wb-host);
+  font-weight: 500;
+}
+
+.wb__minor-note {
+  font-size: var(--wb-label);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.wb__main {
+  display: flex;
+  flex-direction: column;
+  gap: 1vh;
+  min-height: 0;
+}
+
+// `auto-fit` with a `min(100%, 22ch)` track, so the same markup is one column on a phone and six on
+// a wall without a breakpoint deciding which. `1fr` auto-rows makes every tile the same height,
+// which is what stops a two-word detail and a long one reading as two different kinds of thing.
+.wb__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22ch), 1fr));
+  grid-auto-rows: 1fr;
+  gap: clamp(0.5rem, 1.4vh, 1.5rem);
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+// A tinted card with a coloured edge, the same device the fleet list uses for a row worth looking
+// at: the edge stays legible when every tile is tinted, which on a bad morning they all are.
+.wb__tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: clamp(0.5rem, 1.4vh, 1.25rem);
+  border-radius: 0.5rem;
+  border-inline-start: 4px solid var(--color-farrier-quiet);
+  background: color-mix(in oklab, var(--color-farrier-quiet) 14%, transparent);
+  // Long hostnames wrap rather than push the page sideways. `anywhere` and not `overflow: hidden`:
+  // the pathological case scrolls, which is honest, instead of being clipped, which is not.
+  overflow-wrap: anywhere;
+}
+
+.wb__tile--bad {
+  border-inline-start-color: var(--color-farrier-bad);
+  background: color-mix(in oklab, var(--color-farrier-bad) 14%, transparent);
+}
+
+.wb__tile-icon {
+  color: var(--color-farrier-quiet);
+  flex: none;
+}
+
+.wb__tile--bad .wb__tile-icon {
+  color: var(--color-farrier-bad);
+}
+
+.wb__tile-host {
+  margin: 0;
+  font-size: var(--wb-host);
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.wb__tile-reason {
+  margin: 0;
+  font-size: var(--wb-label);
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.wb__tile-detail {
+  margin: 0;
+  font-size: var(--wb-label);
+  line-height: 1.25;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+// What the grid is not showing, said out loud. The counters above are exact; this line is what keeps
+// a bounded grid from being a silent one.
+.wb__more {
+  margin: 0;
+  font-size: var(--wb-label);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+// The all-clear and the empty fleet. Large, because the state that means "nothing needs anybody" has
+// to be readable from the same distance as the state that does not.
+.wb__panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  text-align: center;
+  color: var(--color-farrier-quiet);
+}
+
+.wb__panel--clear {
+  color: var(--wb-ok);
+}
+
+.wb__panel-icon {
+  font-size: var(--wb-counter);
+  width: var(--wb-counter);
+  height: var(--wb-counter);
+}
+
+.wb__panel-head {
+  margin: 0;
+  font-size: var(--wb-host);
+  font-weight: 500;
+}
+
+.wb__panel-note {
+  margin: 0;
+  font-size: var(--wb-label);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.wb__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.5ch;
+  font-size: var(--wb-label);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.wb__foot-sep {
+  opacity: 0.6;
+}
+
+.wb__foot-warn {
+  color: var(--color-farrier-warn);
+}
+
+.wb__foot-gap {
+  flex: 1;
+}
+
+// The four screens that replace the board. Centred and large: each of them is one sentence a room
+// has to be able to read, and none of them has numbers to lay out.
+.wb-alone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.5vh 2.5vw;
+  text-align: center;
+  color: var(--color-farrier-quiet);
+}
+
+.wb-alone__icon {
+  font-size: var(--wb-counter);
+  width: var(--wb-counter);
+  height: var(--wb-counter);
+}
+
+.wb-alone__age {
+  margin: 0;
+  font-size: var(--wb-counter);
+  font-weight: 500;
+  line-height: 0.95;
+  color: var(--mat-sys-on-surface);
+}
+
+.wb-alone__head {
+  margin: 0;
+  font-size: var(--wb-host);
+  font-weight: 500;
+  color: var(--mat-sys-on-surface);
+}
+
+.wb-alone__note {
+  margin: 0;
+  max-width: 48ch;
+  font-size: var(--wb-label);
+  line-height: 1.4;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.wb-alone__note--bad {
+  color: var(--color-farrier-bad);
+}
+
+.wb-alone__form {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+// The share panel, in operator mode only, under the board rather than beside it: the board is a
+// screen-shaped thing and cropping it to make room for a form would misrepresent what a television
+// will show.
+.wb__shares {
+  display: block;
+  padding: 1.5rem 0 0;
+}

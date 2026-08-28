@@ -6,6 +6,15 @@
   min-height: 100%;
 }
 
+// The frame a public route does not get.
+//
+// Every other page is a centred column with padding, which is right for something read at a desk. The
+// published wallboard sizes itself in viewport units, so the same frame would be a screen with a
+// border drawn round it and its footer pushed under the fold.
+.farrier-shell__bare {
+  display: block;
+}
+
 // Inline code in explanatory prose. Material's typography has no opinion about it, and unstyled
 // <code> in a Roboto page is nearly invisible.
 code {

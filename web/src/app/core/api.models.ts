@@ -58,6 +58,19 @@ export interface HostFacts {
   reboot?: {
     /** Whether a reboot is required. */
     required: boolean;
+
+    /**
+     * Whether the host could answer the question at all.
+     *
+     * `/var/run/reboot-required` is an Ubuntu convention and `needrestart` is only a Recommends on
+     * Debian, so a bare `required: false` frequently means *nothing here can tell*. Reading that as
+     * "no reboot needed" is the quiet version of the mistake `serviceScanComplete` and
+     * `servicesTruncated` already exist to prevent, and it is quieter than either: a fleet of Debian
+     * hosts renders as a fleet that is fully up to date. Absent from an older control plane's
+     * response, which is why every reader treats only an explicit `false` as inconclusive.
+     */
+    conclusive?: boolean;
+
     /** The packages that require it. */
     reasons?: string[];
     /** Units that still hold replaced libraries, per needrestart. */
@@ -1141,4 +1154,207 @@ export interface CreateEnrolmentTokenRequest {
 
   /** The fleet group hosts enrolled with it join. */
   group: string;
+}
+
+/**
+ * The three-valued count of a fleet's health, which is the whole argument of the wallboard payload.
+ *
+ * `ok + bad + unknown === total`, always, and the server holds itself to it. The third value is the
+ * one that costs something to leave out: a host that has never reported and a host that is fine are
+ * the same colour on any board that counts two ways, and the board is then most confident about
+ * exactly the fleet it knows least about.
+ */
+export interface WallboardCounts {
+  /** How many hosts are enrolled, revoked ones excluded. */
+  total: number;
+
+  /** How many are reachable with nothing definitely wrong. */
+  ok: number;
+
+  /** How many were heard from and are broken, or were not heard from inside the grace window. */
+  bad: number;
+
+  /** How many cannot be judged: never seen, paused, or with no readable facts. */
+  unknown: number;
+}
+
+/**
+ * One host the board names, as an example of what the counters already counted.
+ *
+ * The tiles are examples and the counters are the truth — see `attentionOmitted`. Everything here is
+ * composed by the control plane, including `detail`, so that two screens showing one fleet say the
+ * same words and no client has to know the grace window or the skew threshold to phrase them.
+ */
+export interface WallboardAttention {
+  /** What the host calls itself. The only identifier on the board: a host id is a thing to probe. */
+  hostname: string;
+
+  /** Whether this is definitely wrong or merely unjudgeable. Never "ok": a well host is not a tile. */
+  status: 'bad' | 'unknown';
+
+  /**
+   * Why, from a closed vocabulary, so the board can render a word and an icon rather than a colour.
+   *
+   * Closed because it is a rendering key as well as a label. An unrecognised member must still draw
+   * something, which is why the board falls back rather than switching exhaustively: a control plane
+   * one version ahead should add a reason, not blank a tile.
+   */
+  reason: 'offline' | 'unit_failed' | 'clock_skewed' | 'never_seen' | 'paused' | 'facts_unknown';
+
+  /** One phrase, composed and bounded by the server, such as "no heartbeat for 14 minutes". */
+  detail: string;
+}
+
+/**
+ * One screen of a fleet's state, as both wallboard routes answer it.
+ *
+ * The authenticated and the public route return the same bytes but for `title`, which is a property
+ * rather than an accident: were the public payload a redaction of a richer one, the redaction would
+ * be a rule somebody has to remember on every future field. Nothing a host reported is in here — no
+ * facts document, no host ids, no unit, package or kernel names — because a leaked link discloses
+ * roughly what somebody standing in the room already sees, and that is what makes it acceptable at
+ * all.
+ */
+export interface WallboardView {
+  /**
+   * The control plane's clock, for display beside the fleet's name and for nothing else.
+   *
+   * Emphatically not what the board ages itself against: it arrives inside the response and freezes
+   * with it, so a board that measured staleness with it would report "updated one second ago" for
+   * ever after the control plane stopped answering. The browser's own clock is what ticks.
+   */
+  serverTime: string;
+
+  /** How often to poll, in seconds. Server-set, so changing the pacing does not mean reissuing links. */
+  pollSeconds: number;
+
+  /** What this fleet is called, and the only place a fleet is named on a public screen. */
+  title: string;
+
+  /** Host health, three-valued and summing to the fleet. */
+  hosts: WallboardCounts;
+
+  /** The security backlog. A backlog is a counter and never makes a host `bad`. */
+  security: {
+    /** How many hosts have at least one pending security update. */
+    hosts: number;
+
+    /**
+     * How many security updates are pending across the fleet.
+     *
+     * Optional because the server omits it when it is zero — the three measures share one Go struct
+     * and only this one has a package count — so a fully patched fleet sends no field at all. Every
+     * reader has to coalesce it to zero rather than render the absence, which on a wallboard would
+     * be a blank space where the reassuring number belongs.
+     */
+    packages?: number;
+
+    /** How many hosts could not be asked, so the two numbers above are known to be understatements. */
+    unknown: number;
+  };
+
+  /** Hosts awaiting a reboot, with the hosts that cannot answer the question counted separately. */
+  reboots: {
+    /** How many hosts require a reboot. */
+    hosts: number;
+
+    /** How many could not tell — the Debian case `HostFacts.reboot.conclusive` names. */
+    unknown: number;
+  };
+
+  /** Hosts with a failed systemd unit, and hosts whose unit list could not be read. */
+  units: {
+    /** How many hosts have at least one failed unit. */
+    hosts: number;
+
+    /** How many have no readable unit list, including one cut at the protocol's cap. */
+    unknown: number;
+  };
+
+  /** At most twelve hosts worth naming, ordered by the server so the grid does not shuffle. */
+  attention: WallboardAttention[];
+
+  /**
+   * How many bad-or-unknown hosts did not fit.
+   *
+   * The number is what turns a bounded grid from "hidden" into "counted": a board that clipped its
+   * thirteenth failing host would hide precisely the thing it exists to surface, using the mechanism
+   * that was meant to make it readable.
+   */
+  attentionOmitted: number;
+}
+
+/**
+ * One published link, as the share list renders it.
+ *
+ * The secret is not here and never will be: only its digest is stored, so the link exists exactly
+ * once, in the create response. What this carries is enough to recognise a share and decide to
+ * withdraw it — what it was called, who published it, when it dies, and whether anything is still
+ * polling it.
+ */
+export interface WallboardShare {
+  /** What names this share in the request that withdraws it. Not the secret, which is unrecoverable. */
+  id: string;
+
+  /** What the operator called it, and the heading the published screen shows. */
+  label: string;
+
+  /** When it was published. */
+  createdAt: string;
+
+  /** Who published it. The one name a share can carry: it names no reader and never will. */
+  createdBy: string;
+
+  /** When it stops answering. Never absent — a share that never expires is the credential §4.5 removed. */
+  expiresAt: string;
+
+  /**
+   * When a screen last polled it, null for never.
+   *
+   * The closest thing to an access record and not one: it says something polled, not which television
+   * or from where. It exists so that "which of these four links is still on a wall" is answerable
+   * before somebody revokes one and waits to see who complains.
+   */
+  lastSeenAt: string | null;
+
+  /** Whether a passphrase is required before a screen may poll it. */
+  passphrase: boolean;
+
+  /** Whether it has already run out, in which case it is a row to tidy rather than a credential. */
+  expired: boolean;
+}
+
+/** The response of `GET /api/v1/wallboard/shares`. */
+export interface WallboardSharesResponse {
+  /** Every share this fleet has published, newest first, expired ones included. */
+  shares: WallboardShare[];
+
+  /** The control plane's clock, so ages in the list are rendered against it rather than the browser's. */
+  serverTime: string;
+}
+
+/** The body of `POST /api/v1/wallboard/shares`. */
+export interface CreateWallboardShareRequest {
+  /** What to call it. Required: a list of four shares called "share" is a list nobody revokes from. */
+  label: string;
+
+  /** How long it lives, in days. Absent means the server's ninety; the server refuses more than 365. */
+  days?: number;
+
+  /** An optional passphrase a screen proves once and then exchanges for a cookie. Absent for none. */
+  passphrase?: string;
+}
+
+/**
+ * The response of `POST /api/v1/wallboard/shares`.
+ *
+ * `link` is the one moment the secret exists anywhere but in whoever copies it, so whatever renders
+ * this has to say so where it is shown rather than in a footnote. Losing it costs one more share.
+ */
+export interface CreateWallboardShareResponse {
+  /** The share as the list will show it from now on. */
+  share: WallboardShare;
+
+  /** The whole address, key in the fragment, returned exactly once. */
+  link: string;
 }

@@ -14,6 +14,8 @@ import {
   CreateTemplateRequest,
   CreateEnrolmentTokenRequest,
   CreateTenantRequest,
+  CreateWallboardShareRequest,
+  CreateWallboardShareResponse,
   EnrolmentInstructions,
   EventsResponse,
   FailedServicesResponse,
@@ -37,6 +39,8 @@ import {
   Tenant,
   TenantsResponse,
   UpdateTenantRequest,
+  WallboardSharesResponse,
+  WallboardView,
   Whoami,
 } from './api.models';
 
@@ -457,5 +461,90 @@ export class ApiService {
       request,
       { headers: this.headers() },
     );
+  }
+
+  /**
+   * Fetches one screen of this fleet's state, for an operator.
+   *
+   * The same builder answers the public route, so what an operator sees here is exactly what a
+   * television shows — which is what makes it possible to check a share without holding one.
+   */
+  wallboard(): Observable<WallboardView> {
+    return this.http.get<WallboardView>('/api/v1/wallboard', { headers: this.headers() });
+  }
+
+  /** Lists the links this fleet has published, expired ones included so a dark screen is explicable. */
+  wallboardShares(): Observable<WallboardSharesResponse> {
+    return this.http.get<WallboardSharesResponse>('/api/v1/wallboard/shares', {
+      headers: this.headers(),
+    });
+  }
+
+  /**
+   * Publishes a link, returned exactly once.
+   *
+   * Only the key's SHA-256 is stored, so the `link` in the response is the one copy that will ever
+   * exist outside whoever writes it down. Whatever renders it says so at the moment it is shown.
+   */
+  createWallboardShare(
+    request: CreateWallboardShareRequest,
+  ): Observable<CreateWallboardShareResponse> {
+    return this.http.post<CreateWallboardShareResponse>('/api/v1/wallboard/shares', request, {
+      headers: this.headers(),
+    });
+  }
+
+  /** Withdraws a link. Every screen holding it goes dark at its next poll, because the row is read. */
+  deleteWallboardShare(id: string): Observable<unknown> {
+    return this.http.delete(`/api/v1/wallboard/shares/${encodeURIComponent(id)}`, {
+      headers: this.headers(),
+    });
+  }
+
+  /**
+   * Fetches the same screen with a share key rather than a session.
+   *
+   * `SESSION_HEADER` is deliberately absent, and that is the whole point of these two methods rather
+   * than a saving. The control plane refuses a cookie-authenticated request without that header, so
+   * omitting it means the session cookie a signed-in operator's browser sends anyway cannot
+   * authenticate this request: the share key is the only credential that can, and `/board` therefore
+   * shows an operator precisely what it shows a television. A page that answered differently
+   * depending on who opened it would be a page nobody could check before hanging it on a wall.
+   *
+   * The key goes in a header rather than the URL because it lives in the address's fragment, which is
+   * never transmitted — so it is absent from the control plane's access log, from any proxy's, and
+   * from `Referer`. Putting it back into a path would undo that in one line.
+   */
+  publicWallboard(key: string): Observable<WallboardView> {
+    return this.http.get<WallboardView>('/api/v1/wallboard/public', {
+      headers: this.bearer(key),
+    });
+  }
+
+  /**
+   * Proves a share's passphrase once, in exchange for a cookie the poll can carry cheaply.
+   *
+   * Once, because a wallboard cannot re-derive Argon2id every fifteen seconds — one derivation
+   * allocates 64 MiB and at most four run at once, so a handful of screens would be the whole sign-in
+   * path's memory budget. What comes back is a `Set-Cookie` this application never reads: it is
+   * HttpOnly, and the browser attaches it to the poll on its own.
+   */
+  unlockWallboard(key: string, passphrase: string): Observable<unknown> {
+    return this.http.post(
+      '/api/v1/wallboard/public/unlock',
+      { passphrase },
+      { headers: this.bearer(key) },
+    );
+  }
+
+  /**
+   * Builds the headers for a request authenticated by a share key.
+   *
+   * Its own builder rather than an argument to `headers()`, so that the absence of `SESSION_HEADER`
+   * on the two public routes is visible in one place and cannot be restored by somebody tidying a
+   * call site. See `publicWallboard` for why its absence is load-bearing.
+   */
+  private bearer(key: string): HttpHeaders {
+    return new HttpHeaders({ Authorization: `Bearer ${key}` });
   }
 }

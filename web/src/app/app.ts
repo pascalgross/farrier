@@ -1,4 +1,5 @@
 import { Component, computed, effect, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { MatBadgeModule } from '@angular/material/badge';
 import { MatButtonModule } from '@angular/material/button';
@@ -11,7 +12,15 @@ import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import {
+  ActivatedRouteSnapshot,
+  NavigationEnd,
+  Router,
+  RouterLink,
+  RouterLinkActive,
+  RouterOutlet,
+} from '@angular/router';
+import { filter } from 'rxjs';
 
 import { EventStream } from './core/event-stream';
 import { SessionStore } from './core/session';
@@ -93,6 +102,21 @@ export class App {
   /** Whether the password is being shown, so somebody can check what they typed. */
   protected readonly passwordShown = signal(false);
 
+  /**
+   * Whether the route being shown renders without a session.
+   *
+   * There is exactly one — the published wallboard — and it is what this flag exists for. The shell
+   * gates the outlet on `signedIn()`, which is right for every page that reaches a fleet's hosts or
+   * jobs and wrong for a screen on a wall: that browser holds no session, never will, and would meet
+   * a sign-in form on a machine with no keyboard. So the route declares itself public in `data` and
+   * the shell reads the declaration, rather than either of them matching on a path.
+   *
+   * It also suppresses the toolbar and the sign-in form, which is not tidiness: a corridor screen
+   * offered navigation would be offering routes it has no credential for, and every one of them
+   * would answer a refusal.
+   */
+  protected readonly publicRoute = signal(false);
+
   /** Whether the form has enough to submit. */
   protected readonly canSignIn = computed(
     () => !this.session.working() && this.email().trim().length > 0 && this.password().length > 0,
@@ -109,6 +133,19 @@ export class App {
    */
   constructor() {
     this.session.probe();
+
+    // Read once for the first paint, then again whenever a navigation settles. `NavigationEnd` and
+    // not every event: the snapshot still describes where we were until the navigation finishes, so
+    // reading it earlier would answer about the previous route and then correct itself — which on
+    // this particular flag is a sign-in form appearing for an instant on a public screen.
+    this.publicRoute.set(this.activeRouteIsPublic());
+    this.router.events
+      .pipe(
+        filter((event) => event instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => this.publicRoute.set(this.activeRouteIsPublic()));
+
     effect(() => {
       // The feed is a fleet's events, so it belongs to an operator and to nobody else: a platform
       // credential is refused by the stream exactly as it is by every other fleet route, and starting
@@ -138,6 +175,23 @@ export class App {
       }
       void this.router.navigateByUrl(this.router.url, { onSameUrlNavigation: 'reload' });
     });
+  }
+
+  /**
+   * Whether the route currently activated declares itself public.
+   *
+   * The deepest child is what is asked, because that is the route that actually matched; walking down
+   * rather than reading the root is what keeps the answer right when a public route is one day nested
+   * under something. `data` is read through an index because the type is an index signature, and the
+   * comparison is against `true` rather than truthiness so that a route carrying some other `public`
+   * value does not quietly open the outlet.
+   */
+  private activeRouteIsPublic(): boolean {
+    let route: ActivatedRouteSnapshot = this.router.routerState.snapshot.root;
+    while (route.firstChild) {
+      route = route.firstChild;
+    }
+    return route.data['public'] === true;
   }
 
   /** Signs in with the address and password on the form. */
