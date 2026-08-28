@@ -375,3 +375,57 @@ func TestPerformTruncatesOutputToWhatTheProtocolCarries(t *testing.T) {
 		t.Error("the head was kept rather than the tail; the failure is at the end")
 	}
 }
+
+// TestGuaranteeAnUnsignedRequestIsBoundedByPolicyRatherThanRefused pins where the two controls divide.
+//
+// Nothing crossing the socket carries a signature, and no helper checks for one. An attacker holding
+// the agent's account is in the farrier group, can therefore reach these sockets, and can invoke any
+// routed intent with no signature at all — which is the scenario this asserts, in both directions.
+//
+// The point is that it changes nothing about what happens. A request the policy permits is performed,
+// signature or not; a request it forbids is refused, signature or not. Local policy is what stands
+// between a taken-over agent and a destructive operation, and the offline signature is what stands
+// between a taken-over control plane and one. Two controls, two adversaries, and neither is the
+// other's backstop.
+//
+// A test asserting the absence of a check is unusual, and it is here because the alternative is a
+// future refactor quietly relying on one. If somebody later makes a helper verify a signature, this
+// test should be deleted in the same commit as docs/SECURITY.md §6 and the package comment — which is
+// the friction that ought to exist around changing which process holds this boundary.
+func TestGuaranteeAnUnsignedRequestIsBoundedByPolicyRatherThanRefused(t *testing.T) {
+	// A unit the policy names, from a request carrying nothing that could authorise it.
+	permitted := writePolicy(t, permissive)
+	decision, _, err := Authorise(restartRequest("nginx.service"), permitted, time.Now())
+	if err != nil {
+		t.Fatalf("Authorise: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("an unsigned request for a permitted unit was refused (%s: %s).\n"+
+			"The helper does not check signatures, by design: a caller who can reach this socket has "+
+			"the agent's account already. What bounds them is the policy file, and this one permits it.",
+			decision.Code, decision.Reason)
+	}
+
+	// And the same request, unchanged, against a policy that does not name the unit.
+	forbidden := writePolicy(t, `
+[updates]
+allow = "all"
+
+[services]
+restartable = ["postgresql.service"]
+
+[limits]
+max_job_age_seconds = 900
+`)
+	decision, _, err = Authorise(restartRequest("nginx.service"), forbidden, time.Now())
+	if err != nil {
+		t.Fatalf("Authorise: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("a unit outside services.restartable was permitted; local policy is what bounds a " +
+			"caller the signature check cannot see")
+	}
+	if decision.Code != policy.CodeUnitNotRestartable {
+		t.Errorf("code %q, want %q", decision.Code, policy.CodeUnitNotRestartable)
+	}
+}

@@ -585,6 +585,31 @@ A helper also refuses an intent it does not serve. systemd routes a connection t
 but the request arriving on it still names an intent, and nothing about the socket would stop a
 compromised agent from sending `host.reboot` to the one that restarts units.
 
+### What the root boundary does not check
+
+**No helper verifies the offline signature.** The request crossing the socket carries a job id, an
+intent, a parameter object and an issue time, and nothing else — no signature, no nonce, no validity
+window. `verifyOfflineSignature` runs in exactly one place, the unprivileged agent process, and this
+section says so rather than leaving it to be discovered.
+
+That is a decision and not an oversight, and it follows from [§2.2](#22-local-policy-sovereignty). What
+survives a compromised agent is *policy*, not the signature: an attacker with code execution as
+`farrier` is in the `farrier` group, so they can reach the sockets and invoke any routed intent without
+one — and the helper still performs `min(request, policy)` against the root-owned file it read itself.
+A host whose policy forbids reboot does not reboot, whoever is asking and whatever they claim to hold.
+
+Moving the check into the helper would not close that. The signed payload binds a host id, and the
+host id lives in `/var/lib/farrier`, which the agent can write; a helper verifying a signature would be
+verifying it against an identity the attacker chose. It would also require `privsep.Request` to grow
+four fields, which is the property in point 2 above — a caller names an intent and never anything else
+— given up for a check that does not hold. `TestGuaranteeARequestCannotNameAProgram` asserts the field
+set, and would fail.
+
+So the offline signature is what stands between a *taken-over control plane* and a destructive
+operation, which is the adversary [§1](#1-the-guarantee) names. Local policy is what stands between a
+*taken-over agent* and one. They are two controls against two adversaries, and neither is the other's
+backstop.
+
 The helper units themselves are **not** sandboxed, and that is deliberate rather than an omission: a
 program whose job is to install packages cannot be confined against writing to `/usr` and `/etc`. What
 bounds them is the root-owned policy file and the closed catalogue, not a systemd directive.
