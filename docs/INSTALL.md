@@ -258,6 +258,9 @@ sudo apt-get update && sudo apt-get install farrier-agent
 # without it fails to verify the server and retries, so you get a running service and a host that
 # never appears — which reads as a control-plane fault. The certificate is public; it is handed to
 # every enrolling agent before that agent has a credential at all.
+#
+# Fetch it over a connection you can already verify — see below, because on the agent hostname you
+# cannot, and that is not a fault either.
 curl -fsSL https://farrier.example.org/api/v1/ca.crt \
   | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/farrier/server-ca.crt
 
@@ -265,9 +268,84 @@ sudo farrier enroll --server https://farrier.example.org --token frr_…
 sudo systemctl restart farrier-agent
 ```
 
+`farrier enroll` reads that path without being told, so the two commands are the ordering they look
+like: install the authority, then enrol against it. `--ca` overrides it, and a `--ca` naming a file that
+is not there fails rather than quietly falling back to the system roots — which would verify a chain
+you did not ask for at the one moment you were being specific about which to trust.
+
 Skip the certificate step only when the control plane has a publicly trusted certificate, which is what
 the Traefik overlay in `deploy/` gives the *interface* and deliberately not the agent hostname: agents
 verify against the CA they were handed, so they need no public certificate and get no benefit from one.
+
+### Where to fetch it from
+
+That `curl` verifies the control plane like any other client, so it works from a hostname whose
+certificate the host already trusts and not from one whose certificate is the thing being fetched. On a
+control plane serving its own certificate — the default, and the agent hostname in the Traefik
+deployment, where TLS passes through to `farrier-server` untouched — it fails with `unable to get local
+issuer certificate`. That is the tool being right: nothing has told this host to trust that authority
+yet, which is the entire reason for the step.
+
+There are three honest ways round it, in order of preference.
+
+**From the interface hostname**, when the two-hostname Traefik deployment gave it a publicly trusted
+certificate. `/api/v1/ca.crt` is unauthenticated and outside the `/agent` prefix that hostname refuses,
+so the command above works unchanged with that name in it.
+
+**By copying the file**, which needs no TLS at all. On the control plane:
+
+```bash
+docker compose cp farrier-server:/var/lib/farrier-server/ca/ca.crt ./farrier-ca.crt
+```
+
+Then move it to each host and `install` it at the same path. It is a public document, so it needs no
+protection in transit beyond arriving unmodified.
+
+**By fetching it unverified and checking the fingerprint**, when the host can reach neither. This is
+what **Fleet → Add a host** prints for you when it detects that case, with the expected digest filled
+in — it knows its own, and your session is the channel that carries it. Written out:
+
+```bash
+curl -fsSLk https://agents.farrier.example.org/api/v1/ca.crt -o /tmp/farrier-ca.crt
+if [ "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \
+     = "sha256 Fingerprint=<the digest the panel shows>" ]; then
+  sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt
+else
+  echo "FINGERPRINT MISMATCH - do not install this certificate" >&2
+  false
+fi
+```
+
+The comparison is in the shell rather than in your eyes on purpose: two 64-character hex strings are
+compared by looking at the first four characters, and that is not a comparison. It is an `if` rather
+than the shorter `test … && install || echo`, because in that form the `||` binds to the whole list —
+so a missing `sudo` or a full disk fails the install, prints an attack that did not happen, and then
+exits 0, leaving a script free to enrol against a certificate it never installed. If you have no panel
+to read the digest from, take it from the control plane itself:
+
+```bash
+docker compose exec farrier-server \
+  openssl x509 -in /var/lib/farrier-server/ca/ca.crt -noout -fingerprint -sha256
+```
+
+`-k` with no comparison is not a shortcut, it is the enrolment trusting whoever answered the name. The
+window is one request wide and the consequence lasts the life of the host: an authority accepted here
+is what every later connection is checked against, so an attacker who owned that one response owns the
+host's idea of the control plane permanently.
+
+### When the agent says "not enrolled" on a host that enrolled
+
+`farrier enroll` is run with `sudo` and the service runs as the unprivileged `farrier` account, so
+everything enrolment writes is handed to that account before it returns. On an agent built before that
+was true, the credential stayed root-owned at mode 0600 and the service could not open it — which looks
+like nothing at all: the control plane lists the host, because the enrolment did succeed, and the unit
+is active, because an unenrolled agent idles rather than exiting. Only the absence of facts says
+anything is wrong. If you have a host in that state, it needs no second enrolment and no second token:
+
+```bash
+sudo chown -R farrier:farrier /var/lib/farrier
+sudo systemctl restart farrier-agent
+```
 
 The `.sources` file uses deb822 with `Signed-By:` naming an explicit keyring, so the Farrier key is
 trusted for the Farrier repository only. `apt-key` is never used: it installs a key that is trusted for

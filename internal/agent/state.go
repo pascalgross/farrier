@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/canonical"
@@ -19,6 +20,19 @@ import (
 // It is the only writable path the hardened systemd unit grants, which is deliberate: an agent that can
 // write nowhere else cannot be talked into leaving something behind in a directory that matters.
 const DefaultStateDir = "/var/lib/farrier"
+
+// DefaultServerCABundle is where an administrator puts the control plane's CA before enrolling.
+//
+// It exists because enrolment is the one request an agent makes with nothing on disk to verify against.
+// Every request after it uses the bundle the enrolment response carried, written to CABundleFile — but
+// that response is itself fetched over TLS, so the first connection needs an authority chosen locally
+// and in advance. `farrier enroll` reads this path when --ca is not given, which is what makes the
+// documented ordering — install the certificate, then enrol — mean something rather than being a step
+// that writes a file nothing opens.
+//
+// /etc/farrier rather than the state directory: this is administrator-supplied configuration, chosen
+// before the agent exists, and the state directory is the agent's to rewrite.
+const DefaultServerCABundle = "/etc/farrier/server-ca.crt"
 
 // File names inside the agent's state directory.
 const (
@@ -233,4 +247,56 @@ func loadOrCreateSalt(path string) ([]byte, error) {
 		return nil, err
 	}
 	return encoded, nil
+}
+
+// AdoptStateDir gives the state directory's contents to whoever owns the directory.
+//
+// It exists because enrolment and the agent are two different users. `farrier enroll` is run with sudo,
+// as the documentation and the interface both instruct, and everything it writes — the credential, the
+// CA bundle, the cached online key, agent.json at 0600 — therefore lands owned by root. The service
+// runs as the unprivileged account the package created, with User=farrier and no capabilities, so it
+// opens agent.json, gets EACCES, and reports "not enrolled" on a host that enrolled successfully
+// seconds earlier.
+//
+// That failure is the worst shape this project has: everything looks right. The control plane shows the
+// host, because the enrolment request did succeed and the row exists. The unit is active, because an
+// unenrolled agent idles rather than exiting. Only the absence of facts says anything is wrong, and it
+// says it in the place an operator is least likely to read it as a permissions problem on their own
+// machine.
+//
+// The directory's own owner is the target rather than a compiled-in "farrier", because that is what the
+// package established with `install -d -o farrier -g farrier` and it stays right for an installation
+// that runs the agent as something else. Where the owner already matches — an unpackaged install where
+// both are root, or a test in a temporary directory — every chown is a no-op, so this costs nothing and
+// needs no guard for the ordinary case.
+//
+// Errors are returned rather than logged. A credential the service cannot read is not a partial success
+// worth continuing past: enrolment consumed a single-use token, and the operator has to know now, while
+// they are still at the terminal, rather than by reading journal lines an hour later.
+func AdoptStateDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("agent: reading the state directory %s: %w", dir, err)
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		// Not Linux, which the agent is not built for. Nothing to do rather than a failure, because a
+		// state directory with no uid behind it is not a state directory anybody can be locked out of.
+		return nil
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("agent: reading the state directory %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		// Lchown rather than Chown: a symlink in here should have its own ownership changed, never the
+		// thing it points at, which is how a writable state directory would otherwise become a way to
+		// chown a file elsewhere on the system.
+		if err := os.Lchown(path, int(owner.Uid), int(owner.Gid)); err != nil {
+			return fmt.Errorf("agent: giving %s to uid %d: %w", path, owner.Uid, err)
+		}
+	}
+	return nil
 }

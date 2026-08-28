@@ -226,6 +226,12 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 		return nil, err
 	}
 
+	// Before the bootstrap rather than after it, because a template may legitimately end in a reboot
+	// and the machine has to come back with a credential its service account can open.
+	if err := AdoptStateDir(opts.StateDir); err != nil {
+		return nil, enrolledButUnreadable(res.HostID, opts.StateDir, err)
+	}
+
 	if opts.Bootstrap != "" {
 		// Applied last, after the credential and the state are durable: a bootstrap template may
 		// legitimately end in a reboot, and a machine that comes back must come back enrolled. A
@@ -235,6 +241,11 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 			return nil, fmt.Errorf("agent: enrolled as %s, and the bootstrap did not complete: %w",
 				res.HostID, err)
 		}
+	}
+
+	// Again, for the interlock record the bootstrap writes into the same directory as root.
+	if err := AdoptStateDir(opts.StateDir); err != nil {
+		return nil, enrolledButUnreadable(res.HostID, opts.StateDir, err)
 	}
 
 	slog.Info("enrolled", "host", res.HostID, "server", state.ServerURL, "hostname", hostname)
@@ -337,6 +348,24 @@ func enrolledButRefused(hostID string, err error) error {
 	return fmt.Errorf("%w\n\nThe control plane has already recorded this machine as %s and the "+
 		"enrolment token is spent. Nothing was written on this host and no template was applied; "+
 		"delete or revoke that host before enrolling this machine again", err, hostID)
+}
+
+// enrolledButUnreadable reports an enrolment the service account cannot use.
+//
+// A distinct error from enrolledButRefused, and the difference is what the operator should do next.
+// That one means nothing was written and the machine has to be released on the control plane first;
+// this one means the enrolment worked, the credential is on disk, and the only problem is which user
+// owns it. Telling somebody to start over here would spend a second token to reproduce the same files.
+//
+// It names the command, because the alternative is the failure this whole function exists to prevent:
+// an agent that starts, cannot read its own credential, reports "not enrolled", and leaves an operator
+// looking at a control plane that shows the host and a host that sends nothing.
+func enrolledButUnreadable(hostID, stateDir string, err error) error {
+	return fmt.Errorf("%w\n\nThis host enrolled as %s and the credential is on disk, but it is owned "+
+		"by the wrong user, so the agent will report \"not enrolled\" and send nothing. Do not enrol "+
+		"again — that spends another token for the same files. Fix the ownership instead:\n\n"+
+		"    sudo chown -R farrier:farrier %s\n    sudo systemctl restart farrier-agent",
+		err, hostID, stateDir)
 }
 
 // verifyBootstrap checks a provisioning template against this host's own trust anchor, and shows it.

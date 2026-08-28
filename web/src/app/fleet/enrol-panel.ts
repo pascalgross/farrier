@@ -11,6 +11,47 @@ import { ApiService } from '../core/api.service';
 import { describeError } from '../core/errors';
 
 /**
+ * Builds a download URL from a base and the control plane's own path for the certificate.
+ *
+ * It exists because `caCertificatePath` is server-absolute — `/api/v1/ca.crt` — and concatenating that
+ * onto a base silently discards any path the control plane is published under. A deployment behind
+ * `https://farrier.example.org/control` would be handed a command pointing at the bare origin, which
+ * is a 404 or, worse, somebody else's route on a shared hostname.
+ *
+ * The base's own path is kept and the certificate path appended to it, so the prefix survives. An
+ * unparseable base falls back to plain concatenation rather than throwing: the panel printing a
+ * slightly wrong command is recoverable, and a component that renders nothing at all is not.
+ */
+function caUrl(base: string, certificatePath: string): string {
+  try {
+    const parsed = new URL(base);
+    return `${parsed.origin}${parsed.pathname.replace(/\/$/, '')}${certificatePath}`;
+  } catch {
+    return `${base.replace(/\/$/, '')}${certificatePath}`;
+  }
+}
+
+/**
+ * Whether two URLs are served by the same origin, ignoring path and trailing slash.
+ *
+ * The panel's whole branch — a fetch it can verify against one it cannot — turns on whether the agent
+ * API and this page share a host, and that question is about scheme, host and port only. A string
+ * comparison answered it wrongly for every deployment carrying a port or a path prefix, and wrongly in
+ * the unsafe direction: it claimed the fetch was verifiable when it was not.
+ *
+ * Either side failing to parse returns false, which sends the panel to the fingerprint-checked command.
+ * That is the safe way to be wrong: it prints a check that is unnecessary rather than skipping one that
+ * was not.
+ */
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * How to enrol a host, as three steps somebody can follow without leaving the page.
  *
  * It exists because the fleet page's answer to "how do I add a machine" was one line of shell with the
@@ -85,16 +126,101 @@ export class EnrolPanel {
    * `install` rather than `cp`, with the owner, group and mode written out: the file is what the agent
    * checks the control plane against, and one left mode 0600 root-owned in a directory the agent can
    * read is a difference nobody notices until enrolment fails.
+   *
+   * It fetches from **this page's own address** rather than from the agent URL, and that is the whole
+   * point of the computed rather than a template string. `curl` verifies the control plane like any
+   * other client, so it can only fetch the certificate from a name whose certificate is already
+   * trusted — and the agent hostname's is precisely the one that is not, since it is what the file
+   * being fetched would establish. In the documented two-hostname deployment this page is the
+   * interface, where Traefik terminates with a publicly trusted certificate, so the command works;
+   * against the agent hostname it fails with `unable to get local issuer certificate` every time. When
+   * the two are the same host it fails either way, which is what the other command is for.
    */
   protected readonly caCommand = computed(() => {
     const details = this.instructions();
     if (!details) {
       return '';
     }
+    if (this.caFetchIsUnverifiable()) {
+      return this.caCommandUnverified();
+    }
     return [
-      `curl -fsSL ${details.agentUrl}${details.caCertificatePath} \\`,
+      `curl -fsSL ${caUrl(this.pageBase(), details.caCertificatePath)} \\`,
       '  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/farrier/server-ca.crt',
     ].join('\n');
+  });
+
+  /** The certificate's SHA-256, shown so an unverified fetch has something to be checked against. */
+  protected readonly fingerprint = computed(() => this.instructions()?.caFingerprint ?? '');
+
+  /**
+   * The same step for a control plane whose certificate cannot be verified from the host.
+   *
+   * `-k` is in here and it is not a shortcut: it is one half of a check, and the command fails closed
+   * without the other half. The certificate is fetched unverified, its digest is compared against the
+   * one this page is showing, and it is installed only on a match — so the bytes are accepted because
+   * they match a value that arrived over this authenticated session, not because whoever answered the
+   * hostname said so.
+   *
+   * The comparison is done by the shell rather than by eye, because two 64-character hex strings are
+   * compared by looking at the first four characters, and that is not a comparison.
+   *
+   * `if`/`else` rather than `test && install || echo`, which is the same three commands and is wrong.
+   * In that form the `||` binds to the whole list, so a missing `sudo`, a cancelled password prompt or
+   * a full disk makes `install` fail and prints `FINGERPRINT MISMATCH` — naming an attack that did not
+   * happen, for a digest that matched — and then `echo` succeeds, so the line exits 0 and a script
+   * carries on to enrolment with no certificate installed. Here the two failures stay distinct and
+   * `install` keeps its own exit status; `false` rather than `exit` because this gets pasted into an
+   * interactive shell, and a mismatch should report itself rather than close the operator's session.
+   */
+  protected readonly caCommandUnverified = computed(() => {
+    const details = this.instructions();
+    if (!details) {
+      return '';
+    }
+    return [
+      `curl -fsSLk ${caUrl(details.agentUrl, details.caCertificatePath)} -o /tmp/farrier-ca.crt`,
+      'if [ "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \\',
+      `     = "sha256 Fingerprint=${details.caFingerprint}" ]; then`,
+      '  sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt',
+      'else',
+      '  echo "FINGERPRINT MISMATCH - do not install this certificate" >&2',
+      '  false',
+      'fi',
+    ].join('\n');
+  });
+
+  /**
+   * The address this page is served from, including any path the control plane is published under.
+   *
+   * `document.baseURI` rather than `window.location.origin`, because a control plane behind a proxy
+   * path prefix is a supported deployment — the container entrypoint takes a whole FARRIER_AGENT_URL
+   * for exactly that case — and an origin alone drops the prefix, producing a download URL that is a
+   * 404 on the one deployment that most needs the command to work. Read through a getter so a test can
+   * replace it; the document is otherwise a global the component would be pinned to.
+   */
+  protected pageBase(): string {
+    return document.baseURI;
+  }
+
+  /**
+   * Whether the certificate has to be fetched from the same host it authenticates.
+   *
+   * True in the single-hostname deployment, where the interface and the agent API share an origin
+   * serving Farrier's own certificate. The plain command cannot verify that connection — nothing has
+   * told the host to trust this authority yet, which is the reason for the step — so the panel prints
+   * the fingerprint-checked fetch instead of a command that always fails.
+   *
+   * Origins are compared rather than the strings, because the two values are not the same kind of
+   * thing: the agent URL is a full base URL and may carry a port or a path prefix, and the page's is a
+   * document address. Comparing them literally made every prefixed or non-default-port deployment look
+   * like the two-hostname one — so the panel took the verifiable branch, built the download from the
+   * page's address, dropped the prefix, and printed a command that either fetched the wrong route or
+   * failed the very TLS verification this whole step exists to establish.
+   */
+  protected readonly caFetchIsUnverifiable = computed(() => {
+    const details = this.instructions();
+    return !!details && sameOrigin(details.agentUrl, this.pageBase());
   });
 
   /** The enrolment command, carrying the token when one has been minted. */

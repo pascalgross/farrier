@@ -1,9 +1,11 @@
 package server_test
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -85,6 +87,9 @@ func TestTheEnrolmentInstructionsNeedAnOperatorAndNameTheAgentAddress(t *testing
 
 		// CACertificatePath is where the second step reads the certificate from.
 		CACertificatePath string `json:"caCertificatePath"`
+
+		// CAFingerprint is what an unverified fetch of that certificate is checked against.
+		CAFingerprint string `json:"caFingerprint"`
 	}
 	if err := json.Unmarshal(body, &view); err != nil {
 		t.Fatalf("decoding the instructions: %v", err)
@@ -102,5 +107,27 @@ func TestTheEnrolmentInstructionsNeedAnOperatorAndNameTheAgentAddress(t *testing
 	if view.CACertificatePath != "/api/v1/ca.crt" {
 		t.Errorf("the instructions point at %q for the CA, which is not where it is served",
 			view.CACertificatePath)
+	}
+
+	// The digest of the certificate actually served, in the spelling openssl prints, because it exists
+	// to be compared against `openssl x509 -fingerprint -sha256` on a host that could not verify the
+	// connection it fetched over. A digest of something else, or in another format, is a comparison
+	// that fails for the wrong reason — and an operator who has been told to expect a match and gets a
+	// mismatch does not install a certificate they should have installed.
+	// Computed here rather than called from the server package, so the test is a statement about the
+	// format an operator will compare against rather than a second call to the same function.
+	sum := sha256.Sum256(h.authority.Certificate().Raw)
+	pairs := make([]string, 0, len(sum))
+	for _, b := range sum {
+		pairs = append(pairs, fmt.Sprintf("%02X", b))
+	}
+	want := strings.Join(pairs, ":")
+	if view.CAFingerprint != want {
+		t.Errorf("the instructions publish %q as the CA fingerprint, want %q",
+			view.CAFingerprint, want)
+	}
+	if !strings.Contains(view.CAFingerprint, ":") || strings.ToUpper(view.CAFingerprint) != view.CAFingerprint {
+		t.Errorf("the fingerprint is %q, which is not the colon-separated uppercase hex openssl "+
+			"prints, so an operator cannot compare it without transforming it first", view.CAFingerprint)
 	}
 }

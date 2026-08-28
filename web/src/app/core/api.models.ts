@@ -1094,6 +1094,16 @@ export interface EnrolmentInstructions {
   /** Where the CA certificate can be fetched, for the second step. */
   caCertificatePath: string;
 
+  /**
+   * The CA certificate's SHA-256, formatted as `openssl x509 -fingerprint -sha256` prints it.
+   *
+   * Shown so that a host which can only fetch the certificate over an unverified connection has
+   * something to check the result against. This session is that independent channel: the operator is
+   * already authenticated here, so a digest read on this page and compared on the host closes the one
+   * window an unverified fetch would otherwise leave open.
+   */
+  caFingerprint: string;
+
   /** The APT repository the agent package is installed from. */
   aptUrl: string;
 }

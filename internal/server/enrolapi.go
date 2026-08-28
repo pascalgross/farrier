@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -62,6 +65,21 @@ type enrolmentView struct {
 	// CACertificatePath is where the CA certificate can be fetched.
 	CACertificatePath string `json:"caCertificatePath"`
 
+	// CAFingerprint is the SHA-256 of the CA certificate, as openssl prints it.
+	//
+	// It is here because of the one bootstrap problem this page cannot otherwise solve. On a control
+	// plane serving its own certificate, `curl` cannot verify the connection it would fetch that
+	// certificate over — the file being fetched is what would establish the trust — so the only
+	// remaining options are to copy the file by hand or to fetch it unverified. Fetching it unverified
+	// is safe exactly when there is an independent channel to check the result against, and this
+	// session is one: the operator is already authenticated here.
+	//
+	// Colon-separated uppercase hex rather than the bare hex used for certificate lookup elsewhere,
+	// because this value exists to be compared by eye or by shell against `openssl x509 -fingerprint
+	// -sha256`, and a format that does not match what openssl prints is one the operator has to
+	// transform before they can compare it — which is where a comparison stops happening.
+	CAFingerprint string `json:"caFingerprint"`
+
 	// APTURL is the repository the agent package is installed from.
 	APTURL string `json:"aptUrl"`
 }
@@ -84,6 +102,7 @@ func (s *Server) handleEnrolmentInstructions(w http.ResponseWriter, r *http.Requ
 	view := enrolmentView{
 		AgentURL:          strings.TrimRight(s.cfg.AgentURL, "/"),
 		CACertificatePath: CACertificatePath,
+		CAFingerprint:     opensslFingerprint(s.cfg.Authority.Certificate()),
 		APTURL:            APTRepositoryURL,
 	}
 	if view.AgentURL == "" {
@@ -94,4 +113,19 @@ func (s *Server) handleEnrolmentInstructions(w http.ResponseWriter, r *http.Requ
 		view.AgentURLIsAGuess = true
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// opensslFingerprint renders a certificate's SHA-256 the way `openssl x509 -fingerprint -sha256` does.
+//
+// Deliberately not server.Fingerprint, which produces the bare lowercase hex the certificate table is
+// keyed on. That value is for machines comparing it to itself; this one is for a person comparing it to
+// the output of a command on another screen, and two spellings of the same digest are a comparison that
+// looks like a mismatch.
+func opensslFingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	pairs := make([]string, 0, len(sum))
+	for _, b := range sum {
+		pairs = append(pairs, fmt.Sprintf("%02X", b))
+	}
+	return strings.Join(pairs, ":")
 }

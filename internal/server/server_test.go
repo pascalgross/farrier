@@ -45,6 +45,9 @@ type harness struct {
 	// caFile is the test server's own certificate, so the agent can verify it.
 	caFile string
 
+	// authority is the CA the harness issued everything from, for tests that assert about it.
+	authority *ca.Authority
+
 	// adminToken authenticates the administrative API as the first operator.
 	adminToken string
 
@@ -193,7 +196,7 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	return &harness{
-		server: ts, store: memory, dir: dir, caFile: caFile,
+		server: ts, store: memory, dir: dir, caFile: caFile, authority: authority,
 		adminToken: adminToken, secondToken: secondToken,
 		tenant: tenant, otherToken: otherToken, otherTenant: otherTenant,
 		platformToken: platformToken, templateKey: templateKey,
