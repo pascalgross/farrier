@@ -585,9 +585,13 @@ func firstLine(s string) string {
 // the agent's key rotation worth anything: without it, somebody who read agent.pem on day ten kept a
 // working authentication path until day ninety, and could spend the renewals themselves to keep it.
 //
-// The order matters. The old certificate is retired *after* the new one is recorded, so a failure
-// between the two leaves a host with two working credentials — recoverable, and the state this endpoint
-// was in before — rather than with none.
+// The cap and both writes are one store operation rather than three calls, and that is not tidiness.
+// Counting and then inserting separately is check-then-act, and the limiter's burst is exactly the
+// concurrency that reaches it — several requests for one host each seeing room and each taking it. And
+// recording the replacement without retiring the presented certificate is unrecoverable rather than
+// merely untidy: a later renewal retires the fingerprint *it* presents, which by then is the
+// replacement, so the forgotten certificate would live to its natural expiry and the 48-hour bound
+// would be gone with nothing saying so. Either both writes land or the renewal is not acknowledged.
 func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller) {
 	host := who.Host
 	now := time.Now()
@@ -605,50 +609,48 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request, who caller)
 		return
 	}
 
-	// 429 rather than 409, because it is transient by construction: the certificates in the way are
-	// superseded or expiring, and the agent's existing handling of 429 does the right thing without a
-	// change on the host side.
-	switch live, err := who.Store.CountLiveCertificates(r.Context(), host.ID, now); {
-	case err != nil:
-		slog.Error("could not count a host's live certificates", "error", err, "host", host.ID)
-		writeError(w, http.StatusInternalServerError, "internal", "could not check the certificate count")
-		return
-	case live >= maxLiveCertificatesPerHost:
-		slog.Warn("refused a renewal: too many live certificates",
-			"host", host.ID, "live", live, "cap", maxLiveCertificatesPerHost)
-		w.Header().Set("Retry-After", strconv.Itoa(int(s.renewLimiter.retryAfter().Seconds())))
-		writeError(w, http.StatusTooManyRequests, "too_many_certificates",
-			"this host already holds the maximum number of valid certificates")
-		return
-	}
-
 	certPEM, cert, err := s.cfg.Authority.Issue([]byte(req.CSR), host.ID)
 	if err != nil {
 		slog.Warn("rejected a renewal request", "error", err, "host", host.ID)
 		writeError(w, http.StatusBadRequest, "bad_csr", "the certificate request could not be signed")
 		return
 	}
-	if err := who.Store.AddCertificate(r.Context(), store.Certificate{
-		Fingerprint: Fingerprint(cert),
-		HostID:      host.ID,
-		TenantID:    who.Store.Tenant(),
-		Serial:      cert.SerialNumber.Text(16),
-		IssuedAt:    now,
-		NotAfter:    cert.NotAfter,
-	}); err != nil {
-		slog.Error("could not record a renewed certificate", "error", err, "host", host.ID)
+
+	// The CA has signed by now and the store may still refuse. That order costs one wasted signature on
+	// a host at its cap, and the alternative costs correctness: a count taken before the signature is a
+	// count taken outside the transaction that acts on it.
+	supersedeAt := now.Add(renewalOverlap)
+	switch err := who.Store.RenewCertificate(r.Context(), store.Renewal{
+		Replacement: store.Certificate{
+			Fingerprint: Fingerprint(cert),
+			HostID:      host.ID,
+			TenantID:    who.Store.Tenant(),
+			Serial:      cert.SerialNumber.Text(16),
+			IssuedAt:    now,
+			NotAfter:    cert.NotAfter,
+		},
+		Presented:   who.Fingerprint,
+		SupersedeAt: supersedeAt,
+		MaxLive:     maxLiveCertificatesPerHost,
+		Now:         now,
+	}); {
+	// 429 rather than 409, because it is transient by construction: the certificates in the way are
+	// superseded or expiring, and the agent's existing handling of 429 does the right thing without a
+	// change on the host side.
+	case errors.Is(err, store.ErrTooManyCertificates):
+		slog.Warn("refused a renewal: too many live certificates",
+			"host", host.ID, "cap", maxLiveCertificatesPerHost)
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.renewLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "too_many_certificates",
+			"this host already holds the maximum number of valid certificates")
+		return
+	case err != nil:
+		// Nothing was written, so nothing is acknowledged. The agent keeps its current credential and
+		// retries; acknowledging here would be telling a host to promote a certificate the control
+		// plane has no record of.
+		slog.Error("could not record a renewal", "error", err, "host", host.ID)
 		writeError(w, http.StatusInternalServerError, "internal", "could not record the certificate")
 		return
-	}
-
-	// After the new one is recorded, and not fatal if it fails. The failure leaves a host with two
-	// working credentials, which is the state this endpoint was in before the overlap existed and is
-	// corrected by the next renewal; refusing the request instead would hand back an error to a host
-	// that already has its new certificate, and it would retry with a fresh CSR against the cap.
-	supersedeAt := now.Add(renewalOverlap)
-	if err := who.Store.SupersedeCertificate(r.Context(), who.Fingerprint, supersedeAt); err != nil {
-		slog.Error("a renewed-away certificate could not be retired and stays valid until it expires",
-			"error", err, "host", host.ID)
 	}
 
 	slog.Info("certificate renewed", "host", host.ID,

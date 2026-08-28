@@ -2,6 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,4 +109,118 @@ func TestGuaranteeTheResolveKeyExemptionIsReadOnly(t *testing.T) {
 			"an agent request and a sign-in depend on cannot work, and the check above passed " +
 			"because there was nothing to check")
 	}
+}
+
+// TestGuaranteeConcurrentRenewalsCannotExceedTheCertificateCap is the check-then-act this replaced.
+//
+// The renewal limiter permits a burst, so several renewals for one host can be in flight at once. With
+// the count and the insert in separate transactions each of them sees room and each takes it, and the
+// host ends up holding more live certificates than the cap advertises — after which honest renewals are
+// refused until the extra ones expire, which is the cap doing the opposite of its job.
+//
+// The assertion is on the count afterwards rather than on how many calls returned an error: a store that
+// refused everything would satisfy "not more than three" and would be a control plane no host can renew
+// against, so the successes are counted too.
+func TestGuaranteeConcurrentRenewalsCannotExceedTheCertificateCap(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		tenant := testTenant(t, s, "renewals", ApprovalNone)
+		host := enrolTestHost(t, tenant, "01JHOSTR", "web-01.example.org")
+
+		const cap, racers = 3, 12
+		now := time.Now().UTC()
+
+		var admitted atomic.Int32
+		var start sync.WaitGroup
+		var done sync.WaitGroup
+		start.Add(1)
+		for i := range racers {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				start.Wait()
+				err := tenant.RenewCertificate(ctx, Renewal{
+					Replacement: Certificate{
+						Fingerprint: "fp-renewal-" + strconv.Itoa(i),
+						HostID:      host.ID,
+						TenantID:    tenant.Tenant(),
+						Serial:      "1" + strconv.Itoa(i),
+						IssuedAt:    now,
+						NotAfter:    now.Add(90 * 24 * time.Hour),
+					},
+					// Every racer presents the certificate enrolment issued, which is what a burst of
+					// renewals from one host actually looks like.
+					Presented:   "fp-" + string(tenant.Tenant()) + "-" + host.ID,
+					SupersedeAt: now.Add(48 * time.Hour),
+					MaxLive:     cap,
+					Now:         now,
+				})
+				switch {
+				case err == nil:
+					admitted.Add(1)
+				case errors.Is(err, ErrTooManyCertificates):
+				default:
+					t.Errorf("renewing: %v", err)
+				}
+			}()
+		}
+		start.Done()
+		done.Wait()
+
+		if admitted.Load() == 0 {
+			t.Fatal("every concurrent renewal was refused; a host could never renew at all")
+		}
+
+		live, err := tenant.CountLiveCertificates(ctx, host.ID, now)
+		if err != nil {
+			t.Fatalf("counting: %v", err)
+		}
+		if live > cap {
+			t.Errorf("%d concurrent renewals left %d live certificates against a cap of %d; the count "+
+				"and the insert are not one decision", racers, live, cap)
+		}
+	})
+}
+
+// TestGuaranteeARefusedRenewalRetiresNothing is the other half of making the renewal one operation.
+//
+// Recording a replacement without retiring the presented certificate is not merely untidy, and it is not
+// self-correcting: a later renewal retires the fingerprint *it* presents, which by then is the
+// replacement, so a certificate forgotten once stays valid to its natural expiry with nothing pointing
+// at it. The two writes therefore have to land together or not at all — and this is the "not at all"
+// direction, which a refusal at the cap is the easiest way to reach.
+func TestGuaranteeARefusedRenewalRetiresNothing(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		ctx := context.Background()
+		tenant := testTenant(t, s, "refused", ApprovalNone)
+		host := enrolTestHost(t, tenant, "01JHOSTQ", "web-01.example.org")
+		presented := "fp-" + string(tenant.Tenant()) + "-" + host.ID
+		now := time.Now().UTC()
+
+		// A cap of zero refuses the first renewal there could be, which is the shortest path to the
+		// refusal branch and says nothing about which number the cap is.
+		err := tenant.RenewCertificate(ctx, Renewal{
+			Replacement: Certificate{
+				Fingerprint: "fp-never-recorded", HostID: host.ID, TenantID: tenant.Tenant(),
+				Serial: "99", IssuedAt: now, NotAfter: now.Add(90 * 24 * time.Hour),
+			},
+			Presented:   presented,
+			SupersedeAt: now.Add(48 * time.Hour),
+			MaxLive:     0,
+			Now:         now,
+		})
+		if !errors.Is(err, ErrTooManyCertificates) {
+			t.Fatalf("a renewal against a cap of zero returned %v, want ErrTooManyCertificates", err)
+		}
+
+		// The host still has the credential it came in with. A refusal that retired it anyway would
+		// take a working host off the fleet for asking a question.
+		live, err := tenant.CountLiveCertificates(ctx, host.ID, now)
+		if err != nil {
+			t.Fatalf("counting: %v", err)
+		}
+		if live != 1 {
+			t.Errorf("a refused renewal left %d live certificates, want the 1 the host arrived with", live)
+		}
+	})
 }

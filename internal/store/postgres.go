@@ -802,6 +802,67 @@ func (s *scopedPostgres) SupersedeCertificate(ctx context.Context, fingerprint s
 	})
 }
 
+// RenewCertificate admits a replacement certificate and retires the one that asked for it.
+//
+// The lock is a row lock on the host, taken first. It is the host that is being renewed, it is a row
+// that exists by construction — requireAgent loaded it to get here — and locking it serialises every
+// renewal for that host across every replica, which is what makes the count below a decision rather
+// than a guess. An advisory lock on a hash of the id would do the same thing and would add a number to
+// keep and a collision to reason about.
+//
+// The count and both writes are inside that lock and inside one transaction, so the outcomes are: the
+// cap refuses and nothing is written, or the replacement is recorded and the presented certificate is
+// retired together. There is no third state in which a host holds a credential the control plane has
+// forgotten to retire.
+func (s *scopedPostgres) RenewCertificate(ctx context.Context, r Renewal) error {
+	return s.withTenant(ctx, "renewing a certificate", func(tx pgx.Tx) error {
+		var locked string
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM hosts WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+			r.Replacement.HostID, string(s.tenant)).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return wrap(err, "locking the host to renew it")
+		}
+
+		var live int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM certificates
+			 WHERE host_id = $1 AND tenant_id = $2
+			   AND NOT revoked
+			   AND not_after > $3
+			   AND (superseded_at IS NULL OR superseded_at > $3)`,
+			r.Replacement.HostID, string(s.tenant), r.Now).Scan(&live); err != nil {
+			return wrap(err, "counting live certificates")
+		}
+		if live >= r.MaxLive {
+			return ErrTooManyCertificates
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO certificates (fingerprint, host_id, tenant_id, serial, issued_at, not_after)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (fingerprint) DO NOTHING`,
+			r.Replacement.Fingerprint, r.Replacement.HostID, string(s.tenant),
+			r.Replacement.Serial, r.Replacement.IssuedAt, r.Replacement.NotAfter); err != nil {
+			return wrap(err, "recording the replacement certificate")
+		}
+
+		// LEAST keeps the earlier time, so a host renewing twice in quick succession cannot push back
+		// the moment the credential it already replaced stops working.
+		if _, err := tx.Exec(ctx, `
+			UPDATE certificates
+			   SET superseded_at = LEAST(COALESCE(superseded_at, $2::timestamptz), $2::timestamptz)
+			 WHERE fingerprint = $1 AND tenant_id = $3`,
+			r.Presented, r.SupersedeAt, string(s.tenant)); err != nil {
+			return wrap(err, "retiring the presented certificate")
+		}
+		return nil
+	})
+}
+
 // CountLiveCertificates returns how many of a host's certificates could still authenticate.
 //
 // The three conditions are the three requireAgent applies, which is why they are written out here

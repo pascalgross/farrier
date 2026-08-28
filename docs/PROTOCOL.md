@@ -567,9 +567,12 @@ CSR whose subject names a different host.
 Response `429` when the host has renewed too often, or already holds the maximum number of valid
 certificates. Both carry `Retry-After`; the second clears as superseded certificates pass their overlap.
 
-The server records the new certificate **before** retiring the presenting one, so that a failure between
-the two leaves a host with two working credentials rather than none. An agent MUST keep using its
-current pair until the new one is durably on disk ([§2.3](#23-certificates)).
+The server records the new certificate and retires the presenting one **in one transaction**, and does
+not answer `200` unless both landed. A host that receives an error therefore keeps its current pair and
+retries, which is the only safe reading: acknowledging a renewal whose retirement failed would leave a
+certificate valid to its natural expiry that no later renewal could reach, because a renewal retires the
+fingerprint it presents and that is by then the replacement. An agent MUST keep using its current pair
+until the new one is durably on disk ([§2.3](#23-certificates)).
 
 ## 8. Canonical JSON
 

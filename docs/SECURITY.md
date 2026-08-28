@@ -301,6 +301,9 @@ interrupted between obtaining a certificate and promoting it can come back on th
 enough that a copied credential is worth two days rather than three months. Renewal is also rate-limited
 per host and a host may hold only a few valid certificates at once, because a caller who can mint rows
 in a table every tenant shares, and a CA signature with each, should not be able to do so without bound.
+The cap and both writes are one transaction under a lock on the host: counting and then inserting
+separately is check-then-act, and the burst the limiter permits is exactly the concurrency that reaches
+it.
 
 Revoking a host also releases its machine — the salted `/etc/machine-id` hash a host claims at
 enrolment — so the same physical machine can enrol again under a new identity. The revoked row and its

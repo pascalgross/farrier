@@ -935,6 +935,55 @@ func (s *scopedMemory) SupersedeCertificate(_ context.Context, fingerprint strin
 	return nil
 }
 
+// RenewCertificate admits a replacement certificate and retires the one that asked for it.
+//
+// One lock held across the count and both writes, which is this store's whole answer to the question
+// the PostgreSQL implementation answers with a row lock: nothing else runs in between. A store that
+// released the lock between the count and the insert would let a test pass here and the shipped store
+// exceed its own cap under the burst the renewal limiter permits.
+func (s *scopedMemory) RenewCertificate(_ context.Context, r Renewal) error {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := s.host(r.Replacement.HostID); !ok {
+		return ErrNotFound
+	}
+
+	live := 0
+	for _, cert := range m.certs {
+		switch {
+		case cert.TenantID != s.tenant || cert.HostID != r.Replacement.HostID:
+		case cert.Revoked:
+		case !cert.NotAfter.After(r.Now):
+		case !cert.SupersededAt.IsZero() && !cert.SupersededAt.After(r.Now):
+		default:
+			live++
+		}
+	}
+	if live >= r.MaxLive {
+		return ErrTooManyCertificates
+	}
+
+	replacement, err := s.stampCertificate(r.Replacement)
+	if err != nil {
+		return err
+	}
+	if _, exists := m.certs[replacement.Fingerprint]; !exists {
+		m.certs[replacement.Fingerprint] = replacement
+	}
+
+	// The earlier time wins, so a host renewing twice in quick succession cannot push back the moment
+	// the credential it already replaced stops working.
+	if presented, ok := m.certs[r.Presented]; ok && presented.TenantID == s.tenant {
+		if presented.SupersededAt.IsZero() || r.SupersedeAt.Before(presented.SupersededAt) {
+			presented.SupersededAt = r.SupersedeAt
+			m.certs[r.Presented] = presented
+		}
+	}
+	return nil
+}
+
 // CountLiveCertificates returns how many of a host's certificates could still authenticate.
 //
 // The three conditions are written out rather than shared with a helper, and they are the same three
