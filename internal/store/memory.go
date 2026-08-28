@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -251,7 +252,15 @@ func normaliseApprovalMode(mode ApprovalMode) (ApprovalMode, error) {
 // A repeated id or a slug somebody else already holds is ErrConflict, matching the primary key and the
 // UNIQUE constraint on slug. A zero CreatedAt is filled in, as the column's default does, so that
 // ListTenants has something to order by.
+//
+// An empty id is refused here too, matching both the PostgreSQL store's own guard and the
+// tenants_id_nonempty constraint migration 0011 adds. The reason is a PostgreSQL one and does not
+// apply to a map — but a store that accepted a value the other refuses would let a test pass here and
+// fail there, which is the one thing an in-memory stand-in must not do.
 func (m *Memory) CreateTenant(_ context.Context, t Tenant) error {
+	if t.ID == "" {
+		return errors.New("store: a tenant needs an id")
+	}
 	mode, err := normaliseApprovalMode(t.ApprovalMode)
 	if err != nil {
 		return err

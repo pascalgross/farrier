@@ -457,7 +457,17 @@ Three layers, and the order matters, because only the last of them is a rule rat
    becomes known: the certificate on an agent request and the enrolment token from a machine that is
    not yet a host. Rather than exempting those two tables, their policies admit exactly one row — the
    row whose key the caller can already name, through a second session setting. Naming a SHA-256 you
-   already hold is not an enumeration path.
+   already hold is not an enumeration path. The sign-in path added two more of the same shape: an
+   address on a form, and an account id read out of a session.
+
+   **That exemption is read-only, and never appears in a `WITH CHECK`.** The reason is the whole reason
+   it is narrow at all. A resolve-key transaction is precisely one where no tenant is set, so in a write
+   check the tenant half of the predicate is NULL and the key half becomes the entire rule: a writer
+   could then place a row in *any* fleet, provided its key matched the one they named. One policy
+   carried the disjunct on both halves; migration 0011 removed it, and
+   `TestGuaranteeTheResolveKeyExemptionIsReadOnly` sweeps `pg_policies` so that no future one can
+   reintroduce it — the database's own account of what is in force, rather than the migration files,
+   which are what somebody meant to put there.
 
 Composite foreign keys carry the tenant alongside every reference, so a row claiming one tenant while
 pointing at another's host is refused by the database rather than noticed in review.
