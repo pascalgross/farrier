@@ -99,15 +99,6 @@ const (
 	// real cause is a stray bracket on line 79.
 	CodePolicyUnreadable = "policy_unreadable"
 
-	// CodeMalformedRequest means the request reached a helper missing something it must carry.
-	//
-	// Distinct from CodeUnknownIntent, which is about a name, and from every refusal above, which are
-	// decisions the policy made. This one says the caller sent a request no honest agent sends, so an
-	// operator reading it looks at the agent rather than at their policy file. It is refused rather
-	// than defaulted for the reason the whole boundary exists: a missing field must never be the same
-	// thing as a check that does not apply.
-	CodeMalformedRequest = "malformed_request"
-
 	// CodeAllowed is the code recorded for a permitted request.
 	CodeAllowed = "allowed"
 )

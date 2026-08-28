@@ -100,26 +100,6 @@ func Authorise(req Request, policyPath string, now time.Time) (policy.Decision, 
 		return policy.Decision{Code: policy.CodeUnknownIntent, Reason: err.Error()}, nil, err
 	}
 
-	// A privileged request has to carry an issue time, because policy.Decide skips the age check
-	// without one — and "the field was absent" must never be how limits.max_job_age_seconds stops
-	// applying. The agent always has a time to send: for a signed job it sends the signed notBefore,
-	// so the age binds whoever holds the key rather than whoever holds the control plane.
-	//
-	// This is not a defence against a compromised agent and is not offered as one: such an agent sends
-	// `now` and the check passes. It is refused here because a request that arrives without it is a
-	// caller with a bug, and a bug that silently removes a limit is the failure this boundary is for.
-	//
-	// The check is here rather than in policy.Decide because Decide is also reached from inside a
-	// helper, where there is no job and no issue time: helpers/apply-updates re-evaluates host.reboot
-	// after an update it has just applied. That call has nothing to be old relative to.
-	if spec.Class.Privileged() && req.IssuedAt.IsZero() {
-		reason := "a privileged request must carry issuedAt; without it the local age limit applies " +
-			"to nothing"
-		slog.Error("refusing a privileged request with no issue time",
-			"job", req.JobID, "intent", spec.Name)
-		return policy.Decision{Code: policy.CodeMalformedRequest, Reason: reason}, params, nil
-	}
-
 	// A missing file is an unconfigured host and takes the conservative built-in default. Anything
 	// else is a host whose administrator meant something this code could not read, and that refuses
 	// with its own code: an operator told "not permitted" goes looking for the setting that forbade
@@ -302,6 +282,10 @@ func (h Helper) performWith(ctx context.Context, req Request, policyPath string)
 		}
 	}
 
+	if refusal, refused := refuseUnboundedAge(req); refused {
+		return refusal
+	}
+
 	decision, params, err := Authorise(req, policyPath, time.Now())
 	if err != nil {
 		return privsep.Response{ExitCode: ExitUsage, Error: err.Error()}
@@ -334,6 +318,37 @@ func (h Helper) performWith(ctx context.Context, req Request, policyPath string)
 	}
 	slog.Info("the operation completed", "job", req.JobID, "intent", req.Intent)
 	return resp
+}
+
+// refuseUnboundedAge refuses a privileged request that arrived over the socket carrying no issue time.
+//
+// policy.Decide skips the age check when there is nothing to measure from, so a request that simply
+// omitted the field passed limits.max_job_age_seconds rather than failing it. privsep.Request.IssuedAt
+// used to claim a lying caller "could only make a job look older than it is, which fails closed"; that
+// was false in both directions, and the absent case is the one a bug reaches by accident.
+//
+// It is not a defence against a compromised agent and is not offered as one: such an agent sends `now`
+// and the check passes. It refuses because a request that arrives without an issue time is a caller
+// with a bug, and a bug that silently removes a limit is the failure this boundary exists to not have.
+//
+// **Only on the socket path.** A helper run by hand has no job behind it and therefore no issue time —
+// docs/SECURITY.md §6 calls that path what an administrator uses to diagnose a host, ParseIssuedAt
+// documents the empty value as the diagnostic case, and testfleet's 080-write-capability drives every
+// helper that way. Putting this in Authorise made those runs refuse under a policy that permitted them,
+// which is the shape of mistake this check is about, made by the check itself.
+func refuseUnboundedAge(req Request) (privsep.Response, bool) {
+	spec, ok := intent.Lookup(req.Intent)
+	if !ok || !spec.Class.Privileged() || !req.IssuedAt.IsZero() {
+		return privsep.Response{}, false
+	}
+	slog.Error("refusing a privileged request that carries no issue time",
+		"job", req.JobID, "intent", req.Intent)
+	return privsep.Response{
+		ExitCode: ExitUsage,
+		Error: "a privileged request must carry issuedAt; without it limits.max_job_age_seconds " +
+			"applies to nothing. An agent always has one to send: for a signed job it is the signed " +
+			"notBefore",
+	}, true
 }
 
 // Serve answers the one request systemd's socket activation handed this process, then exits.

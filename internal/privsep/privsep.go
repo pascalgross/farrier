@@ -197,9 +197,11 @@ type Request struct {
 	// choose, and a restart signed on Tuesday cannot execute on Friday because the host was offline
 	// in between.
 	//
-	// A zero value is refused by the helper rather than skipped. An agent always has an issue time to
+	// A zero value is refused on this socket rather than skipped. An agent always has an issue time to
 	// send, so its absence is a bug in the caller, and treating a bug as "no limit applies" is the
-	// shape of failure this boundary exists not to have.
+	// shape of failure this boundary exists not to have. The refusal is on the socket path only: a
+	// helper run by hand for diagnosis has no job behind it and therefore nothing to be old relative
+	// to, which is a different situation and not this one.
 	IssuedAt time.Time `json:"issuedAt"`
 }
 

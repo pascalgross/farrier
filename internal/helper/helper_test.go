@@ -197,20 +197,46 @@ func TestAuthoriseEnforcesTheLocalJobAgeLimit(t *testing.T) {
 // privsep.Request.IssuedAt now says outright. It is a refusal to let a missing field mean the same
 // thing as a limit that does not apply.
 func TestGuaranteeAPrivilegedRequestWithNoIssueTimeIsRefused(t *testing.T) {
-	path := writePolicy(t, permissive)
 	req := restartRequest("nginx.service")
 	req.IssuedAt = time.Time{}
 
-	decision, _, err := Authorise(req, path, time.Now())
+	helper := Helper{
+		Component: "restart-unit",
+		Socket:    privsep.RestartUnitSocket,
+		Execute: func(context.Context, Job) (string, error) {
+			t.Error("the executor ran for a request carrying no issue time")
+			return "", nil
+		},
+	}
+	resp := helper.performWith(context.Background(), req, writePolicy(t, permissive))
+	if resp.ExitCode == ExitOK {
+		t.Fatal("a privileged request with no issue time was performed; the age limit bounded nothing")
+	}
+	if resp.ExitCode != ExitUsage {
+		t.Errorf("exit %d, want %d: the caller sent something no honest agent sends, which is not the "+
+			"same as the policy declining", resp.ExitCode, ExitUsage)
+	}
+}
+
+// TestAHelperRunByHandNeedsNoIssueTime is the other side, and the reason the refusal above is where it
+// is rather than in Authorise.
+//
+// The command-line path is what an administrator uses to diagnose a host, and it has no job behind it —
+// ParseIssuedAt documents the empty value as exactly that case, docs/SECURITY.md §6 describes the path,
+// and testfleet's 080-write-capability drives every helper this way. An earlier version of the check
+// above lived in Authorise, which both paths share, and made those runs refuse under a policy that
+// permitted them: the shape of mistake the check is about, made by the check itself.
+func TestAHelperRunByHandNeedsNoIssueTime(t *testing.T) {
+	req := restartRequest("nginx.service")
+	req.IssuedAt = time.Time{}
+
+	decision, _, err := Authorise(req, writePolicy(t, permissive), time.Now())
 	if err != nil {
 		t.Fatalf("Authorise: %v", err)
 	}
-	if decision.Allowed {
-		t.Fatal("a privileged request with no issue time was permitted; the age limit bounded nothing")
-	}
-	if decision.Code != policy.CodeMalformedRequest {
-		t.Errorf("code %q, want %q: the caller sent something no honest agent sends, which is not the "+
-			"same as the policy declining", decision.Code, policy.CodeMalformedRequest)
+	if !decision.Allowed {
+		t.Fatalf("a by-hand run of a permitted operation was refused (%s: %s)",
+			decision.Code, decision.Reason)
 	}
 }
 
