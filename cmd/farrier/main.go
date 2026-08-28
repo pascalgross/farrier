@@ -99,7 +99,9 @@ func enroll(argv []string) int {
 	server := fs.String("server", "", "control plane base URL, for example https://farrier.example.org")
 	token := fs.String("token", "", "single-use bootstrap token")
 	stateDir := fs.String("state-dir", agent.DefaultStateDir, "directory to keep enrolment state in")
-	caBundle := fs.String("ca", "", "PEM file to verify the control plane's own certificate against")
+	caBundle := fs.String("ca", "",
+		"PEM file to verify the control plane's own certificate against (default "+
+			agent.DefaultServerCABundle+" when it exists)")
 	signers := fs.String("signers", "",
 		"local trusted-signers file to install before anything is fetched")
 	policyFile := fs.String("policy", "", "local policy.toml to install")
@@ -112,6 +114,12 @@ func enroll(argv []string) int {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
+	bundle, err := resolveCABundle(*caBundle, agent.DefaultServerCABundle)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: %v\n", err)
+		return 1
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -119,7 +127,7 @@ func enroll(argv []string) int {
 		ServerURL:   *server,
 		Token:       *token,
 		StateDir:    *stateDir,
-		CABundle:    *caBundle,
+		CABundle:    bundle,
 		SignersFile: *signers,
 		PolicyFile:  *policyFile,
 		Bootstrap:   *bootstrap,
@@ -139,6 +147,35 @@ func enroll(argv []string) int {
 	fmt.Printf("Enrolled as %s with %s.\n", state.HostID, state.ServerURL)
 	fmt.Println("Start the agent with: systemctl start farrier-agent")
 	return 0
+}
+
+// resolveCABundle decides which CA bundle enrolment verifies the control plane against.
+//
+// Enrolment is the one request made with nothing on disk to verify against, so the authority for it is
+// chosen locally and in advance. The two cases are deliberately not symmetric.
+//
+// A path the operator typed must exist. Falling back to the system roots because --ca named a file that
+// is not there would verify a chain they did not ask for, and the failure it replaces — a typo — is one
+// they can fix in a second if they are told about it.
+//
+// The default path is different: it is a convention rather than a request, so its absence simply means
+// the system roots, which is correct for a control plane with a publicly trusted certificate. Its
+// presence is what makes the documented ordering real — an administrator who installed the certificate
+// before enrolling gets it used, without having to name it a second time on the command line.
+//
+// The default arrives as an argument rather than being read from the package constant, so that a test
+// can exercise both halves without an absolute path only root can create.
+func resolveCABundle(flagValue, defaultPath string) (string, error) {
+	if flagValue != "" {
+		if _, err := os.Stat(flagValue); err != nil {
+			return "", fmt.Errorf("the CA bundle %s cannot be read: %w", flagValue, err)
+		}
+		return flagValue, nil
+	}
+	if _, err := os.Stat(defaultPath); err == nil {
+		return defaultPath, nil
+	}
+	return "", nil
 }
 
 // keyCommand implements `farrier key generate` and `farrier key show`.

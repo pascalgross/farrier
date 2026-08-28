@@ -85,16 +85,83 @@ export class EnrolPanel {
    * `install` rather than `cp`, with the owner, group and mode written out: the file is what the agent
    * checks the control plane against, and one left mode 0600 root-owned in a directory the agent can
    * read is a difference nobody notices until enrolment fails.
+   *
+   * It fetches from **this page's own origin** rather than from the agent URL, and that is the whole
+   * point of the computed rather than a template string. `curl` verifies the control plane like any
+   * other client, so it can only fetch the certificate from a name whose certificate is already
+   * trusted — and the agent hostname's is precisely the one that is not, since it is what the file
+   * being fetched would establish. In the documented two-hostname deployment this origin is the
+   * interface, where Traefik terminates with a publicly trusted certificate, so the command works;
+   * against the agent hostname it fails with `unable to get local issuer certificate` every time. When
+   * the two are the same name it fails either way, which is what the note beside it is for.
    */
   protected readonly caCommand = computed(() => {
     const details = this.instructions();
     if (!details) {
       return '';
     }
+    if (this.caFetchIsUnverifiable()) {
+      return this.caCommandUnverified();
+    }
     return [
-      `curl -fsSL ${details.agentUrl}${details.caCertificatePath} \\`,
+      `curl -fsSL ${this.origin()}${details.caCertificatePath} \\`,
       '  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/farrier/server-ca.crt',
     ].join('\n');
+  });
+
+  /** The certificate's SHA-256, shown so an unverified fetch has something to be checked against. */
+  protected readonly fingerprint = computed(() => this.instructions()?.caFingerprint ?? '');
+
+  /**
+   * The same step for a control plane whose certificate cannot be verified from the host.
+   *
+   * `-k` is in here and it is not a shortcut: it is one half of a check, and the command fails closed
+   * without the other half. The certificate is fetched unverified, its digest is compared against the
+   * one this page is showing, and it is installed only on a match — so the bytes are accepted because
+   * they match a value that arrived over this authenticated session, not because whoever answered the
+   * hostname said so.
+   *
+   * Written as a `test` rather than as "now compare these two strings by eye", because a comparison of
+   * two 64-character hex strings is one people perform by looking at the first four characters. The
+   * shell does it exactly, and an operator who pastes this gets an installed certificate or a refusal,
+   * with no third outcome where they thought they had checked.
+   */
+  protected readonly caCommandUnverified = computed(() => {
+    const details = this.instructions();
+    if (!details) {
+      return '';
+    }
+    return [
+      `curl -fsSLk ${details.agentUrl}${details.caCertificatePath} -o /tmp/farrier-ca.crt`,
+      `test "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \\`,
+      `  = "sha256 Fingerprint=${details.caFingerprint}" \\`,
+      '  && sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt \\',
+      '  || echo "FINGERPRINT MISMATCH - do not install this certificate"',
+    ].join('\n');
+  });
+
+  /**
+   * Where this page is served from, as an origin a shell command can be pointed at.
+   *
+   * Read through a getter so a test can replace it; `window.location` is otherwise a global the
+   * component would be pinned to.
+   */
+  protected origin(): string {
+    return window.location.origin;
+  }
+
+  /**
+   * Whether the certificate has to be fetched from the same name it authenticates.
+   *
+   * True in the single-hostname deployment, where the interface and the agent API share an origin
+   * serving Farrier's own certificate. The step above cannot verify that connection — nothing has told
+   * the host to trust this authority yet, which is the reason for the step — so the panel says so and
+   * points at the two ways round it, rather than printing a command that always fails and letting the
+   * operator conclude the control plane is broken.
+   */
+  protected readonly caFetchIsUnverifiable = computed(() => {
+    const details = this.instructions();
+    return !!details && details.agentUrl === this.origin();
   });
 
   /** The enrolment command, carrying the token when one has been minted. */

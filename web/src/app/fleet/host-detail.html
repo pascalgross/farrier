@@ -12,10 +12,57 @@
     <mat-icon class="!text-base">arrow_back</mat-icon> Fleet
   </a>
 
-  <header class="mb-6">
-    <h1 class="text-2xl font-medium m-0">{{ host.hostname || host.id }}</h1>
-    <p class="m-0 text-sm opacity-70 farrier-numeric">{{ host.id }}</p>
+  <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-medium m-0">{{ host.hostname || host.id }}</h1>
+      <p class="m-0 text-sm opacity-70 farrier-numeric">{{ host.id }}</p>
+    </div>
+    @if (!host.revoked) {
+      <button mat-stroked-button type="button" (click)="toggleRevoke()">
+        {{ confirmingRevoke() ? 'Keep it' : 'Revoke host' }}
+      </button>
+    }
   </header>
+
+  @if (confirmingRevoke() && !host.revoked) {
+    <mat-card class="mb-6">
+      <mat-card-content class="!pt-6 flex flex-col gap-3">
+        <p class="m-0 text-sm">
+          Revoking removes the certificate this control plane authenticates the host by, which is the
+          whole of the revocation mechanism: the fingerprint is looked up on every request, so the next
+          one fails. Its machine id stops matching too, which is what lets this machine enrol again
+          after a rebuild.
+        </p>
+        <p class="m-0 text-sm opacity-80">
+          It does not stop the agent and it does not stop the machine being patched. A revoked host
+          keeps applying updates from its own local policy, because a host that fell off the fleet
+          must not quietly become an unpatched one. Nothing here is deleted: the host, its jobs and
+          its history stay.
+        </p>
+        @if (revokeError()) {
+          <p class="m-0 text-sm text-farrier-bad">{{ revokeError() }}</p>
+        }
+        <div class="flex gap-2">
+          <button mat-flat-button type="button" [disabled]="revoking()" (click)="revoke()">
+            {{ revoking() ? 'Revoking…' : 'Revoke ' + (host.hostname || host.id) }}
+          </button>
+          <button mat-stroked-button type="button" (click)="toggleRevoke()">Cancel</button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  }
+
+  @if (host.revoked) {
+    <mat-card class="mb-6">
+      <mat-card-content class="!pt-6 flex items-start gap-3">
+        <mat-icon class="text-farrier-warn">gpp_bad</mat-icon>
+        <p class="m-0 text-sm">
+          This host is revoked. Its certificate is gone, so it can no longer report, and this machine
+          can enrol again. It keeps patching from its own local policy.
+        </p>
+      </mat-card-content>
+    </mat-card>
+  }
 
   <div class="grid gap-6 md:grid-cols-2">
     <mat-card>

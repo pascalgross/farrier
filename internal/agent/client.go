@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -100,15 +101,11 @@ func NewClient(baseURL, stateDir, caPath string) (*Client, error) {
 	// A CA bundle is honoured when one is present so that a private control-plane certificate works
 	// without touching the system trust store. When it is absent the system roots are used, which is
 	// the ordinary case for a control plane with a publicly trusted certificate.
-	if caPath != "" {
-		pem, err := os.ReadFile(caPath)
-		if err == nil && len(pem) > 0 {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(pem) {
-				tlsCfg.RootCAs = pool
-			}
-		}
+	pool, err := loadRootCAs(caPath)
+	if err != nil {
+		return nil, err
 	}
+	tlsCfg.RootCAs = pool
 
 	return &Client{
 		baseURL: trimSlash(baseURL),
@@ -136,15 +133,11 @@ func NewClient(baseURL, stateDir, caPath string) (*Client, error) {
 // NewUnauthenticatedClient builds a client for enrolment, which has no certificate yet.
 func NewUnauthenticatedClient(baseURL, caPath string) (*Client, error) {
 	tlsCfg := &tls.Config{MinVersion: protocol.TLSMinVersion, CipherSuites: protocol.TLSCipherSuites}
-	if caPath != "" {
-		pem, err := os.ReadFile(caPath)
-		if err == nil && len(pem) > 0 {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(pem) {
-				tlsCfg.RootCAs = pool
-			}
-		}
+	pool, err := loadRootCAs(caPath)
+	if err != nil {
+		return nil, err
 	}
+	tlsCfg.RootCAs = pool
 	return &Client{
 		baseURL: trimSlash(baseURL),
 		http: &http.Client{
@@ -152,6 +145,37 @@ func NewUnauthenticatedClient(baseURL, caPath string) (*Client, error) {
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
 	}, nil
+}
+
+// loadRootCAs builds the root pool a control-plane connection verifies against.
+//
+// It separates two cases that were previously one, because conflating them is a silent downgrade. A
+// bundle that is *absent* means the system roots, which is right in two ordinary situations: a control
+// plane with a publicly trusted certificate, and an agent enrolled against one, which is handed no
+// bundle to write. A bundle that is *present but unusable* — unreadable, empty, or carrying no PEM
+// certificate — means somebody named an authority and did not get it, and verifying against the system
+// roots instead would accept a different chain than the one they asked for while looking like success.
+// The whole point of naming a bundle is to refuse chains the system roots would accept, so falling back
+// to them on error inverts the request. That is refused rather than logged: enrolment happens once, at
+// a terminal, and a warning scrolled past is a host that trusts the wrong authority for its lifetime.
+//
+// A nil pool is the zero value tls.Config already means "system roots", so callers assign it unchecked.
+func loadRootCAs(caPath string) (*x509.CertPool, error) {
+	if caPath == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(caPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("agent: reading the CA bundle %s: %w", caPath, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("agent: %s contains no PEM certificate", caPath)
+	}
+	return pool, nil
 }
 
 // trimSlash removes a trailing slash so paths concatenate cleanly.

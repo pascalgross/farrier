@@ -1,5 +1,6 @@
 import { Component, computed, inject, input, signal } from '@angular/core';
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatIconModule } from '@angular/material/icon';
@@ -10,6 +11,7 @@ import { catchError, of, startWith, switchMap } from 'rxjs';
 
 import { Host, UnitState, UnitTransition } from '../core/api.models';
 import { ApiService } from '../core/api.service';
+import { describeError } from '../core/errors';
 import { describeUnit, isUnloadable } from '../core/unit-state';
 import { formatAge, formatDuration, formatOffset } from '../core/format';
 
@@ -24,6 +26,7 @@ import { formatAge, formatDuration, formatOffset } from '../core/format';
 @Component({
   selector: 'farrier-host-detail',
   imports: [
+    MatButtonModule,
     MatCardModule,
     MatDividerModule,
     MatIconModule,
@@ -44,10 +47,18 @@ export class HostDetail {
   /** The last error message, empty when the host loaded. */
   protected readonly error = signal('');
 
+  /**
+   * Bumped to re-read the host, which revoking does.
+   *
+   * The page would otherwise keep showing "revoked: no" on a host it had just revoked, and the state
+   * an operator is looking at after a destructive action is the one they will trust.
+   */
+  private readonly reloads = signal(0);
+
   /** The host, or null while loading. */
   protected readonly host = toSignal(
-    toObservable(this.id).pipe(
-      switchMap((id) =>
+    toObservable(computed(() => ({ id: this.id(), reload: this.reloads() }))).pipe(
+      switchMap(({ id }) =>
         this.api.host(id).pipe(
           startWith(null),
           catchError(() => {
@@ -199,5 +210,51 @@ export class HostDetail {
       return 'attached';
     }
     return sub.note ? `not attached — ${sub.note}` : 'not attached';
+  }
+
+  /** Whether the revoke confirmation is showing. */
+  protected readonly confirmingRevoke = signal(false);
+
+  /** True while the revoke request is in flight, so the button cannot be pressed twice. */
+  protected readonly revoking = signal(false);
+
+  /** Why the revocation failed, empty when it has not been tried or succeeded. */
+  protected readonly revokeError = signal('');
+
+  /** Opens or closes the confirmation, clearing whatever the last attempt said. */
+  protected toggleRevoke(): void {
+    this.revokeError.set('');
+    this.confirmingRevoke.update((open) => !open);
+  }
+
+  /**
+   * Revokes this host, then re-reads it.
+   *
+   * The page had no control for this at all, which made one ordinary situation a dead end: a machine
+   * that has to be rebuilt or re-enrolled is refused with 409 `already_enrolled` until its existing
+   * host is released, and the only way to release it was an API call from a terminal. An operator who
+   * has just been told to "revoke or delete it" should be able to do that where they are reading it.
+   *
+   * It is not called a delete, because it is not one. The host, its history and its job record stay;
+   * what goes is the certificate the control plane authenticates it by, which is the whole of the
+   * revocation mechanism — fingerprint lookup on every request, no CRL, nothing to distribute.
+   */
+  protected revoke(): void {
+    if (this.revoking()) {
+      return;
+    }
+    this.revoking.set(true);
+    this.revokeError.set('');
+    this.api.revokeHost(this.id()).subscribe({
+      next: () => {
+        this.revoking.set(false);
+        this.confirmingRevoke.set(false);
+        this.reloads.update((n) => n + 1);
+      },
+      error: (err: unknown) => {
+        this.revoking.set(false);
+        this.revokeError.set(describeError(err));
+      },
+    });
   }
 }

@@ -232,6 +232,24 @@ export class ApiService {
   }
 
   /**
+   * Revokes a host, which is how a machine is released rather than deleted.
+   *
+   * The control plane authenticates an agent by looking its client certificate's fingerprint up on
+   * every request, so removing that certificate *is* the revocation — there is no CRL and nothing to
+   * distribute. Two consequences the page has to say out loud: the host stops being able to report,
+   * and its machine id stops matching, which is what lets the same machine enrol again. It does not
+   * stop the agent, and it does not stop the machine being patched: a revoked host must not silently
+   * become an unpatched one.
+   */
+  revokeHost(id: string): Observable<unknown> {
+    return this.http.post(
+      `/api/v1/hosts/${encodeURIComponent(id)}/revoke`,
+      {},
+      { headers: this.headers() },
+    );
+  }
+
+  /**
    * Fetches the complete intent catalogue this control plane knows.
    *
    * The UI shows it in full, including the permanently refused list, because the claim Farrier makes is

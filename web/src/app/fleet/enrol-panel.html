@@ -57,6 +57,16 @@
             which is what makes a private authority work. It is a public document: it is handed to
             every enrolling agent before that agent has any credential at all.
           </p>
+          @if (caFetchIsUnverifiable()) {
+            <p class="m-0 text-sm opacity-80">
+              This control plane serves its own certificate, so the host cannot verify the connection it
+              would fetch that certificate over — the file being fetched is what would establish the
+              trust. A plain <code>curl</code> fails here with
+              <code>unable to get local issuer certificate</code>, and that is it being right rather than
+              broken. So the certificate is fetched unverified and checked against the fingerprint below,
+              which reached you over this session instead. It installs on a match and refuses otherwise.
+            </p>
+          }
           <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ caCommand() }}</code></pre>
           <div class="flex flex-wrap gap-2">
             <button mat-stroked-button type="button" (click)="copy('ca', caCommand())">
@@ -68,6 +78,9 @@
               Download the certificate
             </a>
           </div>
+          <p class="m-0 text-xs opacity-70 farrier-numeric break-all">
+            SHA-256 {{ fingerprint() }}
+          </p>
         </li>
 
         <li class="flex flex-col gap-2">

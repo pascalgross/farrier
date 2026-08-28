@@ -12,6 +12,7 @@ function instructions(partial: Partial<EnrolmentInstructions> = {}): EnrolmentIn
     agentUrl: 'https://agents.example.org',
     agentUrlIsAGuess: false,
     caCertificatePath: '/api/v1/ca.crt',
+    caFingerprint: 'C0:62:73:A0:FD:3C:25:86:BE:F7:7F:0E:08:66:72:C0:F6:E3:AF:3B:A4:94:FB:2A:D9:BF:CC:1D:C5:8E:15:61',
     aptUrl: 'https://farrier.tools/apt',
     ...partial,
   };
@@ -29,6 +30,9 @@ interface PanelInternals {
 
   /** Mints one enrolment token. */
   mint(): void;
+
+  /** Where the page is served from, which the CA command is built against. */
+  origin(): string;
 }
 
 /**
@@ -38,7 +42,7 @@ interface PanelInternals {
  * address is one property, and splitting it into two specs would let either half pass alone while the
  * panel said the same thing in both cases.
  */
-function render(details: EnrolmentInstructions): ComponentFixture<EnrolPanel> {
+function render(details: EnrolmentInstructions, origin = 'https://farrier.example.org'): ComponentFixture<EnrolPanel> {
   TestBed.resetTestingModule();
   TestBed.configureTestingModule({
     providers: [
@@ -59,8 +63,13 @@ function render(details: EnrolmentInstructions): ComponentFixture<EnrolPanel> {
     ],
   });
   const fixture = TestBed.createComponent(EnrolPanel);
+  const panel = fixture.componentInstance as unknown as PanelInternals;
+  // The page's own address decides where the certificate is fetched from, and under Karma it is the
+  // test runner's. Stubbed rather than asserted around, because the two-hostname and single-hostname
+  // deployments differ in exactly this value and both have to be exercised.
+  panel.origin = () => origin;
   fixture.detectChanges();
-  (fixture.componentInstance as unknown as PanelInternals).load();
+  panel.load();
   fixture.detectChanges();
   return fixture;
 }
@@ -84,9 +93,77 @@ describe('EnrolPanel', () => {
     const rendered = text(render(instructions()).nativeElement);
 
     expect(rendered).toContain('sudo farrier enroll --server https://agents.example.org');
-    expect(rendered).toContain('https://agents.example.org/api/v1/ca.crt');
     expect(rendered).toContain('https://farrier.tools/apt/farrier.sources');
     expect(rendered).not.toContain('this-control-plane');
+  });
+
+  /**
+   * The certificate is fetched from this page's address, not from the agent hostname.
+   *
+   * `curl` verifies the control plane like every other client, so it can only fetch the certificate
+   * over a connection it can already verify — and the agent hostname's certificate is precisely the
+   * one it cannot, because the file being fetched is what would establish it. In the documented
+   * two-hostname deployment this page is served where Traefik terminates with a publicly trusted
+   * certificate, so pointing the command here is the difference between a command that works and one
+   * that fails with `unable to get local issuer certificate` for every operator who copies it.
+   */
+  it('fetches the certificate from the interface address, not the agent address', () => {
+    const rendered = text(render(instructions()).nativeElement);
+
+    expect(rendered).toContain('https://farrier.example.org/api/v1/ca.crt');
+    expect(rendered).not.toContain('https://agents.example.org/api/v1/ca.crt');
+  });
+
+  /**
+   * When one hostname serves both, the panel says the fetch cannot be verified.
+   *
+   * There is no address to point the command at in that deployment: the only name serving the
+   * certificate is the one the certificate would authenticate. Printing a command that always fails
+   * and saying nothing is how an operator concludes the control plane is broken, so the panel names
+   * the error and the two ways round it instead.
+   */
+  it('warns when the certificate would be fetched from the name it authenticates', () => {
+    const shared = text(
+      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org')
+        .nativeElement,
+    );
+    expect(shared).toContain('unable to get local issuer certificate');
+
+    const split = text(render(instructions()).nativeElement);
+    expect(split).not.toContain('unable to get local issuer certificate');
+  });
+
+  /**
+   * The unverified fetch is never offered without the check that makes it safe.
+   *
+   * `-k` alone accepts whoever answered the hostname, and what it would accept is the authority every
+   * later connection from that host is checked against — so a mistake here is not one bad request, it
+   * is a permanently wrong trust anchor. The command therefore carries the fingerprint, compares it in
+   * the shell rather than asking a person to compare two 64-character strings by eye, and installs
+   * nothing on a mismatch. This asserts the three halves travel together.
+   */
+  it('pairs an unverified fetch with a fingerprint check that fails closed', () => {
+    const rendered = text(
+      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org')
+        .nativeElement,
+    );
+
+    expect(rendered).toContain('curl -fsSLk');
+    expect(rendered).toContain('sha256 Fingerprint=C0:62:73:A0');
+    expect(rendered).toContain('FINGERPRINT MISMATCH');
+  });
+
+  /**
+   * The verifiable deployment gets the plain command, with no -k anywhere near it.
+   *
+   * A panel that printed `-k` unconditionally would teach the habit it exists to avoid, on the
+   * majority deployment where the fetch verifies perfectly well.
+   */
+  it('does not offer an unverified fetch when the fetch can be verified', () => {
+    const rendered = text(render(instructions()).nativeElement);
+
+    expect(rendered).not.toContain('curl -fsSLk');
+    expect(rendered).toContain('curl -fsSL https://farrier.example.org/api/v1/ca.crt');
   });
 
   /**
