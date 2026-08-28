@@ -10,10 +10,11 @@ import (
 //
 // `current_setting('farrier.tenant', true)` returns NULL only until some transaction on that pooled
 // connection has set it; afterwards, for the rest of the connection's life, an unset value reads as the
-// empty string. Every isolation policy compares a tenant column against that setting, and `x = NULL` is
-// NULL while `x = ''` is an ordinary comparison — so a tenant whose id were `''` would be the one fleet
-// reachable by a statement that named no tenant at all, including every resolve-key lookup. Nothing
-// errors; the wrong rows simply become readable.
+// empty string. Every isolation policy compares a tenant column against that setting. Comparing against
+// NULL yields NULL, which admits nothing; comparing against the empty string is an ordinary comparison,
+// which admits every row whose tenant is empty — so such a tenant would be the one fleet reachable by a
+// statement that named no tenant at all, including every resolve-key lookup. Nothing errors; the wrong
+// rows simply become readable.
 //
 // Asserted against both stores because the refusal has to be the same refusal. The reason is a
 // PostgreSQL reason and does not apply to a map, and a memory store that accepted the value would let a

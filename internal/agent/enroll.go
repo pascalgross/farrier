@@ -388,8 +388,24 @@ func verifyBootstrap(stateDir string, signers *signing.SignerSet,
 	// nobody should be approving casually anyway.
 	fmt.Printf("\n--- bootstrap template %q, signed by %s ---\n%q\n--- end of template ---\n\n",
 		bootstrap.Name, key, bootstrap.Body)
-	slog.Info("bootstrap template verified", "name", bootstrap.Name, "signer", key.String(),
-		"body", bootstrap.Body)
+
+	// Identity and a digest, not the body.
+	//
+	// A template legitimately carries credentials — a break-glass account's hashed password, a static
+	// deploy key; provision.Warnings flags exactly those shapes — and slog.Info here wrote the whole of
+	// it into journald, structured and indexed, on every host enrolled from that template, where it
+	// persists for as long as the journal does. internal/provision's own doc says rendered output is a
+	// credential and is "never written to a log line or an audit entry", and this was the line that
+	// made that untrue.
+	//
+	// Nothing is lost that the audit needs. The verbatim body is fsynced into the bootstrap record
+	// before anything runs, and that record — not a log line — is what docs/SECURITY.md §7 guardrail 2
+	// names as the durable statement of what was applied. The digest is what ties the two together: an
+	// operator with a journal and a record can prove they are the same document without the journal
+	// holding a second copy of it.
+	slog.Info("bootstrap template verified",
+		"name", bootstrap.Name, "version", bootstrap.Version, "signer", key.String(),
+		"bytes", len(bootstrap.Body), "digest", canonical.DigestBytes([]byte(bootstrap.Body)))
 
 	return key, nil
 }

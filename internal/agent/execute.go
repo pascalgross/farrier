@@ -29,12 +29,17 @@ type acceptance struct {
 	// params are the decoded, validated parameters.
 	params intent.Params
 
-	// raw is the parameter object exactly as it arrived, for a privileged job to forward.
+	// raw is the parameter object as JSON, for a privileged job to forward to the helper.
 	//
-	// The helper decodes it again itself, as root, with the same catalogue decoder. Handing it the
-	// bytes rather than a re-encoding of the decoded value is what makes the two decodes the same
-	// decode: a round trip through a Go struct is a place where a field could be dropped, and the
-	// helper's validation would then be of something the agent had already altered.
+	// It is a re-encoding of job.Params, not the bytes off the wire — the agent decodes a response
+	// body once, into protocol.Job, and there is no arrived-bytes copy of this field to keep. Saying
+	// otherwise here would describe a property the helper's decode does not have.
+	//
+	// What forwarding JSON rather than the decoded intent.Params buys is real and is the reason the
+	// field exists: the helper runs intent.Decode itself, as root, over this object. It therefore
+	// validates the same shape the agent validated rather than a Go struct the agent produced, so a
+	// field the agent's own round trip dropped or coerced cannot become the thing root acts on. The
+	// helper trusts its caller for none of it — see docs/SECURITY.md §6.
 	raw []byte
 
 	// status is the protocol status to report when the job is refused.

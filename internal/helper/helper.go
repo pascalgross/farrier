@@ -80,6 +80,26 @@ func Authorise(req Request, policyPath string, now time.Time) (policy.Decision, 
 		return policy.Decision{Code: policy.CodeUnknownIntent, Reason: err.Error()}, nil, err
 	}
 
+	// A privileged request has to carry an issue time, because policy.Decide skips the age check
+	// without one — and "the field was absent" must never be how limits.max_job_age_seconds stops
+	// applying. The agent always has a time to send: for a signed job it sends the signed notBefore,
+	// so the age binds whoever holds the key rather than whoever holds the control plane.
+	//
+	// This is not a defence against a compromised agent and is not offered as one: such an agent sends
+	// `now` and the check passes. It is refused here because a request that arrives without it is a
+	// caller with a bug, and a bug that silently removes a limit is the failure this boundary is for.
+	//
+	// The check is here rather than in policy.Decide because Decide is also reached from inside a
+	// helper, where there is no job and no issue time: helpers/apply-updates re-evaluates host.reboot
+	// after an update it has just applied. That call has nothing to be old relative to.
+	if spec.Class.Privileged() && req.IssuedAt.IsZero() {
+		reason := "a privileged request must carry issuedAt; without it the local age limit applies " +
+			"to nothing"
+		slog.Error("refusing a privileged request with no issue time",
+			"job", req.JobID, "intent", spec.Name)
+		return policy.Decision{Code: policy.CodeMalformedRequest, Reason: reason}, params, nil
+	}
+
 	// A missing file is an unconfigured host and takes the conservative built-in default. Anything
 	// else is a host whose administrator meant something this code could not read, and that refuses
 	// with its own code: an operator told "not permitted" goes looking for the setting that forbade

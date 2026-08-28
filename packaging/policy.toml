@@ -44,6 +44,12 @@ auto_apply = true
 #   "Sat,Sun 00:00-06:00"   a list of days
 #   "Sat 22:00-02:00"       crossing midnight, into Sunday morning
 #   "daily 03:00-05:00"     every day
+#   "daily 00:00-00:00"     open all day, written out — which is what updates.reboot = "window" needs,
+#                           because it refuses an empty window
+#
+# A range that opens and closes at any other identical time is refused rather than accepted. "Sun
+# 03:00-03:00" reads as a narrow Sunday slot and would mean the twenty-four hours from Sunday 03:00 to
+# Monday 03:00, which is not a window anybody has ever meant to write.
 window = ""
 
 # The IANA timezone the window above is expressed in.

@@ -636,14 +636,24 @@ rather than continuing as though something had been applied. Every one of these 
 
 1. Explicit `--bootstrap NAME` on that specific invocation. Never implicit, never a server default,
    never a group setting.
-2. The full text is printed to the terminal, written to the journal, and recorded in
+2. The full text is printed to the terminal and recorded in
    `/var/lib/farrier/bootstrap-applied.json` **before** execution. The record is fsynced — file and
    directory — before anything runs, because it is the only thing that survives a template that
    crashes the machine halfway, and "what was attempted" is the question an incident asks.
+
+   The **journal gets the template's name, version, signer, length and SHA-256, and not its body.** A
+   template legitimately carries credentials — a break-glass account's hashed password, a static deploy
+   key, the shapes `provision.Warnings` flags — and journald keeps a structured, indexed, root-readable
+   copy for as long as the journal is retained, on every host enrolled from that template. The fsynced
+   record is the verbatim copy this guardrail is about; the digest is what lets an operator prove the
+   two are the same document without the journal holding the second.
 3. It is signed by a key already present in that host's `trusted-signers`.
 4. It runs exactly once, enforced by an on-disk interlock — which is the record itself, one file, so
    the two cannot disagree. A crash between "decided to apply" and "applied" refuses a second attempt
-   rather than permitting one; re-enrolling a bootstrapped host does not re-apply.
+   rather than permitting one; re-enrolling a bootstrapped host does not re-apply. The record is
+   created with `link(2)`, which fails when the file exists, so two concurrent enrolments sharing a
+   state directory produce one application and one refusal rather than two applications — a rename
+   would have let the second silently replace the first's record.
 5. **cloud-init does the applying.** Farrier writes the verified body into cloud-init's NoCloud seed
    directory under a fresh instance-id and runs cloud-init's own stages with argument vectors fixed in
    the agent; no byte of a template ever reaches a command line. Farrier never ships a hand-written
@@ -663,9 +673,10 @@ Two honest limits on guardrail 2. The record is written by `farrier enroll`, whi
 lives in a directory the unprivileged `farrier` user owns — so it defends the audit trail against the
 adversary [§1](#1-the-guarantee) is about, the control plane, and not against local code running as the
 agent, which [§2.2](#22-local-policy-sovereignty) already assumes may be compromised and which is above
-this file in the trust hierarchy. And "written to the journal" means written to standard error, which
-systemd routes to the journal when enrolment is run from a unit; an operator running it by hand sees it
-on their terminal, which is where guardrail 2 wanted it anyway.
+this file in the trust hierarchy. And the terminal copy is standard output, which systemd also routes to
+the journal when enrolment is run from a unit — so a host enrolled by a unit rather than by a person
+still has the body in its journal, unstructured. An operator running `farrier enroll` by hand, which is
+what guardrail 2 is written for, sees it on their terminal and nowhere else.
 
 The chicken-and-egg problem is that `trusted-signers` is empty on a fresh install. It is solved by
 establishing the anchor from a local, administrator-chosen file **before** anything is fetched:

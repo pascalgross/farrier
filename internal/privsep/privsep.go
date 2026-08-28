@@ -182,11 +182,24 @@ type Request struct {
 	// bytes removes that round trip and the chance of the two disagreeing.
 	Params json.RawMessage `json:"params"`
 
-	// IssuedAt is when the control plane created the job, for the local age check.
+	// IssuedAt is when the job's authorisation began, for the local age check.
 	//
-	// It is advisory in exactly the way limits.max_job_age_seconds expects: the helper measures the
-	// age against its own clock, so a caller that lied about this could only make a job look older
-	// than it is, which fails closed.
+	// It is chosen by the caller and the helper cannot check it, so be exact about what the age limit
+	// is worth here. A lying caller can move it in *either* direction: `now` makes an arbitrarily old
+	// job look fresh, and a zero value used to skip the check altogether. So this field does not
+	// defend against a compromised agent — nothing at this boundary could, since such an agent can
+	// simply mint an equivalent request with a fresh time.
+	//
+	// What it does defend against is the case the limit was written for, and the reason it is worth
+	// forwarding at all: an honest agent talking to a control plane that has been taken over. The
+	// agent sends the *signed* notBefore for a signed job — see effectiveIssueTime in
+	// internal/agent/execute.go — so the age is measured from something the control plane cannot
+	// choose, and a restart signed on Tuesday cannot execute on Friday because the host was offline
+	// in between.
+	//
+	// A zero value is refused by the helper rather than skipped. An agent always has an issue time to
+	// send, so its absence is a bug in the caller, and treating a bug as "no limit applies" is the
+	// shape of failure this boundary exists not to have.
 	IssuedAt time.Time `json:"issuedAt"`
 }
 

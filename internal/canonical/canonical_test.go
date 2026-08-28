@@ -203,3 +203,74 @@ func FuzzNormalizeIsIdempotentAndStable(f *testing.F) {
 		}
 	})
 }
+
+// TestGuaranteeAReEncodedPayloadCanonicalisesIdentically is the property signing actually rests on.
+//
+// A job's params reach the agent as decoded values — off the wire, and through a jsonb column that has
+// already normalised key order, whitespace and duplicate keys — so nothing on either side can verify a
+// signature against the bytes somebody typed. What both sides do instead is canonicalise their own
+// decoded view, through this package, which is the single implementation of the encoding.
+//
+// So the question that decides whether a signature verifies is this one: does JSON that differs only in
+// the ways transport is allowed to change it canonicalise to the same bytes? It has to, or an
+// unmodified job would fail to verify somewhere between the signer and the host. The cases below are
+// exactly the transformations a JSON encoder, a database and a decode-then-re-encode round trip make.
+func TestGuaranteeAReEncodedPayloadCanonicalisesIdentically(t *testing.T) {
+	const want = `{"hostId":"01JHOST","intent":"host.reboot","params":{"delayMinutes":5,"reason":"kernel"}}`
+
+	for _, form := range []struct {
+		name string
+		json string
+	}{
+		{"as signed", want},
+		{"reordered keys", `{"params":{"reason":"kernel","delayMinutes":5},"intent":"host.reboot","hostId":"01JHOST"}`},
+		{"pretty printed", "{\n  \"hostId\": \"01JHOST\",\n  \"intent\": \"host.reboot\",\n" +
+			"  \"params\": {\n    \"delayMinutes\": 5,\n    \"reason\": \"kernel\"\n  }\n}\n"},
+		// jsonb keeps the last of a repeated key, and so does Go's decoder. A payload that reached the
+		// agent through the database therefore has one where the signer's had two, and the two must
+		// still canonicalise alike.
+		{"a repeated key collapsed in transit", `{"hostId":"01JHOST","intent":"service.stop","intent":"host.reboot","params":{"delayMinutes":5,"reason":"kernel"}}`},
+	} {
+		t.Run(form.name, func(t *testing.T) {
+			got, err := Normalize([]byte(form.json))
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if string(got) != want {
+				t.Errorf("canonicalised to\n  %s\nwant\n  %s\n"+
+					"A signature is computed over this form on both sides, so two forms of the same "+
+					"value that canonicalise differently are a valid job the host refuses.",
+					got, want)
+			}
+		})
+	}
+}
+
+// TestGuaranteeADifferentValueCanonicalisesDifferently is the other half, and the reason the first means
+// anything.
+//
+// A canonicaliser that returned a constant would satisfy every assertion above. What signing needs is
+// that a payload somebody altered does not reach the same bytes as the one that was signed — which is
+// what makes the verification a refusal rather than a coincidence.
+func TestGuaranteeADifferentValueCanonicalisesDifferently(t *testing.T) {
+	const signed = `{"intent":"host.reboot","params":{"delayMinutes":5}}`
+
+	for _, tampered := range []string{
+		`{"intent":"host.reboot","params":{"delayMinutes":0}}`,
+		`{"intent":"service.stop","params":{"delayMinutes":5}}`,
+		`{"intent":"host.reboot","params":{"delayMinutes":5,"extra":1}}`,
+		`{"intent":"host.reboot","params":{"delayMinutes":"5"}}`,
+	} {
+		original, err := Normalize([]byte(signed))
+		if err != nil {
+			t.Fatalf("Normalize: %v", err)
+		}
+		altered, err := Normalize([]byte(tampered))
+		if err != nil {
+			t.Fatalf("Normalize(%s): %v", tampered, err)
+		}
+		if string(original) == string(altered) {
+			t.Errorf("%s canonicalises to the same bytes as the signed payload", tampered)
+		}
+	}
+}

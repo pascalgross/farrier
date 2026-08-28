@@ -185,6 +185,35 @@ func TestAuthoriseEnforcesTheLocalJobAgeLimit(t *testing.T) {
 	}
 }
 
+// TestGuaranteeAPrivilegedRequestWithNoIssueTimeIsRefused is the age limit's own failure mode.
+//
+// policy.Decide skips the age check when there is no issue time to measure from, so a request that
+// simply omitted the field used to pass the limit rather than fail it. The field's doc comment claimed
+// a lying caller "could only make a job look older than it is, which fails closed"; that was false in
+// both directions, and the absent case is the one a bug reaches by accident.
+//
+// It is refused rather than defaulted for the reason the boundary exists at all. This is not a defence
+// against a compromised agent — such an agent sends `now` and the check passes, which the comment on
+// privsep.Request.IssuedAt now says outright. It is a refusal to let a missing field mean the same
+// thing as a limit that does not apply.
+func TestGuaranteeAPrivilegedRequestWithNoIssueTimeIsRefused(t *testing.T) {
+	path := writePolicy(t, permissive)
+	req := restartRequest("nginx.service")
+	req.IssuedAt = time.Time{}
+
+	decision, _, err := Authorise(req, path, time.Now())
+	if err != nil {
+		t.Fatalf("Authorise: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("a privileged request with no issue time was permitted; the age limit bounded nothing")
+	}
+	if decision.Code != policy.CodeMalformedRequest {
+		t.Errorf("code %q, want %q: the caller sent something no honest agent sends, which is not the "+
+			"same as the policy declining", decision.Code, policy.CodeMalformedRequest)
+	}
+}
+
 // TestGuaranteeAHelperRefusesAnIntentItDoesNotServe is the check that replaces sudoers' fixed argv.
 //
 // systemd routes a connection to exactly one helper, but the request arriving on it still names an
