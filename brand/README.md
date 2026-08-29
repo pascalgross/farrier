@@ -39,5 +39,7 @@ so, because otherwise it looks like a bug in the hole geometry to whoever finds 
 
 ## Using it
 
-The mark and the name are **not** covered by the Apache-2.0 licence on the source. What you may and may
-not do with them is [`TRADEMARK.md`](../TRADEMARK.md); the short version is that a fork needs its own.
+The files here are Apache-2.0 like the rest of the repository, but the licence does not give you
+permission to use the mark or the name as branding for your own product — Apache-2.0 §6 withholds
+exactly that. What Pascal Groß permits and does not permit is [`TRADEMARK.md`](../TRADEMARK.md); the
+short version is that a fork needs its own.

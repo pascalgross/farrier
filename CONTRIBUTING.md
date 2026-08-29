@@ -14,7 +14,8 @@ writing a pull request that has to be declined on principle.
 ### 1. Sign off every commit (DCO)
 
 Farrier uses the [Developer Certificate of Origin](https://developercertificate.org/). There is **no
-CLA**. Pegasus Networks holds no rights over your contribution that you do not also hold.
+CLA**. Pascal Groß holds no rights over your contribution that you do not also hold: the DCO does not
+transfer your copyright, and you stay one of the contributors the project's `NOTICE` names.
 
 Add a sign-off line to every commit:
 
@@ -42,10 +43,10 @@ git rebase --signoff origin/main         # a whole branch
 Identifiers, comments, documentation, commit messages, issue titles, pull request descriptions, UI
 strings, log messages, error text. All of it.
 
-Pegasus Networks is a German company and this rule costs us something. We keep it because a project
-that asks strangers to audit its security claims cannot also ask them to read German first. If the
-argument for a mechanism is only comprehensible to people who speak the maintainers' language, it is
-not really an open claim.
+Pascal Groß, trading as Pegasus Networks, is based in Germany, and this rule costs us something. We
+keep it because a project that asks strangers to audit its security claims cannot also ask them to
+read German first. If the argument for a mechanism is only comprehensible to people who speak the
+maintainers' language, it is not really an open claim.
 
 ### 3. Every type and every function carries a doc comment saying what it does **and why it exists**
 

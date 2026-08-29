@@ -185,16 +185,20 @@ Go 1.26 or newer. `make deb` additionally needs [`nfpm`](https://nfpm.goreleaser
 ## Licence, and why it will not change
 
 **Apache-2.0 for everything.** Contributions are made under the
-[Developer Certificate of Origin](https://developercertificate.org/) — there is no CLA, and Pegasus
-Networks holds no special rights over contributed code that you do not also hold.
+[Developer Certificate of Origin](https://developercertificate.org/) — there is no CLA, and Pascal
+Groß holds no special rights over contributed code that you do not also hold. Copyright stays with
+each contributor: the notice for the project as a whole reads
+"Copyright 2026 Pascal Groß and the Farrier contributors" (see [`NOTICE`](NOTICE)).
 
 This is deliberately permanent. Relicensing a DCO project requires the agreement of every contributor,
 which means **no future owner of this repository can take it proprietary**, including us. For a
 security tool whose entire value is that you can verify its claims yourself, the ability to promise
 that is worth more than the option to change our minds.
 
-Apache-2.0 §6 grants no trademark rights. The **Farrier** word mark is reserved; see
-[`TRADEMARK.md`](TRADEMARK.md). You may fork the code and ship it; you may not call your fork Farrier.
+Apache-2.0 §6 grants no permission to use the project's name or other identifying signs as branding
+for your own product. Farrier is not a registered trademark; the uses of the **Farrier** name and
+brand that Pascal Groß permits are described in [`TRADEMARK.md`](TRADEMARK.md). You may fork the code
+and ship it; please do not call your fork Farrier.
 
 ## Contributing
 

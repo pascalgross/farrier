@@ -82,6 +82,7 @@ LABEL org.opencontainers.image.title="farrier-server" \
       org.opencontainers.image.source="https://github.com/pascalgross/farrier" \
       org.opencontainers.image.documentation="https://github.com/pascalgross/farrier/blob/main/deploy/README.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="Pascal Groß, trading as Pegasus Networks" \
       org.opencontainers.image.version="${VERSION}"
 
 # Declared so that a `docker run` without a volume still keeps the CA, the online signing key and the

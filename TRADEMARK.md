@@ -1,29 +1,50 @@
-# Farrier trademark policy
+# Farrier name and logo policy
+
+## Policy issuer
+
+This policy is issued by Pascal Groß, trading as Pegasus Networks.
+
+Farrier is not currently a registered trademark. This policy describes
+the uses of the Farrier name and logo that Pascal Groß permits. The
+policy does not itself create trademark rights. Any enforceable rights
+arise from applicable trademark, trade name, title, unfair competition,
+and copyright law, as well as from any future trademark registrations.
+
+## What the licence does and does not cover
 
 The Farrier **source code** is Apache-2.0 and you may do essentially anything with it.
 
-The Farrier **name and logo** are not covered by that licence. Apache-2.0 §6 says so explicitly:
+The Apache-2.0 licence does not give you permission to use the Farrier **name**, or the project's
+other identifying signs, as branding or as an indication of origin for your own product. Apache-2.0
+§6 says so explicitly:
 
 > This License does not grant permission to use the trade names, trademarks, service marks, or
 > product names of the Licensor, except as required for reasonable and customary use in describing
 > the origin of the Work […]
+
+The logo file in [`brand/`](brand/farrier-mark.svg) is part of this repository and is distributed
+under the same Apache-2.0 licence as everything else in it; what §6 withholds is the separate
+permission to use it as a badge of origin for something that is not this project. Copying the file,
+keeping it in a fork, and showing it when you are talking about Farrier are all covered by the
+licence. Putting it on your own product is the case this document is about.
 
 This document says what that means in practice, so nobody has to guess.
 
 ## Why this file exists at all
 
 Farrier is Apache-2.0 and will stay Apache-2.0 — permanently, because contributions come in under the
-DCO and relicensing would need every contributor's agreement. Pegasus Networks has deliberately given
-up the ability to take this code proprietary.
+DCO and relicensing would need every contributor's agreement. Pascal Groß has deliberately given up
+the ability to take this code proprietary.
 
-The word mark is therefore **the only asset a hosted Farrier business has**. Being straightforward
-about that is better than pretending otherwise, and much better than the alternative some projects
-reach for, which is keeping a CLA in reserve so the licence can be changed later. We would rather have
-a permanent Apache-2.0 licence and a protected name than a revocable licence and a generous one.
+The name is therefore **the only asset a hosted Farrier business has**. Being straightforward about
+that is better than pretending otherwise, and much better than the alternative some projects reach
+for, which is keeping a CLA in reserve so the licence can be changed later. We would rather have a
+permanent Apache-2.0 licence and a name people can rely on than a revocable licence and a generous
+one.
 
-Protecting the name also protects you: if anyone can call anything "Farrier", then "we run Farrier"
-stops meaning "we run software whose agent has no remote execution channel", and the security claim
-this project is built on becomes unverifiable in conversation.
+Being careful with the name also helps you: if anyone can call anything "Farrier", then "we run
+Farrier" stops meaning "we run software whose agent has no remote execution channel", and the
+security claim this project is built on becomes unverifiable in conversation.
 
 ## What you may do without asking
 
@@ -47,7 +68,8 @@ this project is built on becomes unverifiable in conversation.
 - **Product names that read as ours.** `farrier-pro`, `Farrier Cloud`, `getfarrier.com`,
   `@farrier/anything`, an APT repository at a domain a user would take for the project's own.
 - **Logos and visual identity.** Do not use the Farrier logo — the horseshoe in
-  [`brand/`](brand/farrier-mark.svg) — for your product, and do not use a confusingly similar one.
+  [`brand/`](brand/farrier-mark.svg) — as the mark of your own product, and do not use a confusingly
+  similar one.
 - **Implying endorsement.** "Official", "certified", "powered by Pegasus Networks", or anything else a
   reasonable reader would take as us vouching for you.
 
@@ -57,8 +79,11 @@ your software is this project. If they could, ask first.
 ## The specific case this is really about
 
 Someone will eventually fork Farrier, remove the signature check or add a `shell.exec` intent, and
-ship it under a name containing "Farrier". Apache-2.0 lets them do the first two, and this document is
-what stops the third.
+ship it under a name containing "Farrier". Apache-2.0 lets them do the first two. This document does
+not by itself make the third unlawful; what it does is state clearly that the third is not a use
+Pascal Groß permits, so that nobody can claim it was understood as permitted, and so that it is
+plain which rules any legal step would rest on — trademark, trade name, title, unfair competition and
+copyright law, together with any registrations that may exist in future.
 
 That matters more here than it would for most projects: the guarantee in
 [`docs/SECURITY.md`](docs/SECURITY.md) is a statement about what the software *cannot* do, and a
@@ -77,4 +102,4 @@ from the name and we expect to say yes to most reasonable requests; we just want
 ## Changes
 
 This policy may be updated. It will never be applied retroactively to make previously permitted use
-infringing, and any change will be visible in this file's git history.
+into a use that was not permitted, and any change will be visible in this file's git history.
