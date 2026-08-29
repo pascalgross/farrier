@@ -1186,7 +1186,13 @@ export interface WallboardCounts {
  * same words and no client has to know the grace window or the skew threshold to phrase them.
  */
 export interface WallboardAttention {
-  /** What the host calls itself. The only identifier on the board: a host id is a thing to probe. */
+  /**
+   * What the host calls itself, empty for a machine that has never said.
+   *
+   * The only name on the board, and deliberately not backed by the host id: an id is unreadable from
+   * three metres and is the value three write routes name, so an empty string is what a machine that
+   * has never reported gets. The board renders that as a phrase rather than as a blank tile.
+   */
   hostname: string;
 
   /** Whether this is definitely wrong or merely unjudgeable. Never "ok": a well host is not a tile. */

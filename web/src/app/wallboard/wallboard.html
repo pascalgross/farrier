@@ -137,7 +137,13 @@
             @for (entry of entries(); track $index) {
               <li class="wb__tile" [class.wb__tile--bad]="entry.status === 'bad'">
                 <mat-icon class="wb__tile-icon" aria-hidden="true">{{ reasonIcon(entry) }}</mat-icon>
-                <p class="wb__tile-host">{{ entry.hostname }}</p>
+                <!--
+                  A machine that has never reported has no hostname, and the server sends none rather
+                  than falling back to its identifier — which would be unreadable from here and is the
+                  value three write routes name. The phrase is what the room can act on: go and look at
+                  the one that never came up.
+                -->
+                <p class="wb__tile-host">{{ entry.hostname || 'unnamed host' }}</p>
                 <p class="wb__tile-reason">{{ reasonWord(entry) }}</p>
                 <p class="wb__tile-detail">{{ entry.detail }}</p>
               </li>

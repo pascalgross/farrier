@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pascalgross/farrier/internal/protocol"
 	"github.com/pascalgross/farrier/internal/store"
 )
 
@@ -100,7 +101,12 @@ type wallboardView struct {
 	// PollSeconds is how long the screen should wait before asking again.
 	PollSeconds int `json:"pollSeconds"`
 
-	// Title is the heading the screen shows: a share's label, or the fleet's name for an operator.
+	// Title is the heading a published screen shows, and is empty on an operator's own board.
+	//
+	// Empty rather than the fleet's name, because the shell above an operator's board already names the
+	// fleet this credential reaches and a second copy of it would be a heading repeating the toolbar.
+	// A television has no shell, so its heading is the share's label — which is also the only field on
+	// this payload that differs between the two routes.
 	Title string `json:"title"`
 
 	// Hosts is the fleet split three ways. ok + bad + unknown == total, always.
@@ -162,11 +168,15 @@ type wallboardMeasure struct {
 
 // wallboardEntry is one named host on the attention grid.
 type wallboardEntry struct {
-	// Hostname is what the host calls itself, falling back to its identifier.
+	// Hostname is what the host calls itself, empty for a machine that has never said.
 	//
-	// The identifier is the fallback rather than the value: a host that has never reported has no
-	// hostname, and a blank tile names nothing. It is never sent for a host that does have one, because
-	// an identifier is useless from three metres and useful to somebody probing.
+	// Empty rather than falling back to the host's identifier, which was the obvious thing to write and
+	// is wrong twice. It would put a control-plane identifier — the one `GET /api/v1/hosts/{id}`,
+	// `POST /api/v1/hosts/{id}/revoke` and `POST /api/v1/jobs` all name — onto a page reachable without
+	// an account, which docs/SECURITY.md §4.6 says never happens; and it would put it there in twenty-six
+	// characters of base32, which is unreadable from three metres and therefore buys the room nothing in
+	// exchange. A machine that has never reported has no name a passer-by could act on, and the honest
+	// rendering of that is to say so.
 	Hostname string `json:"hostname"`
 
 	// Status is "bad" or "unknown". Never "ok" — a healthy host is not on this list.
@@ -242,7 +252,8 @@ func (s *Server) judgeHost(h store.Host, now time.Time) hostVerdict {
 	if failed := countFailedUnits(probe); ok && failed > 0 {
 		return hostVerdict{statusBad, reasonUnitFailed, pluralUnits(failed) + " failed"}
 	}
-	if h.ClockOffsetSeconds > clockSkewSeconds || h.ClockOffsetSeconds < -clockSkewSeconds {
+	if h.ClockOffsetSeconds > protocol.MaxClockSkewSeconds ||
+		h.ClockOffsetSeconds < -protocol.MaxClockSkewSeconds {
 		return hostVerdict{statusBad, reasonClockSkewed, "clock is out; privileged work will be refused"}
 	}
 	if h.Paused {
@@ -253,12 +264,6 @@ func (s *Server) judgeHost(h store.Host, now time.Time) hostVerdict {
 	}
 	return hostVerdict{Status: statusOK}
 }
-
-// clockSkewSeconds is the offset past which a host refuses privileged intents.
-//
-// Named here because two things in this package now compare against it, and a second literal 300 would
-// be a second definition of "skewed" that nothing would notice drifting.
-const clockSkewSeconds = 300
 
 // countFailedUnits reports how many of a host's units are in the failed state.
 func countFailedUnits(probe factsProbe) int {
@@ -351,18 +356,17 @@ func (s *Server) buildWallboard(hosts []store.Host, title string, now time.Time)
 			view.Hosts.Unknown++
 		}
 
-		s.measureHost(&view, h)
+		// The counters are told whether this host's last report can still be relied on, which is a
+		// question the verdict has already answered: everything except `never_seen` and `offline`
+		// means the host was heard from inside Host.Online's grace window.
+		s.measureHost(&view, h, verdict.Reason != reasonOffline && verdict.Reason != reasonNeverSeen)
 
 		if verdict.Status == statusOK {
 			continue
 		}
-		name := h.Hostname
-		if name == "" {
-			name = h.ID
-		}
 		attention = append(attention, ranked{
 			entry: wallboardEntry{
-				Hostname: name,
+				Hostname: h.Hostname,
 				Status:   verdict.Status,
 				Reason:   verdict.Reason,
 				Detail:   truncateDetail(verdict.Detail),
@@ -396,16 +400,23 @@ func (s *Server) buildWallboard(hosts []store.Host, title string, now time.Time)
 // measureHost adds one host to the three counters that are not health.
 //
 // Separate from judgeHost because the two answer different questions and a host contributes to both
-// independently: a machine can be perfectly healthy and still be carrying forty security updates, and a
-// machine that is offline still has whatever backlog its last report described — but the report is
-// stale, so it is counted as unmeasured rather than as a number.
+// independently: a machine can be perfectly healthy and still be carrying forty security updates.
 //
-// The unmeasured half is the point of this function. A host that has sent no inventory is not a host
-// with no security updates, and summing with a zero for it — which is what the fleet page does in the
-// browser today — quietly turns "nobody has asked this machine" into "this machine is fine".
-func (s *Server) measureHost(view *wallboardView, h store.Host) {
+// The unmeasured half is the point of this function, and it has two sources rather than one. A host
+// that has sent no inventory is not a host with no security updates, and summing with a zero for it —
+// which is what the fleet page does in the browser today — quietly turns "nobody has asked this
+// machine" into "this machine is fine". And a host that *has* sent one but has since gone silent is
+// not a host with a current answer: whatever its last report said was true at some point, and a
+// counter that treated it as measured would report a rack that dropped off the network an hour ago as
+// a rack with nothing outstanding. So `current` gates both — the verdict already knows whether the
+// report can be relied on, and this consults it rather than deciding again.
+//
+// The direction of that failure is why the gate is here rather than left to a reader's judgement. An
+// offline host counted as measured moves a number *towards* healthy on a screen nobody is examining,
+// which is the one direction docs/SECURITY.md §4.6 says this feature must never be wrong in.
+func (s *Server) measureHost(view *wallboardView, h store.Host, current bool) {
 	probe, ok := parseFactsProbe(h.Facts)
-	if !ok {
+	if !ok || !current {
 		view.Security.Unknown++
 		view.Reboots.Unknown++
 		view.Units.Unknown++
@@ -428,12 +439,15 @@ func (s *Server) measureHost(view *wallboardView, h store.Host) {
 		view.Reboots.Unknown++
 	}
 
-	// Likewise for units: a truncated list means "no failed unit was reported", which is not the same
-	// as "no unit has failed" when the failed one sorts after the cap.
+	// Likewise for units, twice over. A truncated list means "no failed unit was reported", which is
+	// not the same as "no unit has failed" when the failed one sorts after the cap. And a report with
+	// no `services` section at all is a collection that did not happen rather than a machine running
+	// nothing: internal/collect omits a section it could not gather, so an absent list is the shape
+	// "we could not look" arrives in.
 	switch {
 	case countFailedUnits(probe) > 0:
 		view.Units.Hosts++
-	case probe.ServicesTruncated:
+	case probe.ServicesTruncated || len(probe.Services) == 0:
 		view.Units.Unknown++
 	}
 }

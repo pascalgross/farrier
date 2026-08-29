@@ -478,6 +478,13 @@ principal, not an approval state. A hostname is the single host-reported string 
 it is there because a tile that names nothing sends somebody to a terminal to find out which machine
 it meant, which is the errand the screen exists to save.
 
+"No host identifiers" is meant literally, including in the case that makes it inconvenient. A machine
+that has never reported has no hostname, and the obvious fallback is its identifier — which would put
+the value `GET /api/v1/hosts/{id}`, `POST /api/v1/hosts/{id}/revoke` and `POST /api/v1/jobs` all name
+onto a page reachable without an account, in twenty-six characters of base32 that nobody could read
+from across the room anyway. So the tile carries no name at all and says so. The count is exact
+either way, which is where the truth on this screen lives.
+
 The operator's own wallboard is answered by the same projection, and differs only in its heading. That
 is deliberate: two payloads would in practice be one payload and a public subset of it, the subset
 would drift behind, and somebody would eventually and reasonably reuse the richer one on the route
@@ -531,9 +538,17 @@ throttled, and is read no more precisely than that; it exists so somebody can te
 is still on a wall before revoking one and waiting to see who complains, and it is **not an access
 log**. Unlock attempts are rate limited per share rather than per source address — unlike every other
 limiter in this server — because a corridor, a NAT and a reverse proxy all put many screens behind one
-address, and the address is the wrong thing to punish. And every refusal on the public routes is the
-same refusal: an unknown key, a withdrawn share, an expired one, a share with no passphrase and a wrong
-passphrase are one answer down one path.
+address, and the address is the wrong thing to punish.
+
+Every refusal on the public routes is the same refusal, with one stated exception. An unknown key, a
+withdrawn share, an expired one, a share with no passphrase and a wrong passphrase are one answer down
+one path — the liveness test is a predicate in the query rather than a check afterwards, which is what
+keeps the five from drifting into five refusals somebody has to remember to keep matched. The exception
+is a screen that presents a live key for a share whose passphrase it has not yet proved: that is told
+so, because it is the one refusal a screen can act on, and telling it "no such link" would leave a
+television in a corridor rendering "this link has been withdrawn" for ever with a passphrase form one
+answer away. What it discloses is that the link exists, which is a fact whoever is holding the link
+already has.
 
 **None of this touches [§1](#1-the-guarantee).** A share is a read of control-plane state. It reaches
 no host, carries no intent, produces no job, and there is no route from one to anything that writes to

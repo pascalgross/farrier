@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pascalgross/farrier/internal/auth"
 	"github.com/pascalgross/farrier/internal/store"
@@ -230,7 +231,10 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request, who o
 				"published links apart when you come to withdraw one")
 		return
 	}
-	if len(req.Label) > MaxWallboardLabel {
+	// Characters rather than bytes, because that is what the refusal below promises and what somebody
+	// naming a fleet is counting. `len` on a string counts UTF-8 bytes, under which "Zürich — Rechenzentrum"
+	// is longer than it looks and an operator is refused a name that fits.
+	if utf8.RuneCountInString(req.Label) > MaxWallboardLabel {
 		writeError(w, http.StatusBadRequest, "invalid",
 			"a name may be at most "+strconv.Itoa(MaxWallboardLabel)+" characters; it is rendered as a "+
 				"heading on a screen read from across a room")

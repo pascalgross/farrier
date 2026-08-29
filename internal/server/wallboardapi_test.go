@@ -209,10 +209,10 @@ func TestAnInconclusiveRebootReportIsNotCountedAsNoRebootNeeded(t *testing.T) {
 	if reboots["hosts"] != 1 {
 		t.Errorf("reboots.hosts is %d, want 1", reboots["hosts"])
 	}
-	if reboots["unknown"] != 3 {
-		t.Errorf("reboots.unknown is %d, want 3 — the host whose report cannot answer and the two that "+
-			"have sent no report at all all belong here, and none of them is 'no reboot needed'",
-			reboots["unknown"])
+	if reboots["unknown"] != 4 {
+		t.Errorf("reboots.unknown is %d, want 4 — the host whose report cannot answer, the two that "+
+			"have sent no report at all, and the one whose report is too old to rely on; none of them "+
+			"is 'no reboot needed'", reboots["unknown"])
 	}
 }
 
@@ -231,10 +231,87 @@ func TestAHostThatHasReportedNothingIsUnknownRatherThanHealthy(t *testing.T) {
 	if security["hosts"] != 1 || security["packages"] != 7 {
 		t.Errorf("security is %+v, want one host with seven updates", security)
 	}
-	if security["unknown"] != 2 {
-		t.Errorf("security.unknown is %d, want 2 — a host that has sent no inventory cannot be said to "+
-			"have no security updates, and summing it as a zero is exactly how it would be",
-			security["unknown"])
+	if security["unknown"] != 3 {
+		t.Errorf("security.unknown is %d, want 3 — a host that has sent no inventory cannot be said to "+
+			"have no security updates, and neither can one whose last report is an hour old; summing "+
+			"either as a zero is exactly how it would be said", security["unknown"])
+	}
+}
+
+// TestAnOfflineHostsLastReportIsNotCountedAsACurrentMeasurement is the regression test for a counter
+// that answered a question nothing had asked recently.
+//
+// measureHost read whatever facts were stored without consulting whether the host that sent them had
+// been heard from since, so a rack that dropped off the network reported as a rack with nothing
+// outstanding: the hosts counter went red, correctly, and the three beside it went to zero and stayed
+// green, because zero-of-zero-unknown renders as "every host answered". A screen most of whose numbers
+// say "all clear" about a fleet nobody can reach is the exact failure this feature exists to prevent,
+// and it is invisible — nothing about the number itself says how old the answer behind it is.
+func TestAnOfflineHostsLastReportIsNotCountedAsACurrentMeasurement(t *testing.T) {
+	h := newHarness(t)
+
+	// Ten hosts, all silent for two hours, every one of whose last report was clean and conclusive.
+	silent := time.Now().Add(-2 * time.Hour)
+	for i := range 10 {
+		putHost(t, h.scoped(), store.Host{
+			ID:         fmt.Sprintf("01QUIET%010d", i),
+			Hostname:   fmt.Sprintf("rack-%02d", i),
+			EnrolledAt: silent.Add(-time.Hour), LastSeen: silent,
+			Facts: wallboardFacts(t, 0, false, true, 0, false),
+		})
+	}
+
+	_, body := h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/wallboard", nil)
+	view := wallboardOf(t, body)
+
+	if hosts := counts(t, view, "hosts"); hosts["bad"] != 10 {
+		t.Fatalf("bad is %d, want 10 — the fixture is wrong, not the rule under test", hosts["bad"])
+	}
+	for _, group := range []string{"security", "reboots", "units"} {
+		measure := counts(t, view, group)
+		if measure["unknown"] != 10 {
+			t.Errorf("%s.unknown is %d, want 10: a report from two hours ago is not a current answer, "+
+				"and counting it as one paints an unreachable fleet green", group, measure["unknown"])
+		}
+		if measure["hosts"] != 0 {
+			t.Errorf("%s.hosts is %d, want 0", group, measure["hosts"])
+		}
+	}
+}
+
+// TestAHostThatHasNeverReportedIsNamedByNothing keeps docs/SECURITY.md §4.6's list honest.
+//
+// §4.6 says the published payload carries no host identifiers, and the obvious way to write the
+// attention grid breaks that in the one case nobody tests: a machine that has never reported has no
+// hostname, so falling back to its identifier put twenty-six characters of control-plane primary key
+// onto a page reachable without an account — unreadable from three metres, and the value three write
+// routes name.
+func TestAHostThatHasNeverReportedIsNamedByNothing(t *testing.T) {
+	h := newHarness(t)
+	putHost(t, h.scoped(), store.Host{
+		ID: "01NEVERREPORTEDANYTHING", EnrolledAt: time.Now().Add(-time.Minute),
+	})
+
+	key := publishShare(t, h, "Quiet fleet", "")
+	status, body := h.shareJSON(t, key, http.MethodGet, "/api/v1/wallboard/public", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/wallboard/public returned %d: %s", status, body)
+	}
+	if bytes.Contains(body, []byte("01NEVERREPORTEDANYTHING")) {
+		t.Errorf("the published summary names a host by its identifier: %s", body)
+	}
+
+	view := wallboardOf(t, body)
+	attention, _ := view["attention"].([]any)
+	if len(attention) != 1 {
+		t.Fatalf("the host is not on the attention grid at all: %s", body)
+	}
+	entry, _ := attention[0].(map[string]any)
+	if entry["hostname"] != "" {
+		t.Errorf("a host that has never reported is named %q", entry["hostname"])
+	}
+	if entry["reason"] != "never_seen" {
+		t.Errorf("its reason is %v, want never_seen", entry["reason"])
 	}
 }
 
