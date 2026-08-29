@@ -14,8 +14,8 @@ version: ${VERSION}
 version_schema: semver
 section: admin
 priority: optional
-maintainer: Pegasus Networks <farrier@pegasusnetworks.de>
-vendor: Pegasus Networks
+maintainer: Pascal Groß <farrier@pegasusnetworks.de>
+vendor: Pascal Groß, trading as Pegasus Networks
 homepage: https://github.com/pascalgross/farrier
 license: Apache-2.0
 
@@ -160,6 +160,11 @@ contents:
 
   - src: ../LICENSE
     dst: /usr/share/doc/farrier-agent/copyright
+  # Apache-2.0 §4(d) requires the NOTICE file to travel with any distribution of the work, and the
+  # .deb is one. It is also where the copyright line — Pascal Groß and the Farrier contributors —
+  # reaches a host, since `copyright` above is the bare licence text.
+  - src: ../NOTICE
+    dst: /usr/share/doc/farrier-agent/NOTICE
   - src: ../docs/SECURITY.md
     dst: /usr/share/doc/farrier-agent/SECURITY.md
   - src: ../docs/PROTOCOL.md
