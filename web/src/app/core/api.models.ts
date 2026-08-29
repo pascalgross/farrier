@@ -52,6 +52,13 @@ export interface HostFacts {
     upgradableSecurity: number;
     /** How many updates are pending in total. */
     upgradableTotal: number;
+    /**
+     * Whether the host could not gather the list at all, absent when it could.
+     *
+     * The counts have no absent value, so a host whose apt lock was held sends the same two zeroes a
+     * fully patched host sends. Render this as "could not be determined", never as "no updates".
+     */
+    incomplete?: boolean;
   };
 
   /** Whether a reboot is needed and what still runs replaced libraries. */

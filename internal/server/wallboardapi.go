@@ -72,11 +72,32 @@ const (
 // at once and one back per second is two orders of magnitude above a wall of screens sharing one link
 // and still turns a loop into a refusal.
 const (
-	// pollBurst is how many summaries one key may fetch at once.
+	// pollBurst is how many summaries one link may fetch at once.
 	pollBurst = 20
 
 	// pollRefill is how long one fetch takes to come back.
 	pollRefill = time.Second
+)
+
+// The coarse bound on the published routes, before any link has been resolved.
+//
+// Source-keyed, and it is the one limit here that is, because it guards the thing the key-keyed limits
+// cannot guard: their own buckets. A bucket keyed on a value the caller chooses is a bucket the caller
+// can mint, and the limiter sweeps its map only on the path that creates one — and only once it holds a
+// thousand entries, none of which it drops for an hour. So a flood of syntactically valid nonsense
+// scans an ever-growing map once per request, on top of a database round trip each, which is a
+// quadratic way to spend a control plane's afternoon. Bounding bucket creation is what closes it.
+//
+// Generous on purpose, because the reason the fine limits are not source-keyed still holds: a corridor,
+// a corporate NAT and a terminating reverse proxy all report as one address. A hundred and twenty at
+// once with one back per second is far above a building's worth of screens polling every fifteen
+// seconds, and far below what it takes to make the map above worth anything to an attacker.
+const (
+	// boardBurst is how many published-route requests one source may make at once.
+	boardBurst = 120
+
+	// boardRefill is how long one request takes to come back.
+	boardRefill = time.Second
 )
 
 // wallboardTouchInterval is how stale a share's last-seen stamp is allowed to get.
@@ -359,10 +380,11 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such published link")
 		return
 	}
-	hash := HashToken(presented)
-	if !s.unlockLimiter.allow(hash, time.Now()) {
-		w.Header().Set("Retry-After", strconv.Itoa(int(s.unlockLimiter.retryAfter().Seconds())))
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many attempts on this link")
+	// The coarse, source-keyed limit first, for the reason requireShare gives at length: a bucket keyed
+	// on a value the caller invents is a bucket the caller can mint, and minting them is the attack.
+	if !s.boardLimiter.allow(auth.RequestSource(r), time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.boardLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 		return
 	}
 
@@ -377,7 +399,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 
 	noStore(w)
 
-	share, err := s.cfg.Store.In(tenant).WallboardShareBySecret(r.Context(), hash, time.Now())
+	share, err := s.cfg.Store.In(tenant).WallboardShareBySecret(r.Context(), HashToken(presented), time.Now())
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "no such published link")
@@ -390,6 +412,21 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not check the link")
 		return
 	}
+	// The per-link limit, keyed on a share that exists, and placed here rather than at the top for two
+	// reasons. It cannot be minted by a caller inventing keys, because there are at most
+	// MaxWallboardSharesPerTenant real ones per fleet; and it is the last thing before an Argon2id
+	// derivation, which allocates 64 MiB and of which at most four run at once — so this is what stops
+	// somebody who holds one leaked link from spending the whole sign-in path's memory budget guessing
+	// its passphrase.
+	//
+	// A 429 here does say the link is real, where an invented one gets a 404. That is a fact whoever is
+	// holding the link already has, and it costs five wrong guesses to learn.
+	if !s.unlockLimiter.allow(share.ID, time.Now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.unlockLimiter.retryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many attempts on this link")
+		return
+	}
+
 	if share.PasswordHash == "" || !auth.VerifyPassword(share.PasswordHash, req.Passphrase) {
 		writeError(w, http.StatusNotFound, "not_found", "no such published link")
 		return
@@ -513,13 +550,21 @@ func (s *Server) requireShare(next func(http.ResponseWriter, *http.Request, view
 			writeError(w, http.StatusNotFound, "not_found", "no such published link")
 			return
 		}
-		hash := HashToken(presented)
-		if !s.pollLimiter.allow(hash, time.Now()) {
-			w.Header().Set("Retry-After", strconv.Itoa(int(s.pollLimiter.retryAfter().Seconds())))
-			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests for this link")
+		// The coarse limit comes first, and it is keyed on the source rather than on the key, which is
+		// the opposite of the limit below. Both are needed, and the reason is that they bound different
+		// things. A key-scoped bucket cannot be the first gate: the key is a value the caller invents,
+		// so a flood of syntactically valid nonsense would allocate a fresh bucket with a full burst
+		// every time — and because the bucket map is only swept on the path that creates one, and only
+		// once it holds a thousand, that is a scan of the whole map per request against a map nothing
+		// removes from for an hour. An unauthenticated caller could spend the control plane's CPU
+		// quadratically by typing rubbish, which is not a rate limit, it is the shape of one.
+		if !s.boardLimiter.allow(auth.RequestSource(r), time.Now()) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(s.boardLimiter.retryAfter().Seconds())))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
 		}
 
+		hash := HashToken(presented)
 		scoped := s.cfg.Store.In(tenant)
 		share, err := scoped.WallboardShareBySecret(r.Context(), hash, time.Now())
 		switch {
@@ -532,6 +577,21 @@ func (s *Server) requireShare(next func(http.ResponseWriter, *http.Request, view
 			// withdrawn link and the wrong one to a database that is down for ten minutes.
 			slog.Error("could not read a wallboard share", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "could not check the link")
+			return
+		}
+
+		// And now the fine limit, keyed on a share that exists. This is the one that matters — the
+		// summary reads the whole fleet, so it is the expensive half of the feature — and keying it on
+		// the resolved share's id rather than on the presented key is what makes it safe to key at all:
+		// there are at most MaxWallboardSharesPerTenant of those per fleet, so the bucket map is bounded
+		// by what operators have published rather than by what a stranger can type.
+		//
+		// It is deliberately still not keyed on the source. A corridor, a corporate NAT and the reverse
+		// proxy the deployment guide recommends all put many screens behind one address, and a bucket
+		// they share is one a single television can spend for the whole building.
+		if !s.pollLimiter.allow(share.ID, time.Now()) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(s.pollLimiter.retryAfter().Seconds())))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests for this link")
 			return
 		}
 

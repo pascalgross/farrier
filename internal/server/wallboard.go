@@ -423,7 +423,14 @@ func (s *Server) measureHost(view *wallboardView, h store.Host, current bool) {
 		return
 	}
 
-	if probe.Packages.UpgradableSecurity > 0 {
+	// A host that could not gather its package list is counted as unmeasured rather than as zero. The
+	// zero value of a package report is what a host sends when the apt lock was held by something else,
+	// and it is byte-for-byte what a freshly-patched host sends — so without the flag the two are one
+	// number, and the shared reading is the reassuring one.
+	switch {
+	case probe.Packages.Incomplete:
+		view.Security.Unknown++
+	case probe.Packages.UpgradableSecurity > 0:
 		view.Security.Hosts++
 		view.Security.Packages += probe.Packages.UpgradableSecurity
 	}

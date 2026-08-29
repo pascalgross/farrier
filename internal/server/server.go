@@ -207,6 +207,14 @@ type Server struct {
 	// pollLimiter bounds summary fetches per published link.
 	pollLimiter *rateLimiter
 
+	// boardLimiter bounds the published routes per source, before any link has been resolved.
+	//
+	// It is the coarse gate in front of the two above, and it exists because they cannot guard their own
+	// buckets: a limiter keyed on a value an unauthenticated caller invents is one whose map that caller
+	// grows. This one is keyed on the source, which the caller does not choose, and it is set generously
+	// because a corridor and a reverse proxy both report as one.
+	boardLimiter *rateLimiter
+
 	// accounts is the local-accounts provider, nil when this installation has none.
 	accounts *auth.Accounts
 
@@ -286,6 +294,7 @@ func New(cfg Config) (*Server, error) {
 		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
 		unlockLimiter:   newRateLimiter(unlockBurst, unlockRefill),
 		pollLimiter:     newRateLimiter(pollBurst, pollRefill),
+		boardLimiter:    newRateLimiter(boardBurst, boardRefill),
 		accounts:        cfg.Accounts,
 		paths:           http.NewServeMux(),
 		allow:           map[string][]string{},

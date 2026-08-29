@@ -131,6 +131,25 @@ type PackageReport struct {
 	// Truncated reports that the list was cut short, so a reader knows the counts and the list
 	// disagree on purpose rather than by a bug.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// Incomplete reports that the package list could not be gathered at all.
+	//
+	// It exists because the zero value of this struct is indistinguishable from a genuine answer, and
+	// the two mean opposite things. A host whose apt lock was held — the case Gather explicitly
+	// anticipates and logs — sends `upgradableSecurity: 0` exactly as a freshly-patched host does, so
+	// without this a reader has to treat "nobody could look" as "nothing to find". That is the
+	// direction a fleet-health reader must never be wrong in, and it is the same distinction
+	// RebootReport.Conclusive draws for the reboot question and ContainerReport.ScanComplete for
+	// containers.
+	//
+	// Negative and omitempty, unlike those two, and the asymmetry is deliberate rather than untidy.
+	// They have always been on the wire, so an absent value means an agent that predates nothing. This
+	// field is new, so an absent value means an agent that has not been upgraded yet — and a positive
+	// spelling would make every host in every existing fleet report as unmeasured on the day the
+	// control plane is updated. Absent therefore has to mean "this agent did not say", which is the
+	// truth about an old agent, and the flag says the one thing a new agent knows and an old one
+	// cannot.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // RebootReport is whether the host needs a reboot, and what still runs replaced libraries.

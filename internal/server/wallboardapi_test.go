@@ -23,6 +23,17 @@ func wallboardFacts(t *testing.T, security int, rebootRequired, rebootConclusive
 	failedUnits int, truncated bool,
 ) []byte {
 	t.Helper()
+	return wallboardFactsWith(t, security, false, rebootRequired, rebootConclusive, failedUnits, truncated)
+}
+
+// wallboardFactsWith is wallboardFacts with the package collection's own success flag exposed.
+//
+// A separate entry point rather than a seventh parameter on every call site, because exactly one test
+// cares about the flag and the rest read better without it.
+func wallboardFactsWith(t *testing.T, security int, packagesIncomplete, rebootRequired,
+	rebootConclusive bool, failedUnits int, truncated bool,
+) []byte {
+	t.Helper()
 
 	units := make([]map[string]any, 0, failedUnits)
 	for i := range failedUnits {
@@ -33,8 +44,12 @@ func wallboardFacts(t *testing.T, security int, rebootRequired, rebootConclusive
 			"subState":    "failed",
 		})
 	}
+	packages := map[string]any{"upgradableSecurity": security, "upgradableTotal": security}
+	if packagesIncomplete {
+		packages["incomplete"] = true
+	}
 	raw, err := json.Marshal(map[string]any{
-		"packages":          map[string]any{"upgradableSecurity": security, "upgradableTotal": security},
+		"packages":          packages,
 		"reboot":            map[string]any{"required": rebootRequired, "conclusive": rebootConclusive},
 		"services":          units,
 		"servicesTruncated": truncated,
@@ -278,6 +293,81 @@ func TestAnOfflineHostsLastReportIsNotCountedAsACurrentMeasurement(t *testing.T)
 		}
 	}
 }
+
+// TestAPackageListThatCouldNotBeGatheredIsNotCountedAsZero is the third instance of one rule.
+//
+// A PackageReport has no absent value: a host whose apt lock was held by something else sends
+// `upgradableSecurity: 0` byte for byte as a freshly patched host does. Without the flag those two are
+// one number on this screen, and the shared reading is the reassuring one — which is how a fleet nobody
+// could ask reports as a fleet with nothing outstanding.
+func TestAPackageListThatCouldNotBeGatheredIsNotCountedAsZero(t *testing.T) {
+	h := newHarness(t)
+	now := time.Now()
+
+	// One host that genuinely has nothing pending, and one that could not look. Their package sections
+	// differ by exactly the flag.
+	putHost(t, h.scoped(), store.Host{
+		ID: "01PATCHED", Hostname: "web-01", EnrolledAt: now.Add(-time.Hour), LastSeen: now,
+		Facts: wallboardFactsWith(t, 0, false, false, true, 0, false),
+	})
+	putHost(t, h.scoped(), store.Host{
+		ID: "01APTLOCK", Hostname: "web-02", EnrolledAt: now.Add(-time.Hour), LastSeen: now,
+		Facts: wallboardFactsWith(t, 0, true, false, true, 0, false),
+	})
+
+	_, body := h.adminJSON(t, h.adminToken, http.MethodGet, "/api/v1/wallboard", nil)
+	security := counts(t, wallboardOf(t, body), "security")
+
+	if security["unknown"] != 1 {
+		t.Errorf("security.unknown is %d, want 1 — the host that could not run the query has not "+
+			"reported that it has nothing pending", security["unknown"])
+	}
+	if security["hosts"] != 0 {
+		t.Errorf("security.hosts is %d, want 0", security["hosts"])
+	}
+
+	// Both hosts are still healthy at the host level: not being able to count updates is not a fault
+	// of the machine, and painting it red would be the opposite error.
+	if hosts := counts(t, wallboardOf(t, body), "hosts"); hosts["ok"] != 2 {
+		t.Errorf("ok is %d, want 2 — an ungatherable package list is an unmeasured counter, not a "+
+			"broken host", hosts["ok"])
+	}
+}
+
+// TestAFloodOfInventedKeysIsRefusedBeforeItAllocatesAnything is the regression test for a rate limiter
+// that could be made to grow its own bucket map.
+//
+// The per-link limiters are keyed on the link, which is what stops one screen spending a bucket the
+// whole building shares. The cost of that keying is that the key came from the caller: an
+// unauthenticated flood of syntactically valid nonsense allocated a fresh bucket with a full burst per
+// request, and the sweep that would have reclaimed them runs only on the path that creates one, only
+// past a thousand entries, and only drops entries idle for an hour — so the map grew while every
+// insertion scanned all of it. A coarse source-keyed limit now runs first, and the key-scoped bucket is
+// reserved for a link that resolved.
+func TestAFloodOfInventedKeysIsRefusedBeforeItAllocatesAnything(t *testing.T) {
+	h := newHarness(t)
+
+	// Every key here is well-formed and names this fleet; none of them exists. Before the fix each one
+	// was answered 404 indefinitely, one bucket and one database transaction at a time.
+	var limited int
+	for i := range boardFloodAttempts {
+		key := "frb_" + string(h.tenant) + "." + fmt.Sprintf("%052d", i)
+		status, _ := h.shareJSON(t, key, http.MethodGet, "/api/v1/wallboard/public", nil)
+		if status == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	if limited == 0 {
+		t.Fatalf("%d invented keys were all answered without the source ever being rate limited",
+			boardFloodAttempts)
+	}
+}
+
+// boardFloodAttempts is how many invented keys the flood test presents.
+//
+// Comfortably above boardBurst, so the limiter has to answer at least once, and small enough that the
+// test stays quick.
+const boardFloodAttempts = 200
 
 // TestAHostThatHasNeverReportedIsNamedByNothing keeps docs/SECURITY.md §4.6's list honest.
 //

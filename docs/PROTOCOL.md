@@ -292,6 +292,15 @@ different distributions and a wrong answer needs to be traceable to its input ra
 deliberately unprivileged, so it usually could not, and **"no services need restarting" and "I could not
 see the services that do" must never look the same in a dashboard**.
 
+`packages` may carry `"incomplete": true`, and it is the same rule applied to the package list. The
+object's counts have no distinguished absent value, so a host that could not run the query at all sends
+`{"upgradableSecurity": 0, "upgradableTotal": 0}` — byte for byte what a fully patched host sends. The
+commonest cause is another process holding the apt lock, which is ordinary rather than exceptional. A
+client MUST treat `incomplete` as "this host has no answer" and MUST NOT render it as "no updates
+pending". The field is omitted when the list was gathered, so its absence means either a successful
+collection or an agent predating this field; a client that needs to tell those apart has the agent
+version in the same heartbeat.
+
 `extra` holds the output of registered collectors, keyed by collector name. It is where a fact added
 through the `collect.Collector` seam appears; see [`EXTENDING.md`](EXTENDING.md).
 

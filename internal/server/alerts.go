@@ -85,6 +85,14 @@ type factsProbe struct {
 	Packages struct {
 		// UpgradableSecurity is the number the product exists to show.
 		UpgradableSecurity int `json:"upgradableSecurity"`
+
+		// Incomplete reports that the host could not gather the list at all.
+		//
+		// Read by the wallboard and deliberately not by the alert evaluator: `security_updates` fires
+		// on an affirmative count, and a host that could not look has not reported a count to compare.
+		// Making it fire would page somebody about an apt lock, which is the sort of alert an operator
+		// learns to dismiss without reading.
+		Incomplete bool `json:"incomplete"`
 	} `json:"packages"`
 
 	// Reboot carries the reboot-required flag.
