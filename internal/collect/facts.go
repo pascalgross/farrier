@@ -49,7 +49,11 @@ func Gather(ctx context.Context, p Platform, local policy.Policy, extra ...Colle
 	}
 
 	if packages, err := p.UpgradablePackages(ctx); err != nil {
+		// Marked rather than left zero. The zero PackageReport serialises as "no updates pending",
+		// which is a claim this host is in no position to make: the commonest reason to be here is
+		// that another process held the apt lock. See PackageReport.Incomplete.
 		slog.Warn("could not list upgradable packages", "error", err)
+		facts.Packages = PackageReport{Incomplete: true}
 	} else {
 		facts.Packages = Summarise(packages)
 	}

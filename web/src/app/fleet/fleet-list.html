@@ -91,12 +91,21 @@
           <th mat-header-cell *matHeaderCellDef>Updates</th>
           <td mat-cell *matCellDef="let host" class="farrier-numeric">
             @if (host.facts?.packages; as packages) {
-              @if (packages.upgradableSecurity > 0) {
+              <!--
+                A host that could not run the query sends the same two zeroes a fully patched host
+                sends, so the flag is the only thing that tells them apart. Rendering it as "no
+                security updates" is the reassuring half of an answer nobody gave.
+              -->
+              @if (packages.incomplete) {
+                <span class="text-farrier-warn">could not be determined</span>
+              } @else if (packages.upgradableSecurity > 0) {
                 <span class="text-farrier-bad font-medium">{{ packages.upgradableSecurity }} security</span>
               } @else {
                 <span class="text-farrier-ok">no security updates</span>
               }
-              <div class="text-xs opacity-70">{{ packages.upgradableTotal }} total</div>
+              @if (!packages.incomplete) {
+                <div class="text-xs opacity-70">{{ packages.upgradableTotal }} total</div>
+              }
             } @else {
               <span class="opacity-60">not reported yet</span>
             }
@@ -109,6 +118,15 @@
             @if (host.facts?.reboot; as reboot) {
               @if (reboot.required) {
                 <span class="text-farrier-warn font-medium">required</span>
+              } @else if (reboot.conclusive === false) {
+                <!--
+                  "No" and "nothing here can tell" are different answers. `/var/run/reboot-required`
+                  is an Ubuntu convention and needrestart is only a Recommends on Debian, so a bare
+                  `required: false` from a Debian host frequently means the question went unanswered
+                  — and rendering that as "not required" made a fleet of them read as fully patched.
+                -->
+                <span class="opacity-70"
+                      matTooltip="Nothing on this host can answer the reboot question: it has neither the reboot-required marker nor needrestart.">cannot be determined</span>
               } @else {
                 <span class="opacity-70">not required</span>
               }

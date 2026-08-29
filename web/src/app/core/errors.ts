@@ -49,6 +49,39 @@ export function describeError(err: unknown): string {
 }
 
 /**
+ * Reads the machine-readable code out of a refusal, empty when there is none.
+ *
+ * The message is for a person and the code is for a branch, and until now nothing in the browser
+ * needed the second — every failure rendered as a sentence. The wallboard does: a 401 saying
+ * `passphrase_required` is a screen that has not been unlocked yet and must show a form, while every
+ * other 401 is a credential that has stopped working and must stop polling for ever. Matching on the
+ * wording of the sentence would be the alternative, and it would break the first time somebody
+ * improved the sentence.
+ *
+ * It lives here rather than in the page for the reason the rest of this module exists: the shape of a
+ * problem document is the control plane's, and one file should know it.
+ */
+export function errorCode(err: unknown): string {
+  return (err as StatusCarrier | null)?.error?.error ?? '';
+}
+
+/**
+ * Reads the HTTP status out of a failure, zero when the request never reached the control plane.
+ *
+ * Its caller is the wallboard, which is the first thing in this application that has to *act* on a
+ * status rather than describe one: a refusal is terminal and stops the board polling for good, while
+ * a control plane that could not answer is retried until it can. Getting that the wrong way round is
+ * either a screen that goes dark over one restart or a dead share retried every fifteen seconds for
+ * a year.
+ *
+ * Zero for an unreachable control plane, matching what Angular reports and what `describeError`
+ * already treats as "could not be reached", so the two agree about the same failure.
+ */
+export function errorStatus(err: unknown): number {
+  return (err as StatusCarrier | null)?.status ?? 0;
+}
+
+/**
  * Describes a control plane that could not answer, as distinct from one that refused.
  *
  * It exists for one caller and one moment: the identity probe the shell makes on start. That request

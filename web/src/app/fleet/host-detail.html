@@ -163,7 +163,21 @@
             </mat-list-item>
             <mat-list-item>
               <span matListItemTitle>Reboot</span>
-              <span matListItemLine>{{ facts.reboot?.required ? 'required' : 'not required' }}</span>
+              <!--
+                Three answers, not two. A Debian host with neither the reboot-required marker nor
+                needrestart reports `required: false` because it could not look, and printing that as
+                "not required" is the same silent collapse `serviceScanComplete` exists to prevent one
+                line further down.
+              -->
+              <span matListItemLine>
+                @if (facts.reboot?.required) {
+                  required
+                } @else if (facts.reboot?.conclusive === false) {
+                  cannot be determined on this host
+                } @else {
+                  not required
+                }
+              </span>
             </mat-list-item>
             <mat-list-item><span matListItemTitle>Ubuntu Pro</span><span matListItemLine>{{ subscriptionSummary(host) }}</span></mat-list-item>
           </mat-list>

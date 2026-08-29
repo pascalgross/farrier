@@ -263,6 +263,15 @@ Standalone components and lazily loaded routes, in `web/src/app`. There is no pa
 be indirection without a reader, and it can be introduced when there is a second thing to register.
 Adding a page means a component and a route.
 
+There is one exception, and it matters because getting it wrong produces a page that works for whoever
+wrote it and for nobody else. A route the shell must render *without* a session is a third
+thing: it carries `data: { public: true }`, which is what the shell reads to suppress the toolbar and
+the sign-in gate. The flag lives on the route rather than being derived from its path, because a shell
+matching on the string `'board'` is a check that survives a rename by continuing to compile. `/board`,
+the published wallboard, is the only one today; what such a route may show, and why it is a fixed-shape
+projection rather than a page that reads whatever the API returns, is
+[`SECURITY.md` §4.6](SECURITY.md#46-the-wallboard-and-its-link).
+
 One piece of it is worth knowing before you copy it. The live event feed reads the stream with `fetch`
 and a `ReadableStream`, not with `EventSource`, because `EventSource` cannot set a request header —
 and the browser's credential needs one. The cookie itself travels on its own, but the control plane

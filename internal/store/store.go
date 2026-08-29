@@ -695,6 +695,80 @@ func (t APIToken) Usable(now time.Time) bool {
 	return t.ExpiresAt.IsZero() || now.Before(t.ExpiresAt)
 }
 
+// WallboardShare is a link that publishes one screen of a fleet's own state to whoever holds it.
+//
+// It is a bearer credential in a URL, which is the thing docs/SECURITY.md §4.5 removed for operators,
+// so it is worth stating exactly what is different. That one was a write credential for the whole
+// administrative API, held for ever, by everybody, naming nobody. This one reaches a single fixed-shape
+// summary of a single fleet, expires on a date somebody chose, is withdrawn by deleting a row, and
+// records who published it. What it does not and cannot record is who reads it — see §4.6, which says
+// so rather than implying otherwise.
+//
+// The secret is not here, only its digest. The link is shown once, at creation, exactly as an enrolment
+// token and an API token are, so that a database dump is not a set of live wallboards.
+type WallboardShare struct {
+	// ID names the share in the interface and in the route that withdraws it.
+	//
+	// Separate from the secret because an operator has to be able to revoke a link without holding it:
+	// the secret is shown once and then exists only on a television.
+	ID string
+
+	// SecretHash is the SHA-256 of the whole key, including the tenant segment it carries.
+	//
+	// The whole key rather than its secret half, which is what makes the tenant segment load-bearing
+	// rather than decorative: a key edited to name another fleet digests to a value no row holds, so
+	// the tenant is refused by the lookup before the policy is reached.
+	SecretHash string
+
+	// PasswordHash is Argon2id in PHC string format, empty for a share with no passphrase.
+	//
+	// Empty rather than absent, matching Account.PasswordHash, so that "no passphrase" has one
+	// representation instead of two.
+	PasswordHash string
+
+	// Label is what the operator called it, and the heading the published screen shows.
+	//
+	// Required rather than defaulted: a list of four shares called "share" is a list nobody revokes
+	// from, and a screen whose heading is blank tells the room nothing about which fleet it is showing.
+	Label string
+
+	// CreatedAt is when it was published.
+	CreatedAt time.Time
+
+	// CreatedBy is the principal of whoever published it.
+	//
+	// The one name attached to a share, and the one that matters: a share names no reader, so the
+	// question it can answer is who decided this fleet could be published.
+	CreatedBy string
+
+	// ExpiresAt is when it stops answering.
+	//
+	// Never zero. A share that never expires is the credential §4.5 removed wearing a different name,
+	// so the absence of a "never" option is the point rather than an omission.
+	ExpiresAt time.Time
+
+	// LastSeenAt is when a screen last polled it, zero for never.
+	LastSeenAt time.Time
+}
+
+// Live reports whether a share may still answer at the given instant.
+//
+// Written here so that the memory store, the listing and the tests all mean the same thing by it. The
+// PostgreSQL lookup does not call it — its predicate is in the SQL, which is what keeps an unknown
+// secret and an expired share one code path — and TestAShareIsLiveByTheSameRuleInBothStores pins the
+// two together.
+func (s WallboardShare) Live(now time.Time) bool {
+	return now.Before(s.ExpiresAt)
+}
+
+// MaxWallboardSharesPerTenant bounds how many live links one fleet may have published at once.
+//
+// Twenty. An unbounded set of live public credentials is an unbounded set of things to revoke, and the
+// number is chosen so that the list stays something an operator can read on one screen and recognise
+// every entry of — which is the property that makes "there is a share here I do not remember" a thing
+// somebody notices.
+const MaxWallboardSharesPerTenant = 20
+
 // HeartbeatUpdate is what one heartbeat changes about a host.
 //
 // It is a separate struct from Host so that a heartbeat cannot accidentally overwrite fields it does
@@ -1367,6 +1441,42 @@ type Scoped interface {
 
 	// UpsertAlertState records one key's state, keyed on the key.
 	UpsertAlertState(ctx context.Context, s AlertState) error
+
+	// CreateWallboardShare records a link that publishes this fleet's status screen.
+	//
+	// It returns ErrConflict when the fleet already holds MaxWallboardSharesPerTenant live shares. That
+	// is checked here rather than in the handler because it is a property of the rows, and two
+	// operators publishing at once would both read "nineteen" and both insert.
+	CreateWallboardShare(ctx context.Context, share WallboardShare) error
+
+	// ListWallboardShares returns this fleet's shares, newest first, expired ones included.
+	//
+	// Expired shares are listed rather than hidden: a share that stopped working is the first thing
+	// somebody looks for when a screen in the corridor has gone dark, and a listing that omitted it
+	// would answer "there is no such link" to the person holding it.
+	ListWallboardShares(ctx context.Context) ([]WallboardShare, error)
+
+	// WallboardShareBySecret returns the live share whose secret hashes to this, or ErrNotFound.
+	//
+	// "Live" is in the query rather than in a check afterwards, which is what makes an unknown secret,
+	// a revoked share and an expired one one code path taking one amount of time. A caller that
+	// filtered in Go would have three refusals to keep matched, and they would drift.
+	WallboardShareBySecret(ctx context.Context, secretHash string, now time.Time) (WallboardShare, error)
+
+	// DeleteWallboardShare removes one share by id, or returns ErrNotFound.
+	//
+	// A delete rather than a revoked flag, exactly as revoking an API token is. What a withdrawn share
+	// leaves behind is nothing, and that is the honest state: a share names no reader, so there is no
+	// history attached to it worth keeping a row for.
+	DeleteWallboardShare(ctx context.Context, id string) error
+
+	// TouchWallboardShare stamps when a screen last polled one share, best effort.
+	//
+	// Throttled by the caller the way api_tokens.last_used_at is, and for the same reason: it is a
+	// write on the path of every poll of every screen, and nothing reads it more precisely than
+	// "somebody is still showing this". It exists because "which of these four links is still on a
+	// wall" has to be answerable before somebody revokes one and waits to see who complains.
+	TouchWallboardShare(ctx context.Context, id string, at time.Time) error
 }
 
 // AccountScope is every operation on the accounts of one side of the tenant boundary.

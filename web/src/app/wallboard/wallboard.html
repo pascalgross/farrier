@@ -1,0 +1,255 @@
+<!--
+  Five states, one of which renders fleet health. The switch is exhaustive on purpose: every branch
+  that is not `board` has already had its numbers withdrawn, so there is no arrangement of these
+  conditions that can put a counter beside a message saying the data is gone.
+-->
+@switch (state()) {
+  @case ('board') {
+    <div class="wb" [class.wb--stale]="freshness() === 'stale'" [class.wb--empty]="emptyFleet()">
+      <!--
+        The counter band. `auto`, so it takes what its type needs and the grid below takes the rest.
+      -->
+      <header class="wb__band">
+        @if (freshness() === 'stale') {
+          <!--
+            Both the age and the absolute time, because one without the other is unreadable at a
+            glance: "4m ago" does not say whether the machine was asleep, and "09:14:02" does not say
+            whether that was a minute or a day back.
+          -->
+          <p class="wb__stale" role="status">
+            <mat-icon aria-hidden="true">history_toggle_off</mat-icon>
+            <span>
+              Not updated for {{ ageWords() }} — the last good read was at {{ lastGoodClock() }}.
+              These numbers are what the fleet looked like then.
+            </span>
+          </p>
+        }
+
+        <p class="wb__title">
+          <span class="wb__title-name">{{ title() }}</span>
+          <span class="wb__title-total farrier-numeric">{{ counts().total }} hosts</span>
+        </p>
+
+        <div class="wb__counters">
+          <!--
+            Three numbers and three words. The word is not a caption for the colour, it is the other
+            half of the same statement: a board read at three metres by somebody who does not
+            separate the amber from the green still reads "3 bad".
+          -->
+          <p class="wb__counter wb__counter--ok">
+            <span class="wb__number farrier-numeric">{{ counts().ok }}</span>
+            <span class="wb__word">ok</span>
+          </p>
+          <p class="wb__counter wb__counter--bad">
+            <span class="wb__number farrier-numeric">{{ counts().bad }}</span>
+            <span class="wb__word">bad</span>
+          </p>
+          <p class="wb__counter wb__counter--unknown">
+            <span class="wb__number farrier-numeric">{{ counts().unknown }}</span>
+            <span class="wb__word">unknown</span>
+          </p>
+
+          <!--
+            The three backlogs, set smaller than the health counters rather than beside them as
+            equals. A backlog is not a failure — a fleet where every machine has pending updates
+            would otherwise be a wall of red, and a screen most of which is tinted is a screen whose
+            reader stops seeing the tint.
+          -->
+          <div class="wb__minors">
+            @if (view(); as board) {
+              <!--
+                Coalesced, because the server omits a zero package count: an absent field must read
+                as the "0" that says the fleet is patched, never as an empty space.
+              -->
+              <p class="wb__minor" [class.wb__minor--warn]="(board.security.packages ?? 0) > 0">
+                <span class="wb__minor-number farrier-numeric">{{ board.security.packages ?? 0 }}</span>
+                <span class="wb__word">security updates</span>
+                <span class="wb__minor-note farrier-numeric">
+                  on {{ board.security.hosts }} hosts
+                  @if (board.security.unknown > 0) {
+                    · {{ board.security.unknown }} could not be asked
+                  }
+                </span>
+              </p>
+
+              <p class="wb__minor" [class.wb__minor--warn]="board.reboots.hosts > 0">
+                <span class="wb__minor-number farrier-numeric">{{ board.reboots.hosts }}</span>
+                <span class="wb__word">awaiting reboot</span>
+                <span class="wb__minor-note farrier-numeric">
+                  @if (board.reboots.unknown > 0) {
+                    {{ board.reboots.unknown }} cannot answer
+                  } @else {
+                    every host answered
+                  }
+                </span>
+              </p>
+
+              <p class="wb__minor" [class.wb__minor--bad]="board.units.hosts > 0">
+                <span class="wb__minor-number farrier-numeric">{{ board.units.hosts }}</span>
+                <span class="wb__word">with a failed unit</span>
+                <span class="wb__minor-note farrier-numeric">
+                  @if (board.units.unknown > 0) {
+                    {{ board.units.unknown }} unreadable
+                  } @else {
+                    every unit list read
+                  }
+                </span>
+              </p>
+            }
+          </div>
+        </div>
+      </header>
+
+      <!-- The middle row, `1fr`: the tiles, or the one panel that stands in for them. -->
+      <section class="wb__main">
+        @if (emptyFleet()) {
+          <!--
+            Never an all-clear. Zero hosts well out of zero hosts is arithmetically perfect and means
+            nothing is being watched, which is the one thing a room must not read as health.
+          -->
+          <div class="wb__panel">
+            <mat-icon class="wb__panel-icon" aria-hidden="true">dns</mat-icon>
+            <p class="wb__panel-head">No hosts are enrolled in this fleet</p>
+            <p class="wb__panel-note">
+              This board is watching nothing. It is not a clean bill of health.
+            </p>
+          </div>
+        } @else if (entries().length === 0) {
+          <!--
+            A large panel rather than an empty grid, because an empty grid reads as a page that
+            failed to render — which is exactly the wrong thing for the state that means everything
+            is fine.
+          -->
+          <div class="wb__panel wb__panel--clear">
+            <mat-icon class="wb__panel-icon" aria-hidden="true">check_circle</mat-icon>
+            <p class="wb__panel-head">Nothing needs anybody</p>
+            <p class="wb__panel-note farrier-numeric">
+              All {{ counts().ok }} of {{ counts().total }} hosts are reporting and well.
+            </p>
+          </div>
+        } @else {
+          <!--
+            Tracked by position rather than by hostname: hostnames are not unique — the model says so
+            — and two machines called `web-01` in one fleet would collapse into one tile or throw.
+            The server holds the order stable between polls, which is what position depends on.
+          -->
+          <ul class="wb__grid">
+            @for (entry of entries(); track $index) {
+              <li class="wb__tile" [class.wb__tile--bad]="entry.status === 'bad'">
+                <mat-icon class="wb__tile-icon" aria-hidden="true">{{ reasonIcon(entry) }}</mat-icon>
+                <!--
+                  A machine that has never reported has no hostname, and the server sends none rather
+                  than falling back to its identifier — which would be unreadable from here and is the
+                  value three write routes name. The phrase is what the room can act on: go and look at
+                  the one that never came up.
+                -->
+                <p class="wb__tile-host">{{ entry.hostname || 'unnamed host' }}</p>
+                <p class="wb__tile-reason">{{ reasonWord(entry) }}</p>
+                <p class="wb__tile-detail">{{ entry.detail }}</p>
+              </li>
+            }
+          </ul>
+
+          @if (omitted() > 0) {
+            <p class="wb__more farrier-numeric">
+              and {{ omitted() }} more hosts need attention — the counters above are exact, the tiles
+              are examples
+            </p>
+          }
+        }
+      </section>
+
+      <!-- The footer, `auto`: when this was last true, and how often it is checked. -->
+      <footer class="wb__foot">
+        <span class="farrier-numeric">Updated {{ lastGoodClock() }}</span>
+        <span class="wb__foot-sep">·</span>
+        <span class="farrier-numeric">every {{ pollSeconds() }}s</span>
+        @if (failure(); as note) {
+          <span class="wb__foot-sep">·</span>
+          <span class="wb__foot-warn">{{ note }}</span>
+        }
+        <span class="wb__foot-gap"></span>
+        <span>{{ mode === 'public' ? 'Published board' : 'Fleet wallboard' }}</span>
+      </footer>
+    </div>
+  }
+
+  @case ('waiting') {
+    <div class="wb-alone">
+      <mat-icon class="wb-alone__icon" aria-hidden="true">hourglass_empty</mat-icon>
+      <p class="wb-alone__head">Waiting for the first read</p>
+      <p class="wb-alone__note">
+        Nothing is being shown because nothing has been read yet.
+        @if (failure(); as note) {
+          {{ note }} Retrying every {{ pollSeconds() }} seconds.
+        }
+      </p>
+    </div>
+  }
+
+  @case ('lost') {
+    <!--
+      Past six intervals the numbers are withdrawn rather than tinted. Not red: red says the fleet is
+      bad, and this says the fleet is unknown, which is a third thing and the one a room most needs
+      told plainly.
+    -->
+    <div class="wb-alone wb-alone__unknown">
+      <mat-icon class="wb-alone__icon" aria-hidden="true">cloud_off</mat-icon>
+      <p class="wb-alone__age farrier-numeric">{{ ageWords() }}</p>
+      <p class="wb-alone__head">since this board could read the fleet</p>
+      <p class="wb-alone__note farrier-numeric">
+        Last good read at {{ lastGoodClock() }}. Nothing about this fleet's state is known now.
+      </p>
+      @if (failure(); as note) {
+        <p class="wb-alone__note">{{ note }}</p>
+      }
+    </div>
+  }
+
+  @case ('locked') {
+    <div class="wb-alone">
+      <mat-icon class="wb-alone__icon" aria-hidden="true">lock_outline</mat-icon>
+      <p class="wb-alone__head">This board is locked</p>
+      <p class="wb-alone__note">
+        The link carries a passphrase. It is checked once and exchanged for a cookie this screen
+        keeps, so this is asked of a television when it is hung and not again.
+      </p>
+
+      <div class="wb-alone__form">
+        <mat-form-field appearance="outline">
+          <mat-label>Passphrase</mat-label>
+          <input matInput type="password" autocomplete="current-password"
+                 [ngModel]="passphrase()" (ngModelChange)="passphrase.set($event)"
+                 (keyup.enter)="unlock()" />
+        </mat-form-field>
+        <button mat-flat-button type="button" [disabled]="unlocking() || !passphrase()"
+                (click)="unlock()">
+          {{ unlocking() ? 'Unlocking…' : 'Unlock' }}
+        </button>
+      </div>
+
+      @if (unlockError(); as note) {
+        <p class="wb-alone__note wb-alone__note--bad">{{ note }}</p>
+      }
+    </div>
+  }
+
+  @case ('refused') {
+    <div class="wb-alone">
+      <mat-icon class="wb-alone__icon" aria-hidden="true">link_off</mat-icon>
+      <p class="wb-alone__head">This board has stopped</p>
+      <p class="wb-alone__note">{{ refusal() }}</p>
+      <p class="wb-alone__note">
+        Nothing is being polled any more, so this screen will not come back on its own.
+      </p>
+    </div>
+  }
+}
+
+<!--
+  The share panel, and only for an operator. A published board renders alone: no toolbar, no
+  navigation, and nothing that would offer a screen in a corridor a route it has no credential for.
+-->
+@if (mode === 'operator') {
+  <farrier-share-panel class="wb__shares" />
+}

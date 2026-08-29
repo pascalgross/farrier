@@ -194,6 +194,27 @@ type Server struct {
 	// bucket behind a proxy the way an address does.
 	passwordLimiter *rateLimiter
 
+	// unlockLimiter bounds passphrase attempts on a published wallboard link, per link.
+	//
+	// pollLimiter bounds how often one link may fetch the fleet summary, also per link. Both are keyed
+	// on the presented key's digest rather than on the source address, which is the opposite of every
+	// other limiter here. A screen is reached from a corridor, over a corporate NAT, or through the
+	// reverse proxy the deployment guide recommends — all of which put many callers in one bucket that a
+	// single television can exhaust for everybody else. The key is the identifier the caller does not
+	// choose, which is the same reasoning renewLimiter and passwordLimiter already use.
+	unlockLimiter *rateLimiter
+
+	// pollLimiter bounds summary fetches per published link.
+	pollLimiter *rateLimiter
+
+	// boardLimiter bounds the published routes per source, before any link has been resolved.
+	//
+	// It is the coarse gate in front of the two above, and it exists because they cannot guard their own
+	// buckets: a limiter keyed on a value an unauthenticated caller invents is one whose map that caller
+	// grows. This one is keyed on the source, which the caller does not choose, and it is set generously
+	// because a corridor and a reverse proxy both report as one.
+	boardLimiter *rateLimiter
+
 	// accounts is the local-accounts provider, nil when this installation has none.
 	accounts *auth.Accounts
 
@@ -271,6 +292,9 @@ func New(cfg Config) (*Server, error) {
 		healthLimiter:   newRateLimiter(healthBurst, healthRefill),
 		renewLimiter:    newRateLimiter(renewBurst, renewRefill),
 		passwordLimiter: newRateLimiter(passwordBurst, passwordRefill),
+		unlockLimiter:   newRateLimiter(unlockBurst, unlockRefill),
+		pollLimiter:     newRateLimiter(pollBurst, pollRefill),
+		boardLimiter:    newRateLimiter(boardBurst, boardRefill),
 		accounts:        cfg.Accounts,
 		paths:           http.NewServeMux(),
 		allow:           map[string][]string{},
@@ -348,6 +372,23 @@ func (s *Server) routes() {
 	s.route(http.MethodPost, "/api/v1/alerts", s.requireOperator(s.handleCreateAlertRule))
 	s.route(http.MethodPatch, "/api/v1/alerts/{id}", s.requireOperator(s.handleUpdateAlertRule))
 	s.route(http.MethodDelete, "/api/v1/alerts/{id}", s.requireOperator(s.handleDeleteAlertRule))
+
+	// The wallboard: one screen of fleet state, and the links that publish it. Both summaries come out
+	// of one builder and differ only in the heading — they are one payload rather than a rich one and a
+	// redaction of it, because a redaction is a rule somebody has to remember on every future field.
+	s.route(http.MethodGet, "/api/v1/wallboard", s.requireOperator(s.handleWallboard))
+	s.route(http.MethodGet, "/api/v1/wallboard/shares", s.requireOperator(s.handleListShares))
+	s.route(http.MethodPost, "/api/v1/wallboard/shares", s.requireOperator(s.handleCreateShare))
+	s.route(http.MethodDelete, "/api/v1/wallboard/shares/{id}", s.requireOperator(s.handleRevokeShare))
+
+	// The two routes a screen with no account reaches, and the word `public` is in both paths so that
+	// somebody scanning this function sees which those are. The first is behind a credential like any
+	// other — 256 bits of randomness naming one fleet — and its handler receives a scoped store and
+	// nothing else. The second is unauthenticated for the same reason POST /api/v1/session is: it is
+	// where the unlock credential comes from, so it cannot require one, and it is rate limited, bounded
+	// and uniform in its refusals accordingly.
+	s.route(http.MethodGet, "/api/v1/wallboard/public", s.requireShare(s.handlePublicWallboard))
+	s.route(http.MethodPost, "/api/v1/wallboard/public/unlock", http.HandlerFunc(s.handleUnlock))
 
 	// Tenant administration, for whoever runs the installation rather than a fleet in it. These are the
 	// only routes a platform credential can reach, and the only routes an operator credential cannot.
