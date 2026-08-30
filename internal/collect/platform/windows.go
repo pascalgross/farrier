@@ -196,7 +196,7 @@ func (w *Windows) UpgradablePackages(ctx context.Context) ([]collect.Package, er
 	}
 
 	var result updatescan.ScanResult
-	if err := json.Unmarshal([]byte(res.Stdout), &result); err != nil {
+	if err := json.Unmarshal(res.Stdout, &result); err != nil {
 		return nil, fmt.Errorf("platform: the update scan produced no usable result: %w", err)
 	}
 	if !result.Complete {

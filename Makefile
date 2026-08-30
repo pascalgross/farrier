@@ -156,13 +156,30 @@ golangci-install: ## Install the pinned golangci-lint
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 
 .PHONY: golangci
-golangci: ## golangci-lint, if it is installed
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-	  golangci-lint run; \
-	else \
+golangci: ## golangci-lint, for this platform and for Windows
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
 	  echo "golangci-lint not installed; see https://golangci-lint.run/welcome/install/"; \
 	  exit 1; \
 	fi
+	golangci-lint run
+	@# And again for Windows, because a linter only ever analyses one platform. Every file behind
+	@# //go:build windows — the whole agent's platform layer, the COM chokepoint and the update scan —
+	@# is invisible to the pass above, so without this second one several thousand lines would ship
+	@# having been linted by nothing at all. It caught six real findings the first time it was run.
+	@#
+	@# The package list is explicit rather than ./... because internal/signing/backend/pkcs11 does not
+	@# build for Windows: purego's Dlopen is POSIX-only. That is a property of the operator's CLI, which
+	@# has never been built for Windows and is not a managed-host binary, so it is out of scope here
+	@# rather than a gap being papered over.
+	GOOS=windows GOARCH=amd64 golangci-lint run $(WINDOWS_PACKAGES)
+
+# The packages a Windows agent is built from, for the linter and the cross-compile check.
+#
+# Listed once and used twice so the two cannot drift apart — a package added to one and forgotten in the
+# other would be one that compiles and is never linted, which is the state this list exists to end.
+WINDOWS_PACKAGES := ./cmd/farrier-agent/... ./cmd/farrier-update-scan/... \
+  ./internal/winapi/... ./internal/wua/... ./internal/updatescan/... \
+  ./internal/collect/... ./internal/agent/... ./internal/policy/... ./internal/run/...
 
 .PHONY: fmt
 fmt: ## Format Go source

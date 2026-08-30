@@ -4,6 +4,7 @@ package winapi
 
 import (
 	"fmt"
+	"math"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -106,7 +107,12 @@ func OSVersion() (Version, error) {
 	if s, _, err := key.GetStringValue("ProductName"); err == nil {
 		v.ProductName = s
 	}
-	if n, _, err := key.GetIntegerValue("UBR"); err == nil {
+	if n, _, err := key.GetIntegerValue("UBR"); err == nil && n <= math.MaxUint32 {
+		// Bounded rather than asserted. UBR is written as a REG_DWORD and cannot exceed 32 bits, but
+		// GetIntegerValue returns uint64 for every integer type the registry has — so the narrowing is
+		// safe because of what wrote the value, which is a fact about Windows rather than about this
+		// code. A machine whose UBR is somehow larger reports zero, which reads as "not patched since
+		// install" and is at least visibly odd, rather than a truncated number that looks plausible.
 		v.UBR = uint32(n)
 	}
 	if s, _, err := key.GetStringValue("InstallationType"); err == nil {

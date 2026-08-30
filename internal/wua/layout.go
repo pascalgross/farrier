@@ -20,7 +20,6 @@ const (
 	// localised, so this only decides how a returned error string is formatted.
 	localeUserDefault = 0x0400
 
-	vtEmpty    = 0
 	vtI4       = 3
 	vtBstr     = 8
 	vtDispatch = 9

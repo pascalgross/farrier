@@ -12,8 +12,9 @@ import (
 
 // Service is the state of one Windows service.
 //
-// The field names are the ones collect.Unit already carries, and the mapping is deliberate rather than
-// lazy — see ToUnit, which is where the translation and its cost are argued.
+// The field names are the ones collect.Unit already carries. The translation onto them, and what it
+// costs, is argued in internal/collect/platform's Windows implementation and written down for a wire
+// reader in docs/PROTOCOL.md §4.2 — this package only reports what the SCM said.
 type Service struct {
 	// Name is the service's key name, such as "W3SVC". Windows has no ".service" suffix.
 	Name string
@@ -147,6 +148,13 @@ func enumerateServices(scm windows.Handle) ([]windows.ENUM_SERVICE_STATUS_PROCES
 			return nil, fmt.Errorf("winapi: reading the service list: %w", err)
 		}
 		if returned > 0 {
+			// The buffer is reinterpreted in place rather than copied out field by field, and it has to
+			// be: EnumServicesStatusEx writes the structures at the front of the allocation and the
+			// strings their ServiceName and DisplayName pointers refer to behind them, in the same
+			// block. Copying the structs to somewhere else would leave those pointers referring to a
+			// buffer nothing holds any more, which is a use-after-free that reads as a working
+			// conversion. The strings are turned into Go values by the caller while buf is still alive.
+			//nolint:gosec // G103: see above — the alternative to this conversion is a dangling pointer.
 			entries := unsafe.Slice(
 				(*windows.ENUM_SERVICE_STATUS_PROCESS)(unsafe.Pointer(&buf[0])), int(returned))
 			out = append(out, entries...)
@@ -184,6 +192,11 @@ func startTypeOf(scm windows.Handle, name *uint16) string {
 		return ""
 	}
 	buf := make([]byte, needed)
+	// One structure rather than a slice of them, but the same shape and the same reason: Windows sizes
+	// the allocation to hold the structure plus the strings it points at, so the header has to be read
+	// where Windows wrote it. Only StartType is taken, and it is a plain integer field — nothing here
+	// outlives buf.
+	//nolint:gosec // G103: see above — QueryServiceConfig requires a caller-allocated buffer.
 	cfg := (*windows.QUERY_SERVICE_CONFIG)(unsafe.Pointer(&buf[0]))
 	if err := windows.QueryServiceConfig(h, cfg, needed, &needed); err != nil {
 		return ""

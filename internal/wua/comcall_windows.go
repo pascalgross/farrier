@@ -69,14 +69,14 @@ func (o *object) Release() {
 	o.ptr = nil
 }
 
-// Initialize joins this thread to a COM apartment, and returns the function that leaves it.
+// initialize joins this thread to a COM apartment, and returns the function that leaves it.
 //
 // runtime.LockOSThread is not optional and is the reason the scan is a separate process rather than a
 // goroutine in the agent. A COM apartment belongs to an operating-system thread, and a goroutine that
 // migrated to another thread would make every subsequent call fail with an error naming nothing
 // relevant. In a short-lived single-purpose process the discipline is trivial; in a long-running agent
 // with a scheduler it is a defect waiting for a busy machine.
-func Initialize() (func(), error) {
+func initialize() (func(), error) {
 	runtime.LockOSThread()
 	// COINIT_APARTMENTTHREADED. WUA is documented against an apartment-threaded caller, and the
 	// multithreaded model would let COM call back on a thread this package has not locked.
@@ -90,13 +90,13 @@ func Initialize() (func(), error) {
 	}, nil
 }
 
-// NewUpdateSession creates the one COM class this package is permitted to create.
+// newUpdateSession creates the one COM class this package is permitted to create.
 //
 // The CLSID is the package constant and never a parameter, so there is no expression in this package
 // whose value could become the class that gets loaded. It is asked for as IID_IDispatch rather than as
 // IID_IUpdateSession because every call after this one goes through Invoke: requesting the dual
 // interface's vtable and then not using it would be an offset this package has no reason to compute.
-func NewUpdateSession() (*object, error) {
+func newUpdateSession() (*object, error) {
 	clsid, err := windows.GUIDFromString(updateSessionCLSID)
 	if err != nil {
 		return nil, fmt.Errorf("wua: the update-session CLSID is malformed: %w", err)

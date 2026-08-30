@@ -51,13 +51,13 @@ const (
 // does not document — so the agent bounds this the way it bounds apt: by the deadline it gives the
 // process it started, and by killing it if that expires.
 func Scan(clientID string) (updatescan.ScanResult, error) {
-	uninitialise, err := Initialize()
+	uninitialise, err := initialize()
 	if err != nil {
 		return updatescan.ScanResult{}, err
 	}
 	defer uninitialise()
 
-	session, err := NewUpdateSession()
+	session, err := newUpdateSession()
 	if err != nil {
 		return updatescan.ScanResult{Complete: false, Error: err.Error()}, nil
 	}
