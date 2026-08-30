@@ -12,6 +12,12 @@
 # and is a miserable way to discover a typo.
 #
 # Full reference: /usr/share/doc/farrier-agent/SECURITY.md, or docs/SECURITY.md in the source tree.
+#
+# One file, two platforms. A Windows host reads the same keys, and several of them have nothing to act
+# on there: it applies no updates and reboots nothing, so `allow`, `auto_apply`, `reboot`, `window` and
+# `[services] restartable` are reported to the control plane and enforced by nothing. That is not an
+# oversight — see docs/SECURITY.md section 12.3 for why a Windows host executes only the read tier. The
+# keys that do apply there are `scan`, `[services] watched` and `[limits]`.
 
 [updates]
 
@@ -34,6 +40,29 @@ allow = "security"
 # file, and because adding a policy key later means every host in a fleet has a policy file older than
 # the software reading it.
 auto_apply = true
+
+# Whether this host will enumerate its pending updates when asked.
+#
+# It exists because on Windows the question is not free. On Linux it is `apt-get --just-print`: local,
+# milliseconds, changes nothing — so no Linux host has ever needed a way to refuse it, and this key has
+# no effect there. A Windows Update scan goes to the network, changes state under %windir% and takes
+# minutes, which makes it privileged work wearing a read class; docs/SECURITY.md's own rule for adding an
+# intent applies, and every privileged operation must be refusable locally.
+#
+# It bounds the scan, not the applying. `allow` does that, and the two are independent: a host with
+# allow = "none" still has every reason to report what is pending. Refusing to apply an update and
+# refusing to look at it are different decisions.
+#
+# The default is true, unlike [containers] report below, and the difference is defensible. A container
+# name describes what a business runs and is a disclosure a host has not agreed to make; a count of
+# missing patches is the number this product exists to show, and an operator who installed a fleet agent
+# has asked for it. What this key buys them is a way to say no on the hosts where the cost is not worth
+# it. A host that says no reports its updates as unmeasured, never as none.
+#
+# ORDERING WARNING, as for [containers] report: Farrier refuses a policy file containing a key it does
+# not know, and a refused policy file means the host falls closed. Upgrade the agent first, then set the
+# key, and run `farrier-agent policy check` before restarting anything.
+scan = true
 
 # The maintenance window, in the timezone below. Empty means any time.
 #

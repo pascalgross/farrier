@@ -77,6 +77,19 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *s
 			reason: fmt.Sprintf("%s: %v", job.Intent, err),
 		}
 	}
+	// 1a. Refuse a member this kind of host does not execute at all.
+	//
+	//     Before the signature and clock checks, because it is not a question about this job: a Windows
+	//     host has no route to a privileged operation whatever the job carries, and answering
+	//     "unsupported_intent" is both true and the answer an operator can act on. Checking it after the
+	//     signature would mean refusing a correctly signed job with a message about the signature.
+	if !intent.InProfile(hostProfile, spec.Name) {
+		return acceptance{
+			status: protocol.StatusUnsupportedIntent,
+			reason: fmt.Sprintf("%s is not executed by a %s host", spec.Name, hostProfile),
+		}
+	}
+
 	if !spec.Implemented {
 		// The catalogue is complete, so nothing should reach here in a released build. It stays because
 		// an agent talking to a newer control plane can be asked for an intent it does not have, and
@@ -520,3 +533,10 @@ func statusForExit(code int) string {
 		return protocol.StatusFailed
 	}
 }
+
+// HostProfile returns the set of catalogue members this build will execute.
+//
+// It exists so that the agent binary can log what it is and the heartbeat can report it, without
+// exporting the constant itself — a reader of this function cannot assign to the profile, and neither
+// can anything else. See profile_linux.go for why that matters.
+func HostProfile() intent.Profile { return hostProfile }

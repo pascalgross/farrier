@@ -47,6 +47,41 @@ helpers: $(DIST) ## Build the three root helpers
 	  CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(DIST)/$$h ./helpers/$$h; \
 	done
 
+# The Windows agent, and the archive it ships in.
+#
+# A zip with two binaries, the installer and the default policy, rather than an MSI. MSI has no
+# equivalent of dpkg's conffile handling, and WiX's default major-upgrade schedule uninstalls before it
+# installs — which deletes an edited trusted-signers and reinstalls it empty, re-opening every
+# destructive operation an administrator had closed with no symptom until a signature that should verify
+# does not. The installer keeps both files by hand instead, which is a promise a script can actually make.
+WINDOWS_DIST := $(DIST)/windows
+
+.PHONY: windows
+windows: $(DIST) ## Build the Windows agent and assemble its release archive
+	mkdir -p $(WINDOWS_DIST)
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-agent.exe ./cmd/farrier-agent
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-update-scan.exe ./cmd/farrier-update-scan
+	cp packaging/windows/Install-FarrierAgent.ps1 $(WINDOWS_DIST)/
+	cp packaging/policy.toml $(WINDOWS_DIST)/
+	cd $(WINDOWS_DIST) && zip -q -r ../farrier-agent-windows-amd64.zip . && cd -
+	@echo "wrote $(DIST)/farrier-agent-windows-amd64.zip"
+
+# The Windows agent must keep cross-compiling, and `make ci` runs on Linux. Compiling it is not a test —
+# nothing here can exercise COM, the SCM or the registry — but a build failure is the one Windows defect
+# this project can catch without a Windows machine, and catching it costs seconds.
+.PHONY: windows-build
+windows-build: ## Check that the Windows agent still cross-compiles
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-agent
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-update-scan
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/farrier-agent ./cmd/farrier-update-scan \
+	  ./internal/winapi ./internal/updatescan ./internal/collect/platform
+	@# internal/wua is vetted by golangci-lint, which can scope the unsafeptr exclusion to the one
+	@# file that earns it. Raw `go vet` has no such setting, and excluding the whole package here
+	@# would stop checking the two files that do no unsafe work at all.
+	@echo "the Windows agent cross-compiles and vets clean"
+
 .PHONY: test
 test: ## Run unit tests
 	go test -race -count=1 $(GO_PACKAGES)
@@ -243,4 +278,4 @@ actions-pinned: ## Every third-party action names a commit rather than a movable
 	@.github/scripts/actions-pinned.sh .
 
 .PHONY: ci
-ci: fmt-check vet doccheck actions-pinned test guarantee ## What CI runs, minus the pieces that need extra tooling
+ci: fmt-check vet doccheck actions-pinned windows-build test guarantee ## What CI runs, minus the pieces that need extra tooling

@@ -14,25 +14,6 @@ import (
 	"github.com/pascalgross/farrier/internal/canonical"
 )
 
-// DefaultStateDir is where the agent keeps everything it writes.
-//
-// It is the only writable path the hardened systemd unit grants, which is deliberate: an agent that can
-// write nowhere else cannot be talked into leaving something behind in a directory that matters.
-const DefaultStateDir = "/var/lib/farrier"
-
-// DefaultServerCABundle is where an administrator puts the control plane's CA before enrolling.
-//
-// It exists because enrolment is the one request an agent makes with nothing on disk to verify against.
-// Every request after it uses the bundle the enrolment response carried, written to CABundleFile — but
-// that response is itself fetched over TLS, so the first connection needs an authority chosen locally
-// and in advance. `farrier enroll` reads this path when --ca is not given, which is what makes the
-// documented ordering — install the certificate, then enrol — mean something rather than being a step
-// that writes a file nothing opens.
-//
-// /etc/farrier rather than the state directory: this is administrator-supplied configuration, chosen
-// before the agent exists, and the state directory is the agent's to rewrite.
-const DefaultServerCABundle = "/etc/farrier/server-ca.crt"
-
 // File names inside the agent's state directory.
 const (
 	// StateFile records what the agent learned at enrolment.
@@ -50,9 +31,6 @@ const (
 
 	// PendingResultsDir holds job results that have not been delivered yet.
 	PendingResultsDir = "pending-results"
-
-	// MachineIDPath is systemd's machine identifier, which is documented as confidential.
-	MachineIDPath = "/etc/machine-id"
 )
 
 // State is what the agent knows about its enrolment.
@@ -216,15 +194,15 @@ func SyncDir(dir string) error {
 // yet — a source build rather than a package install — one is generated and stored, so that the hash is
 // stable across restarts. A hash that changed on every start would enrol the same machine repeatedly.
 func MachineIDHash(dir string) (string, error) {
-	id, err := os.ReadFile(MachineIDPath)
+	id, err := machineIdentity()
 	if err != nil {
-		return "", fmt.Errorf("agent: reading %s: %w", MachineIDPath, err)
+		return "", err
 	}
 	salt, err := loadOrCreateSalt(filepath.Join(dir, SaltFile))
 	if err != nil {
 		return "", err
 	}
-	return canonical.SaltedDigest(salt, []byte(strings.TrimSpace(string(id)))), nil
+	return canonical.SaltedDigest(salt, []byte(strings.TrimSpace(id))), nil
 }
 
 // loadOrCreateSalt reads the per-host salt, creating it if absent.

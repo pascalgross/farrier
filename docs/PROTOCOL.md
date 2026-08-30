@@ -340,6 +340,32 @@ rather than a defect, and a client rendering such a history SHOULD say so beside
 worth an event is the *host's* decision, reported as `policy.services.watched`; an empty list means
 every unit, because permitting an action and reporting a fact are different questions.
 
+
+#### The `services` fields on Windows
+
+The three state fields are systemd's vocabulary, and a Windows host fills them with the SCM's. They are
+**not renamed**, and that is a decision rather than an oversight: renaming them would be a wire-format
+change reaching the server, the store and the browser application, to express something the values
+already say. What it costs is that a reader who assumes systemd will misread them, so the meanings are
+written down here rather than left to be inferred from `auto` appearing where `loaded` was expected.
+
+| Field | Linux | Windows |
+| --- | --- | --- |
+| `name` | the unit name, `nginx.service` | the service key name, `W3SVC` — Windows has no suffix |
+| `loadState` | `loaded`, `not-found`, `masked` | the start type: `auto`, `demand`, `disabled`, `boot`, `system`, or empty where this account could not read the service's configuration |
+| `activeState` | `active`, `inactive`, `failed` | `active` only when running; every pending state is `inactive` |
+| `subState` | `running`, `exited`, `dead` | the precise state: `running`, `stopped`, `start-pending`, `stop-pending`, `paused` |
+
+`activeState` is never `failed` on Windows. A Windows service that died is simply stopped — the
+distinction lives in the SCM's failure-action configuration and the event log, not in the status — so
+reporting `failed` would be inventing a fact.
+
+`servicesTruncated` carries a second meaning there, and it is the one that matters on a hardened host.
+`EnumServicesStatusEx` **silently omits** services the caller cannot query rather than failing, so an
+unprivileged agent can be handed a short list with no indication that it is short. A Windows agent
+reports the flag rather than presenting the subset as complete: the services it cannot see are exactly
+the ones somebody restricted on purpose.
+
 ### 4.3 Server-set pacing
 
 `nextHeartbeatSeconds` is authoritative and MAY change on any response. It exists so a control plane

@@ -1,3 +1,5 @@
+//go:build linux
+
 package platform
 
 import (
@@ -27,6 +29,8 @@ import (
 //     teaches its operator to ignore the dashboard, which costs more than the warning was ever worth.
 //  4. apt-check. Not used, same as Ubuntu; the simulation parse is the only path.
 type Debian struct {
+	systemdServices
+
 	// dist is the distribution this instance was built for.
 	dist collect.Distribution
 }

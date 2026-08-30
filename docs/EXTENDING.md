@@ -16,27 +16,53 @@ agent from source.
 
 ## Open seams
 
-### `collect.Platform` — a distribution family
+### `collect.Platform` — an operating-system family
 
 ```go
-// Platform is the per-distribution-family behaviour that fact collection depends on.
+// Platform is the per-family behaviour that fact collection depends on.
 type Platform interface {
     Identify() (Distribution, error)
     UpgradablePackages(ctx context.Context) ([]Package, error)
     SecurityOrigins() []string
     RebootRequired(ctx context.Context) (RebootReport, error)
     SubscriptionStatus(ctx context.Context) (*Subscription, error) // nil where not applicable
+    Services(ctx context.Context) ([]Unit, bool, error)
+    KernelRelease() string
 }
 ```
 
-Three of these take a context, because they start a process — `apt-get`, `needrestart`, `pro` — and a
-heartbeat that could not be cancelled would hold the agent open behind a hung package manager.
-`RebootRequired` returns a `RebootReport` rather than a bare boolean and a list, because the answer has
-four parts: whether a reboot is needed, which packages need it, which services still hold replaced
-libraries, and whether the scan that produced that last list could see every process.
+Most of these take a context, because they start a process — `apt-get`, `needrestart`, `pro`, and the
+Windows update scan — and a heartbeat that could not be cancelled would hold the agent open behind a
+hung package manager. `RebootRequired` returns a `RebootReport` rather than a bare boolean and a list,
+because the answer has four parts: whether a reboot is needed, which packages need it, which services
+still hold replaced libraries, and whether the scan that produced that last list could see every process.
 
-Add a file under `internal/collect/platform/`, implement the interface, register it in that package's
-detection function. Farrier ships `ubuntu` and `debian`.
+The last two arrived with the second operating system, and the first of them was a bug this document
+already predicted. `Gather` used to call `collect.ListUnits` directly, which is systemd over D-Bus — a
+type switch waiting to happen the moment anything else had services. `KernelRelease` is on the seam for
+the same reason: a package-level reader of `/proc/sys/kernel/osrelease` would have returned `"unknown"`
+for every Windows host for ever, which is a silent wrong answer of exactly the class this interface
+exists to name.
+
+There is an optional half, as there is for collectors:
+
+```go
+// PolicyGatedPackages is for a platform whose package enumeration is itself expensive or privileged.
+type PolicyGatedPackages interface {
+    PackagesPermittedBy(p policy.Policy) (bool, string)
+}
+```
+
+Implement it where listing updates is not free. On Linux it is `apt-get --just-print` — local,
+milliseconds, changes nothing — so neither Linux platform implements it and `Gather` asks them nothing.
+On Windows the same question is a network conversation that changes state under `%windir%` and takes
+minutes, which makes it privileged work wearing a read class; `[updates] scan` is the key that refuses
+it. A platform that does not implement this behaves exactly as it did before the interface existed.
+
+Add a file under `internal/collect/platform/`, implement the interface, and return it from that
+package's `Detect`. `Detect` is build-tagged rather than switching on `runtime.GOOS`: on Linux it parses
+os-release and chooses a distribution family, on Windows it asks the kernel. Farrier ships `ubuntu`,
+`debian` and `windows`.
 
 Four differences between families are already known to produce **silent wrong answers** rather than
 errors, so any new implementation must state what it does about each:
@@ -328,19 +354,23 @@ Never. Any mechanism that loads code into the agent at run time is remote code e
 plugin API — dlopen, a WASM sandbox, an embedded interpreter, a "safe" expression language that grows
 a function call syntax in version two. Agent extension is compile-time only.
 
-### A Windows agent, as a port of the Linux one
+### A privileged tier on Windows
 
-**Not a seam, and not a port.** `collect.Platform` is a seam for a *distribution* family, and widening
-it to an operating-system family is the smallest-looking part of a change that is mostly somewhere else.
-A Windows agent is a second implementation of the enforcement half of the guarantee, and it cannot reach
-the strength of the first: there is no `execve` with an argument vector, no socket activation to give a
-privileged helper a fresh process per operation, and no service manager that applies a sandbox from
-reviewable text.
+**Closed, and not a matter of effort.** The Windows agent exists and executes the read tier; what is
+refused is growing a privileged one. There is no `execve` with an argument vector, no socket activation
+to give a privileged helper a fresh process per operation, and no service manager that applies a sandbox
+from reviewable text — so a privileged operation on Windows would rest on the agent process alone, and
+[`SECURITY.md` §1](SECURITY.md#1-the-guarantee)'s second and third clauses would rest on it with them.
 
-What that buys is a smaller product on Windows, not a weaker guarantee. Read intents only; no root
-helper, so no privileged operation to bound; `packages.applySecurity` and `host.reboot` refused
-permanently rather than approximated. The reasoning, the intent-by-intent table and the two capabilities
-that cannot exist on Windows at all are in
+That is enforced rather than remembered. `intent.ProfileWindowsReadOnly` is a closed compile-time set,
+`internal/agent`'s `hostProfile` is a `const` in a build-tagged file, and
+`TestGuaranteeTheWindowsProfileHoldsOnlyReadIntents` fails on anything outside the read class — by
+class, not by a list of names, because a list would be a copy rather than a check.
+
+Two capabilities are refused for a reason no amount of design would fix: a Windows cumulative update has
+no installable security-only subset, so `packages.applySecurity` cannot mean there what `policy.toml`
+says it means; and `InitiateSystemShutdownEx` documents that a success return may not reboot the host
+and can wedge it so that nothing else can either. The intent-by-intent table is in
 [`SECURITY.md` §12](SECURITY.md#12-windows-hosts).
 
 Two rules hold whatever is built. **No interpreter, anywhere** — `powershell.exe`, `pwsh.exe`,

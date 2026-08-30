@@ -77,6 +77,20 @@ const (
 	// ever reaches a command line, because the body is a *file* cloud-init reads from its seed
 	// directory, not an argument.
 	CloudInit Program = "/usr/bin/cloud-init"
+
+	// UpdateScan reports the updates pending on a Windows host. It does not exist on Linux.
+	//
+	// It is Farrier's own binary, shipped in the same package as the agent, and it is here for the same
+	// reason apt-get is: the agent asks a program the question rather than reading the platform's update
+	// state itself. On Windows that separation carries more weight than convenience. Enumerating updates
+	// means loading wuapi.dll, and docs/SECURITY.md §3 refuses a runtime code loader in the agent — the
+	// process holding the host's mTLS private key — without qualification. Starting a short-lived
+	// unprivileged process that loads it instead is what keeps that refusal literally true.
+	//
+	// The path is under Program Files rather than beside the state directory because it must be a
+	// location the agent's own service account cannot write. An agent that could rewrite the program it
+	// then executes would have turned this allowlist into a formality.
+	UpdateScan Program = `C:\Program Files\Farrier\farrier-update-scan.exe`
 )
 
 // allowed is the run-time allowlist.
@@ -97,6 +111,7 @@ var allowed = map[Program]bool{
 	Pro:               true,
 	Shutdown:          true,
 	CloudInit:         true,
+	UpdateScan:        true,
 }
 
 // ErrNotAllowed reports an attempt to execute a program outside the allowlist.

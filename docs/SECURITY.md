@@ -1192,14 +1192,19 @@ recognises, regardless of how difficult they are to reach. That includes:
 
 ## 12. Windows hosts
 
-**No Windows agent ships today, and none is built.** `cmd/farrier-agent` carries `//go:build linux`, so
-a build for another platform fails with a sentence somebody wrote rather than producing a binary that
-starts and reports nothing correctly. `TestGuaranteeTheAgentBinaryIsLinuxOnly` keeps it that way.
+**A Windows agent ships, and it is a smaller product than the Linux one.** It executes the four
+read-class intents and refuses everything else — not as a staging decision to be revisited quietly, but
+because of 12.2 below. `cmd/farrier-agent` carries `//go:build linux || windows`, and
+`TestGuaranteeTheAgentBinaryNamesItsPlatforms` fails if a third platform is added without the three
+things that make one real: a `collect.Platform` implementation, an `intent.Profile` saying what it will
+execute, and a section of this document saying which mechanisms it enforces by test rather than by
+convention.
 
-This section exists anyway, and before the code, for the reason `auto_apply` is documented in
-`policy.toml` before it works: the decisions below are the ones worth arguing about, and they are
-cheaper to argue about now than to discover in a pull request that has already been written. Everything
-here is a decision, not a description.
+What a host will execute is a compile-time set, not a run-time one. `internal/intent`'s `profiles` map
+is a second closed literal beside the catalogue — the catalogue itself is untouched, still ten members
+in one file — and `internal/agent`'s `hostProfile` is a `const` in a build-tagged file, so nothing can
+assign to it. The profile also travels on no wire in the direction that would matter: enforcement is on
+the host, against that constant.
 
 ### 12.1 The guarantee does not change
 
@@ -1243,10 +1248,10 @@ would rest on the agent process alone.
 
 | Intent | On Windows |
 | --- | --- |
-| `facts.collect` | supported — `RtlGetVersion`, the `CurrentVersion` registry values, `GetComputerNameExW`, `GetTickCount64`, `GetAdaptersAddresses` |
-| `services.list` | supported — `OpenSCManagerW`, `EnumServicesStatusExW`, `QueryServiceConfigW` |
-| `reboot.checkRequired` | supported, and weaker than on Linux: the pending-reboot registry keys have no `needrestart` half. See 12.5 |
-| `packages.listUpgradable` | supported, and **not a read intent on Windows**. See 12.4 |
+| `facts.collect` | **ships** — `RtlGetVersion`, the `CurrentVersion` registry values, `GetComputerNameExW`, `GetTickCount64`, `GetAdaptersAddresses` |
+| `services.list` | **ships** — `OpenSCManagerW`, `EnumServicesStatusExW`, `QueryServiceConfigW` |
+| `reboot.checkRequired` | **ships**, and weaker than on Linux: the pending-reboot registry keys have no `needrestart` half. See 12.5 |
+| `packages.listUpgradable` | **ships**, and is **not a read intent on Windows**. See 12.4 |
 | `packages.applySecurity` | **permanently refused.** See 12.5 |
 | `packages.applyAll` | not implemented |
 | `service.start`, `service.stop`, `service.restart` | not implemented |
@@ -1255,6 +1260,13 @@ would rest on the agent process alone.
 "Not implemented" is expressed the way the catalogue already expresses it: the agent refuses the intent
 and answers `unsupported_intent`, exactly as it does for a member no build has an executor for. The
 catalogue is not edited, no member gains a platform field, and no name is added or removed.
+
+Two tests keep that honest, and they check opposite directions.
+`TestGuaranteeTheLinuxProfileIsTheWholeCatalogue` fails if a catalogue member is ever added without
+being added to the Linux profile, because the symptom would otherwise be every Linux host quietly
+refusing it. `TestGuaranteeTheWindowsProfileHoldsOnlyReadIntents` fails if anything outside the read
+tier appears in the Windows one — checked by class rather than against a list of four names, because a
+list would have to be edited by the same hand in the same commit, which is a copy rather than a check.
 
 ### 12.4 The update scan is privileged work wearing a read class
 
@@ -1269,6 +1281,17 @@ have: **a policy knob that lets the host refuse it.** That is step 6 of *Adding 
 `docs/EXTENDING.md`, and it is not waived here. Without it, a control plane holding nothing but mTLS
 could drive every Windows host into a continuous scan loop, and the host would have been given no policy
 to exceed.
+
+The knob is `[updates] scan`, and it defaults to true — the opposite of `[containers] report`, for a
+reason worth stating: a container name describes what a business runs and is a disclosure a host has not
+agreed to make, whereas a count of missing patches is the number this product exists to show. A host
+that sets it false reports its updates as **unmeasured**, never as none.
+
+A second bound is not a policy key and is deliberately not configurable. The agent asks Windows Update
+at most once every six hours and serves a cached answer in between, because `Gather` runs on every full
+heartbeat and an uncached implementation would leave a host scanning continuously and reporting facts
+almost never. How stale a patch count may be is not a decision that differs usefully between hosts;
+whether the host scans at all is, and that is the key that exists.
 
 Two further decisions:
 

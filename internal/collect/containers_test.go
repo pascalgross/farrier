@@ -647,6 +647,15 @@ func (stubPlatform) RebootRequired(context.Context) (RebootReport, error) {
 // SubscriptionStatus reports that the concept does not exist here.
 func (stubPlatform) SubscriptionStatus(context.Context) (*Subscription, error) { return nil, nil }
 
+// Services reports no services.
+//
+// A stub rather than a call to ListUnits: this test is about the collector gate, and reaching D-Bus
+// would make it fail on any machine that has no systemd — including the container CI runs in.
+func (stubPlatform) Services(context.Context) ([]Unit, bool, error) { return nil, false, nil }
+
+// KernelRelease reports a fixed release, for the same reason Identify reports a fixed distribution.
+func (stubPlatform) KernelRelease() string { return "6.1.0-test" }
+
 // TestGatherWithholdsASectionTheLocalPolicyRefuses is the whole of the policy gate.
 //
 // A refused section must be absent from the facts document rather than empty, and the collector must

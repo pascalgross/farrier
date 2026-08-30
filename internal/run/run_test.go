@@ -126,15 +126,23 @@ func TestGuaranteeTheAllowlistHoldsNoInterpreters(t *testing.T) {
 		if interpreterBasenames[programBasename(s)] {
 			t.Errorf("%q is an interpreter and may not be in the allowlist", p)
 		}
-		if !strings.HasPrefix(s, "/") {
-			t.Errorf("%q is not an absolute POSIX path. Farrier ships no Windows binary yet; when it "+
-				"does, this rule gains a Windows form rather than losing its Linux one.", p)
+		if !isAbsoluteProgramPath(s) {
+			t.Errorf("%q is not an absolute path. Resolving a program through PATH would let whoever "+
+				"controls the environment choose it, which is the weakness this list exists to remove.", p)
 		}
 		if s != strings.TrimSpace(s) {
 			t.Errorf("%q has surrounding whitespace", p)
 		}
 		if strings.Contains(s, "..") {
 			t.Errorf("%q contains a relative path component", p)
+		}
+		// A Windows path must be under Program Files, and the reason is the one that makes an allowlist
+		// worth having: the agent's own service account must not be able to write the program it then
+		// executes. %ProgramData% is writable by ordinary accounts under its inherited ACL, so an entry
+		// there would turn this list into a formality.
+		if strings.Contains(s, `\`) && !strings.HasPrefix(s, `C:\Program Files\`) {
+			t.Errorf("%q is a Windows path outside Program Files. The agent's account must not be able "+
+				"to write a program this list permits it to run.", p)
 		}
 	}
 }
@@ -517,5 +525,65 @@ func TestATimedOutInvocationReturnsPromptly(t *testing.T) {
 	}
 	if elapsed > timeout+WaitDelay+30*time.Second {
 		t.Errorf("a timed-out invocation took %s to return; it must not linger past its wait delay", elapsed)
+	}
+}
+
+// isAbsoluteProgramPath reports whether a program path names one place and cannot be resolved elsewhere.
+//
+// filepath.IsAbs is not the function to use here, and the reason is the same one programBasename exists
+// for: it answers for the platform the test is running on, not for the platform the path is written for.
+// On the Linux runner that builds this repository, filepath.IsAbs of
+// `C:\Program Files\Farrier\farrier-update-scan.exe` is false — so a check built on it would report a
+// perfectly good Windows path as relative, and the obvious fix somebody would then apply is to delete
+// the check.
+//
+// Both forms are accepted because both are absolute in the sense that matters: neither is resolved
+// through PATH, and neither can be redirected by whoever controls the environment. A bare `\path` is
+// deliberately refused — it is relative to the current drive, which is exactly the ambiguity this rule
+// exists to remove.
+func isAbsoluteProgramPath(s string) bool {
+	if strings.HasPrefix(s, "/") {
+		return true
+	}
+	// A drive letter, a colon and a separator: `C:\...`.
+	if len(s) >= 3 && s[1] == ':' && s[2] == '\\' {
+		c := s[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
+}
+
+// TestGuaranteeTheAllowlistPathRuleReadsBothPlatforms pins the path check against its own blind spot.
+//
+// The rule above replaced strings.HasPrefix(s, "/") when the allowlist gained its first Windows entry,
+// and a rule that accepts more than it used to is exactly where a check quietly stops checking. These
+// cases are the ones that would make it useless: a bare program name resolved through PATH, a
+// drive-relative path, a UNC path pointing at a server somebody else controls, and the traversal forms.
+func TestGuaranteeTheAllowlistPathRuleReadsBothPlatforms(t *testing.T) {
+	absolute := []string{
+		"/usr/bin/apt-get",
+		`C:\Program Files\Farrier\farrier-update-scan.exe`,
+		`c:\Windows\System32\notepad.exe`,
+	}
+	for _, s := range absolute {
+		if !isAbsoluteProgramPath(s) {
+			t.Errorf("%q is absolute and was refused", s)
+		}
+	}
+
+	relative := []string{
+		"",
+		"apt-get",
+		"farrier-update-scan.exe",
+		`\Program Files\Farrier\farrier-update-scan.exe`, // relative to the current drive
+		`\\server\share\farrier-update-scan.exe`,         // a UNC path: absolute, but not on this host
+		`C:farrier-update-scan.exe`,                      // relative to the current directory on C:
+		"../../usr/bin/apt-get",
+		`C:/Program Files/Farrier/farrier-update-scan.exe`, // forward slashes: not the shipped form
+	}
+	for _, s := range relative {
+		if isAbsoluteProgramPath(s) {
+			t.Errorf("%q was accepted as an absolute program path", s)
+		}
 	}
 }
