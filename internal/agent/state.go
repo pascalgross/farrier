@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/canonical"
@@ -249,6 +248,16 @@ func loadOrCreateSalt(path string) ([]byte, error) {
 	return encoded, nil
 }
 
+// ownership is the numeric owner of a state directory, as the kernel reports it.
+//
+// It exists so that AdoptStateDir can be written once for every platform while the one call that is
+// genuinely Linux-only — reading a uid and gid out of a stat structure — lives behind a build tag. The
+// fields are int rather than uint32 because os.Lchown takes int, and converting once here is better
+// than converting at the call site inside a loop.
+type ownership struct {
+	uid, gid int
+}
+
 // AdoptStateDir gives the state directory's contents to whoever owns the directory.
 //
 // It exists because enrolment and the agent are two different users. `farrier enroll` is run with sudo,
@@ -278,7 +287,7 @@ func AdoptStateDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("agent: reading the state directory %s: %w", dir, err)
 	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
+	owner, ok := directoryOwner(info)
 	if !ok {
 		// Not Linux, which the agent is not built for. Nothing to do rather than a failure, because a
 		// state directory with no uid behind it is not a state directory anybody can be locked out of.
@@ -294,8 +303,8 @@ func AdoptStateDir(dir string) error {
 		// Lchown rather than Chown: a symlink in here should have its own ownership changed, never the
 		// thing it points at, which is how a writable state directory would otherwise become a way to
 		// chown a file elsewhere on the system.
-		if err := os.Lchown(path, int(owner.Uid), int(owner.Gid)); err != nil {
-			return fmt.Errorf("agent: giving %s to uid %d: %w", path, owner.Uid, err)
+		if err := os.Lchown(path, owner.uid, owner.gid); err != nil {
+			return fmt.Errorf("agent: giving %s to uid %d: %w", path, owner.uid, err)
 		}
 	}
 	return nil

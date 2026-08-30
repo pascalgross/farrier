@@ -35,6 +35,41 @@ var interpreterBasenames = map[string]bool{
 	"ssh": true, "scp": true, "sshpass": true,
 	"sudo": true, "su": true, "runuser": true, "pkexec": true, "doas": true,
 	"curl": true, "wget": true,
+
+	// The Windows spellings of the same capability. They are here although Farrier ships no Windows
+	// binary, because the list is what the check consults and a list that knows only the Unix names
+	// would let the first Windows allowlist entry through in review — while internal/intent's
+	// executionShapedFragments has refused an *intent* named "powershell" since before this line
+	// existed. The project had already decided; only the guard had not been told.
+	"powershell": true, "pwsh": true, "cmd": true,
+	"wscript": true, "cscript": true, "mshta": true,
+	"rundll32": true, "regsvr32": true, "msiexec": true,
+	"wmic": true, "forfiles": true,
+	"certutil": true, "bitsadmin": true,
+}
+
+// programBasename reduces a program path to the name looked up in interpreterBasenames.
+//
+// It exists because filepath.Base is not the right function here and fails silently when it is wrong.
+// The checks below run on a Linux runner, where filepath.Base of
+// `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` is the entire string — there is no "/" to
+// split on — so the interpreter lookup would match nothing and report success. Splitting on both
+// separators, folding case and dropping the executable suffix means one program has one name here,
+// whichever platform wrote the path and whichever platform runs the test.
+func programBasename(program string) string {
+	name := program
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	// Only the two suffixes Windows treats as a bare command name. Trimming a longer list would map
+	// a program genuinely called "deploy.cmd" onto "deploy" and answer a question nobody asked.
+	for _, suffix := range []string{".exe", ".com"} {
+		if after, found := strings.CutSuffix(name, suffix); found {
+			return after
+		}
+	}
+	return name
 }
 
 // TestGuaranteeOnlyAllowlistedProgramsCanRun is what earns this package its exemption.
@@ -85,8 +120,15 @@ func TestGuaranteeTheAllowlistHoldsNoInterpreters(t *testing.T) {
 	}
 	for _, p := range list {
 		s := string(p)
+		// The interpreter question is asked first so that its answer is the one an author reads. A
+		// Windows path fails the absolute-path rule below as well, and "is not an absolute path" is
+		// the less useful of the two things to be told about powershell.exe.
+		if interpreterBasenames[programBasename(s)] {
+			t.Errorf("%q is an interpreter and may not be in the allowlist", p)
+		}
 		if !strings.HasPrefix(s, "/") {
-			t.Errorf("%q is not an absolute path", p)
+			t.Errorf("%q is not an absolute POSIX path. Farrier ships no Windows binary yet; when it "+
+				"does, this rule gains a Windows form rather than losing its Linux one.", p)
 		}
 		if s != strings.TrimSpace(s) {
 			t.Errorf("%q has surrounding whitespace", p)
@@ -94,8 +136,44 @@ func TestGuaranteeTheAllowlistHoldsNoInterpreters(t *testing.T) {
 		if strings.Contains(s, "..") {
 			t.Errorf("%q contains a relative path component", p)
 		}
-		if base := filepath.Base(s); interpreterBasenames[base] {
-			t.Errorf("%q is an interpreter and may not be in the allowlist", p)
+	}
+}
+
+// TestGuaranteeTheInterpreterCheckReadsAWindowsPath is the regression test for a hole that was open.
+//
+// Until this test existed, both interpreterBasenames maps held only Unix names and the lookup used
+// filepath.Base, so `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` in the allowlist would
+// have passed TestGuaranteeTheAllowlistHoldsNoInterpreters twice over: the map had no entry to match,
+// and on a Linux runner filepath.Base returns the whole string so there was nothing to look up anyway.
+// A guard that reads the one name it most needs to refuse and says nothing is worse than no guard,
+// because the green check is what a reviewer trusts instead of reading.
+//
+// It asserts the check, not the allowlist. The allowlist is POSIX-only today and the test above already
+// pins that; what is proved here is that the day a Windows path is proposed, the answer is no.
+func TestGuaranteeTheInterpreterCheckReadsAWindowsPath(t *testing.T) {
+	refused := []string{
+		`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		`C:\Program Files\PowerShell\7\pwsh.exe`,
+		`C:\Windows\System32\cmd.exe`,
+		`C:\Windows\System32\wscript.exe`,
+		`C:\Windows\System32\rundll32.exe`,
+		`C:\Windows\System32\msiexec.exe`,
+		`c:\windows\system32\CMD.EXE`, // case is not a way past
+		"powershell.exe",              // bare, as an argument vector's first element
+		"/usr/bin/pwsh",               // the Unix packaging of the same interpreter
+	}
+	for _, program := range refused {
+		if !interpreterBasenames[programBasename(program)] {
+			t.Errorf("%q is not recognised as an interpreter; programBasename gave %q",
+				program, programBasename(program))
+		}
+	}
+
+	// The suffix trimming must not reach past the two Windows treats as a bare command name, or a
+	// program legitimately called "deploy.cmd" would be read as "cmd" and refused for the wrong reason.
+	for _, program := range []string{"/usr/bin/apt-get", "/opt/farrier/deploy.cmd", "/usr/sbin/shutdown"} {
+		if interpreterBasenames[programBasename(program)] {
+			t.Errorf("%q is refused as an interpreter, which is a false positive", program)
 		}
 	}
 }

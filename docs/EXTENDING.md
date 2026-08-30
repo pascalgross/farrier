@@ -328,6 +328,31 @@ Never. Any mechanism that loads code into the agent at run time is remote code e
 plugin API — dlopen, a WASM sandbox, an embedded interpreter, a "safe" expression language that grows
 a function call syntax in version two. Agent extension is compile-time only.
 
+### A Windows agent, as a port of the Linux one
+
+**Not a seam, and not a port.** `collect.Platform` is a seam for a *distribution* family, and widening
+it to an operating-system family is the smallest-looking part of a change that is mostly somewhere else.
+A Windows agent is a second implementation of the enforcement half of the guarantee, and it cannot reach
+the strength of the first: there is no `execve` with an argument vector, no socket activation to give a
+privileged helper a fresh process per operation, and no service manager that applies a sandbox from
+reviewable text.
+
+What that buys is a smaller product on Windows, not a weaker guarantee. Read intents only; no root
+helper, so no privileged operation to bound; `packages.applySecurity` and `host.reboot` refused
+permanently rather than approximated. The reasoning, the intent-by-intent table and the two capabilities
+that cannot exist on Windows at all are in
+[`SECURITY.md` §12](SECURITY.md#12-windows-hosts).
+
+Two rules hold whatever is built. **No interpreter, anywhere** — `powershell.exe`, `pwsh.exe`,
+`cmd.exe`, `wscript.exe`, `mshta.exe`, `rundll32.exe`, `regsvr32.exe` and `msiexec.exe` are in
+`interpreterBasenames` beside `sh` and `bash`, and `refused.go` has refused an intent *named*
+`powershell` since before any of this was discussed. Constrained Language Mode is not an answer:
+Microsoft's `about_Language_Modes` says its cmdlets "are fully functional and have complete access to
+system resources", and every act this guarantee prevents is a cmdlet. **And the agent still loads no
+foreign code** — enumerating Windows updates means loading `wuapi.dll`, so it happens in a separate
+short-lived unprivileged process reached through `internal/run`, never in the process holding the host's
+mTLS key.
+
 ### `store.Store`
 
 **Not a seam.** The interface exists so that tests do not need a database. It is not a portability

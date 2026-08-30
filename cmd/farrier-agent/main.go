@@ -1,3 +1,5 @@
+//go:build linux
+
 // Command farrier-agent is the Farrier agent that runs on a managed Ubuntu or Debian host.
 //
 // It connects outbound to a control plane and never listens. There is no server-to-agent direction in
@@ -13,6 +15,18 @@
 // helpers, reached over the unix sockets in /run/farrier and never through sudo — with the agent's
 // sandbox in force, execve drops the setuid bit, so sudo cannot become root at all. `farrier-agent
 // doctor` checks that boundary from this process's own account.
+//
+// The build constraint above is the whole answer to "what is a GOOS=windows build of the agent". It is
+// nothing, deliberately, and it says so at build time rather than at run time. Without it this package
+// very nearly cross-compiled — one reference to syscall.Stat_t was the only thing stopping it — and the
+// binary that came out would have read /etc/os-release, executed /usr/bin/apt-get and dialled unix
+// sockets under /run/farrier, failing every operation while looking to an operator like a supported
+// platform. A build that fails with "build constraints exclude all Go files" is a sentence somebody
+// wrote; `undefined: syscall.Stat_t` is a sentence nobody wrote about a decision nobody took.
+//
+// The library half deliberately does still compile off Linux — see internal/agent/state_other.go — so
+// that a Windows agent has something to start from. The day one exists, this constraint widens in the
+// same commit that adds it, and TestGuaranteeTheAgentBinaryIsLinuxOnly is where that is argued.
 package main
 
 import (

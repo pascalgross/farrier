@@ -114,6 +114,40 @@ var interpreterBasenames = map[string]bool{
 	"ssh": true, "scp": true, "sshpass": true,
 	"sudo": true, "su": true, "runuser": true, "pkexec": true, "doas": true,
 	"curl": true, "wget": true,
+
+	// The Windows spellings, present although Farrier ships no Windows binary. rundll32, regsvr32 and
+	// msiexec are here for the same reason env and xargs are: each runs a program of the caller's
+	// choosing, which is the capability this list is about rather than the word "shell". refused.go has
+	// refused an *intent* named "powershell" since long before this line; only the check that reads
+	// source had not been told.
+	"powershell": true, "pwsh": true, "cmd": true,
+	"wscript": true, "cscript": true, "mshta": true,
+	"rundll32": true, "regsvr32": true, "msiexec": true,
+	"wmic": true, "forfiles": true,
+	"certutil": true, "bitsadmin": true,
+}
+
+// programBasename reduces a program path to the name looked up in interpreterBasenames.
+//
+// It exists because filepath.Base is not the right function here and is wrong without saying so. This
+// test runs on a Linux runner, where filepath.Base of a Windows path returns the whole string — there
+// is no "/" in `C:\Windows\System32\cmd.exe` to split on — so the lookup would match nothing and the
+// check would pass while reading the name it exists to refuse. Splitting on both separators, folding
+// case and dropping the executable suffix gives one program one name here, whoever wrote the path.
+func programBasename(program string) string {
+	name := program
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	// Only the two suffixes Windows treats as a bare command name. A longer list would fold a program
+	// genuinely called "deploy.cmd" onto "deploy" and answer a question nobody asked.
+	for _, suffix := range []string{".exe", ".com"} {
+		if after, found := strings.CutSuffix(name, suffix); found {
+			return after
+		}
+	}
+	return name
 }
 
 // execChokepoint is the one file permitted to execute a program named by a variable.
@@ -282,14 +316,17 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 						"become the thing that runs. See docs/SECURITY.md §2.1.", rel, pos.Line, pkg, fn)
 					return true
 				}
+				// Asked before the absolute-path rule so that its answer is the one an author reads: a
+				// Windows path fails both, and "not an absolute path" is the less useful thing to be
+				// told about powershell.exe.
+				if interpreterBasenames[programBasename(program)] {
+					t.Errorf("%s:%d: %s.%s runs the interpreter %q. No code path in Farrier may lead "+
+						"from a network message to something that interprets its arguments.",
+						rel, pos.Line, pkg, fn, program)
+				}
 				if !strings.HasPrefix(program, "/") {
 					t.Errorf("%s:%d: %s.%s runs %q, which is not an absolute path. Resolving a program "+
 						"through PATH lets whoever controls the environment choose it.",
-						rel, pos.Line, pkg, fn, program)
-				}
-				if base := filepath.Base(program); interpreterBasenames[base] {
-					t.Errorf("%s:%d: %s.%s runs the interpreter %q. No code path in Farrier may lead "+
-						"from a network message to something that interprets its arguments.",
 						rel, pos.Line, pkg, fn, program)
 				}
 				return true
@@ -676,6 +713,45 @@ var forbiddenOnAManagedHost = map[string]string{
 		"exists so that only the operator's own tool links a backend",
 	"github.com/ebitengine/purego": "a foreign-function interface, which is how the PKCS#11 backend " +
 		"loads a module the operator names",
+}
+
+// TestGuaranteeTheAgentBinaryIsLinuxOnly pins what a build for another platform is allowed to produce.
+//
+// The tree very nearly cross-compiles for Windows already: everything the agent needs builds except one
+// reference to syscall.Stat_t, and nothing in the packages below it carries a build tag, because the
+// Linux-ness of this codebase lives in behaviour rather than in constraints. internal/collect compiles
+// for Windows and would then read /etc/os-release and execute /usr/bin/apt-get. So the risk is not a
+// build that fails; it is a build that succeeds and produces an agent that reports nothing correctly
+// while an operator reads the running service as support for their platform.
+//
+// The constraint on cmd/farrier-agent is what makes that impossible to do by accident, and this test is
+// what keeps the constraint from being dropped by somebody clearing a build error. Deleting the tag is
+// not forbidden — it is the commit that ships a Windows agent — but it may not happen quietly, and it
+// may not happen before there is something for the tag to be widened *to*. Widening it means editing
+// this test in the same commit, which is the same friction the catalogue's expected-set literal exists
+// to create.
+func TestGuaranteeTheAgentBinaryIsLinuxOnly(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, "cmd", "farrier-agent", "main.go")
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v.\nIf the agent's main package has moved, move this test with it.", path, err)
+	}
+	// The constraint has to be in the build-constraint region — before the package clause — or the Go
+	// tool treats it as an ordinary comment and the file builds everywhere while looking constrained.
+	head, _, found := strings.Cut(string(raw), "\npackage ")
+	if !found {
+		t.Fatalf("%s has no package clause", path)
+	}
+	if !strings.Contains(head, "//go:build linux\n") {
+		t.Errorf("cmd/farrier-agent/main.go does not carry //go:build linux before its package clause.\n" +
+			"A build of the agent for another platform must not succeed: every collector, the helper\n" +
+			"sockets and the package manager it drives are Linux, and a binary that starts and reports\n" +
+			"nothing correctly is worse than one that never built. If a Windows agent now exists, widen\n" +
+			"the constraint and this test together, and say in docs/SECURITY.md which of the three\n" +
+			"mechanisms it enforces by test rather than by convention.")
+	}
 }
 
 // TestGuaranteeNoManagedHostBinaryLoadsASigningBackend keeps the safe seam safe.

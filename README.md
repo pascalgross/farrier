@@ -154,6 +154,16 @@ Ubuntu 22.04 (jammy), 24.04 (noble), 26.04 (resolute); Debian 12 (bookworm) and 
 The policy is a rule rather than a list: **the Ubuntu LTS releases in standard support, plus Debian
 stable and oldstable.** Ubuntu 20.04 is excluded as ESM-only.
 
+**There is no Windows agent.** `cmd/farrier-agent` is built for Linux only, and a build for any other
+platform fails rather than producing a binary that starts and reports nothing correctly. If one is ever
+built it will be read-only — inventory, services, pending updates and reboot state — because the
+mechanism that keeps a host sovereign over privileged work is a fresh, socket-activated root helper that
+re-reads the host's own policy, and Windows has nothing of that shape. Applying updates and rebooting
+would rest on the agent process alone, so they are refused rather than approximated.
+[`docs/SECURITY.md` §12](docs/SECURITY.md#12-windows-hosts) works this out in full, including the two
+capabilities that cannot exist on Windows at all: there is no installable security-only subset of a
+cumulative update, and no `needrestart`.
+
 ## Documentation
 
 | | |
