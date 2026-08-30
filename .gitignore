@@ -8,6 +8,9 @@
 *.test
 *.out
 /coverage.txt
+# A GOOS=windows build without -o drops one of these in the working directory, which is easy to do
+# while checking that the Windows agent still cross-compiles.
+*.exe
 
 # Node
 node_modules/

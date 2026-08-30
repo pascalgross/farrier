@@ -18,23 +18,23 @@
     root and calls systemctl. An administrator who runs this already holds every privilege it uses.
 
     What it does:
-      * copies the two binaries into %ProgramFiles%\Farrier
+      * copies the three binaries into %ProgramFiles%\Farrier
       * registers the service as NT SERVICE\farrier-agent, with no privileges beyond SeChangeNotify
       * adds that account to BUILTIN\Users, which is what Windows Update requires for a scan
       * sets explicit ACLs, rather than relying on what either directory inherits
       * creates an empty trusted-signers file, and never overwrites one that exists
 
 .PARAMETER Source
-    Directory holding farrier-agent.exe and farrier-update-scan.exe. Defaults to this script's own
-    directory, which is where the release archive puts them.
+    Directory holding farrier-agent.exe, farrier-update-scan.exe and farrier.exe. Defaults to this
+    script's own directory, which is where the release archive puts them.
 
 .PARAMETER Uninstall
-    Remove the service and the program files. State, policy and the trust anchor are deliberately left
+    Remove the service and the binaries. State, policy and the trust anchor are deliberately left
     behind; see the note where that happens.
 
 .EXAMPLE
     .\Install-FarrierAgent.ps1
-    Install or upgrade, then enrol separately with `farrier enroll`.
+    Install or upgrade, then enrol this host with `farrier.exe enroll` in the same elevated session.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -58,7 +58,10 @@ $ServiceAccount = "NT SERVICE\$ServiceName"
 $InstallDir = Join-Path $env:ProgramFiles 'Farrier'
 $StateDir   = Join-Path $env:ProgramData 'Farrier'
 
-$Binaries = @('farrier-agent.exe', 'farrier-update-scan.exe')
+# farrier.exe is here because `farrier enroll` runs on the host. It writes the private key and
+# agent.json into the local state directory, so it cannot be run from somewhere else — a host installed
+# without it would idle unenrolled for ever, reporting nothing and looking like a service that started.
+$Binaries = @('farrier-agent.exe', 'farrier-update-scan.exe', 'farrier.exe')
 
 function Assert-Administrator {
     <#
@@ -139,14 +142,26 @@ if ($Uninstall) {
     Assert-Administrator
     if ($PSCmdlet.ShouldProcess($ServiceName, 'Remove the Farrier agent')) {
         Remove-FarrierService
-        Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
 
-        # $StateDir is deliberately kept, and so is everything under $InstallDir that an administrator
-        # wrote. Uninstalling removes the software; it does not decide that this host should forget its
-        # enrolment, its policy or its trust anchor. Deleting trusted-signers would silently re-open
-        # every destructive operation somebody had closed, and the symptom would appear only later, as a
-        # signature that should verify and does not.
-        Write-Host "Removed the Farrier agent. State and policy are still in $StateDir and $InstallDir."
+        # The binaries by name, never the directory. $InstallDir also holds policy.toml,
+        # trusted-signers and server-ca.crt — files an administrator wrote — and a recursive remove
+        # would take them with it while the message below promised it had not. Uninstalling removes the
+        # software; it does not decide that this host should forget its policy or its trust anchor.
+        # Deleting trusted-signers would silently re-open every destructive operation somebody had
+        # closed, and the symptom appears only later, as a signature that should verify and does not.
+        foreach ($name in $Binaries) {
+            Remove-Item -Path (Join-Path $InstallDir $name) -Force -ErrorAction SilentlyContinue
+        }
+
+        Write-Host @"
+Removed the Farrier agent. Left in place, on purpose:
+
+  $StateDir      enrolment state, the credential and any undelivered results
+  $InstallDir    policy.toml, trusted-signers and server-ca.crt
+
+Delete them by hand if this host is being decommissioned. A reinstall picks them up, which is what
+makes an upgrade an upgrade rather than a fresh host with an empty trust anchor.
+"@
     }
     return
 }
@@ -239,7 +254,12 @@ The Farrier agent is installed and running as $ServiceAccount.
   Policy          $PolicyFile
   Trust anchor    $TrustedSigners  (empty: this host will accept no signed job until you add a key)
 
-This host is not enrolled yet. Enrol it from your own machine with `farrier enroll`.
+This host is not enrolled yet. Enrol it here, in this elevated session:
+
+  & '$InstallDir\farrier.exe' enroll --server https://your-control-plane --token TOKEN
+
+Enrolment runs on the host rather than from your workstation: it generates the private key and writes
+it into $StateDir, and that key is never transmitted.
 
 A Windows host executes read-only intents: inventory, services, pending updates and reboot state. It
 applies no updates and reboots nothing, and that is by design rather than by omission — see

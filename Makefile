@@ -15,7 +15,10 @@ DIST    := dist
 # -s -w strip the symbol table and DWARF; the agent ships to other people's servers and there is no
 # reason for it to be larger than it needs to be. The version is stamped rather than compiled in from a
 # constant so that a build from a tag and a build from a branch are distinguishable in a heartbeat.
-LDFLAGS := -s -w \
+# -buildid= is here rather than only in the release workflow so that `make windows` produces the same
+# bytes the release does. Without it a maintainer checking a published archive against a local build
+# gets a different checksum and has no way to tell a real difference from a build-id.
+LDFLAGS := -s -w -buildid= \
 	-X github.com/pascalgross/farrier/internal/buildinfo.Version=$(VERSION) \
 	-X github.com/pascalgross/farrier/internal/buildinfo.Commit=$(COMMIT)
 
@@ -63,9 +66,16 @@ windows: $(DIST) ## Build the Windows agent and assemble its release archive
 	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-agent.exe ./cmd/farrier-agent
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
 	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-update-scan.exe ./cmd/farrier-update-scan
+	@# The operator's CLI ships in the archive for the same reason it is in the .deb rather than a
+	@# package of its own: `farrier enroll` runs ON the host, writing the private key and agent.json into
+	@# the local state directory, so a host that has only the agent can never enrol and idles for ever.
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier.exe ./cmd/farrier
 	cp packaging/windows/Install-FarrierAgent.ps1 $(WINDOWS_DIST)/
 	cp packaging/policy.toml $(WINDOWS_DIST)/
-	cd $(WINDOWS_DIST) && zip -q -r ../farrier-agent-windows-amd64.zip . && cd -
+	@# -X drops the extra fields that carry local timestamps and uids, so two builds of the same
+	@# source produce the same archive rather than one that only differs in metadata.
+	cd $(WINDOWS_DIST) && zip -q -X -r ../farrier-agent-windows-amd64.zip . && cd -
 	@echo "wrote $(DIST)/farrier-agent-windows-amd64.zip"
 
 # The Windows agent must keep cross-compiling, and `make ci` runs on Linux. Compiling it is not a test —
@@ -75,6 +85,7 @@ windows: $(DIST) ## Build the Windows agent and assemble its release archive
 windows-build: ## Check that the Windows agent still cross-compiles
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-agent
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-update-scan
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/farrier-agent ./cmd/farrier-update-scan \
 	  ./internal/winapi ./internal/updatescan ./internal/collect/platform
 	@# internal/wua is vetted by golangci-lint, which can scope the unsafeptr exclusion to the one
@@ -177,7 +188,7 @@ golangci: ## golangci-lint, for this platform and for Windows
 #
 # Listed once and used twice so the two cannot drift apart — a package added to one and forgotten in the
 # other would be one that compiles and is never linted, which is the state this list exists to end.
-WINDOWS_PACKAGES := ./cmd/farrier-agent/... ./cmd/farrier-update-scan/... \
+WINDOWS_PACKAGES := ./cmd/farrier/... ./cmd/farrier-agent/... ./cmd/farrier-update-scan/... \
   ./internal/winapi/... ./internal/wua/... ./internal/updatescan/... \
   ./internal/collect/... ./internal/agent/... ./internal/policy/... ./internal/run/...
 

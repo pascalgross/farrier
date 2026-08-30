@@ -1340,6 +1340,22 @@ In the spirit of [§6](#6-host-privileges)'s own list, written down rather than 
   [§9](#9-what-farrier-does-not-defend-against)'s first bullet — the adversary [§1](#1-the-guarantee)
   names is a control plane, which cannot write a host's registry. It is recorded here because "the
   agent loads no foreign code" is a claim with a footnote on Windows and should not read as one without.
+- **A result is fsynced, but its directory entry is not.** The agent's promise that a result reaches
+  the disk before an operation that may not return is kept one shade less firmly here. Every file is
+  still written to a temporary, flushed with `FlushFileBuffers`, and renamed with `MoveFileEx`, which is
+  atomic on NTFS — so a crash never exposes a truncated file and a reader never sees a half-written
+  credential. What Windows offers no way to do is flush the *directory entry*: `File.Sync` on a
+  directory handle is `FlushFileBuffers`, which is documented as requiring a handle opened for writing,
+  and a directory cannot be opened that way. A power loss in the window after a rename can therefore
+  leave the previous name in place. The file is intact either way, and the recovery for both cases is
+  the one the agent already has — the control plane re-issues the job, or the host is re-enrolled.
+
+  Reporting the failure instead was tried and is worse: it would make every atomic write return an error
+  after its rename had already succeeded, and enrolment writes the credential through that path — so the
+  agent would abort after the control plane had consumed the single-use token, leaving a host that is
+  registered and permanently unable to authenticate. A durability guarantee that cannot be kept must not
+  become a failure in the operation it was protecting.
+
 - **There is no conffile.** MSI has no equivalent of dpkg's conffile handling, and WiX's default major
   upgrade removes the old product before installing the new one — which deletes an edited
   `trusted-signers` and reinstalls it empty. A silent trust-anchor wipe on upgrade re-opens every

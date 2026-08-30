@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pkcs11
 
 import (

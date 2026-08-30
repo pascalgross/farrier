@@ -40,7 +40,6 @@ import (
 	// plane import that package for the verifier and must link no backend at all — a property
 	// TestGuaranteeNoManagedHostBinaryLoadsASigningBackend asserts rather than assumes.
 	_ "github.com/pascalgross/farrier/internal/signing/backend/kms"
-	_ "github.com/pascalgross/farrier/internal/signing/backend/pkcs11"
 )
 
 // usage prints the command list.
