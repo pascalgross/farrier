@@ -3,6 +3,7 @@ package collect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"runtime"
@@ -44,14 +45,15 @@ func Gather(ctx context.Context, p Platform, local policy.Policy, extra ...Colle
 	facts := Facts{
 		Distribution: dist,
 		Hostname:     hostname(),
-		Kernel:       kernelRelease(),
+		Kernel:       p.KernelRelease(),
 		Architecture: runtime.GOARCH,
 	}
 
-	if packages, err := p.UpgradablePackages(ctx); err != nil {
+	if packages, err := upgradablePackages(ctx, p, local); err != nil {
 		// Marked rather than left zero. The zero PackageReport serialises as "no updates pending",
 		// which is a claim this host is in no position to make: the commonest reason to be here is
-		// that another process held the apt lock. See PackageReport.Incomplete.
+		// that another process held the apt lock, and on Windows it is a host whose own policy declines
+		// the scan. See PackageReport.Incomplete.
 		slog.Warn("could not list upgradable packages", "error", err)
 		facts.Packages = PackageReport{Incomplete: true}
 	} else {
@@ -78,8 +80,8 @@ func Gather(ctx context.Context, p Platform, local policy.Policy, extra ...Colle
 		facts.Subscription = *sub
 	}
 
-	if units, truncated, err := ListUnits(ctx); err != nil {
-		slog.Warn("could not list systemd units", "error", err)
+	if units, truncated, err := p.Services(ctx); err != nil {
+		slog.Warn("could not list services", "error", err)
 	} else {
 		facts.Services = units
 		facts.ServicesTruncated = truncated
@@ -112,6 +114,24 @@ func Gather(ctx context.Context, p Platform, local policy.Policy, extra ...Colle
 	return facts, nil
 }
 
+// upgradablePackages asks the platform for its pending updates, unless local policy refuses.
+//
+// It exists so that Gather reads as one sequence of questions rather than growing a branch for a
+// platform it should not know about. The refusal is expressed as an error for the same reason a failed
+// scan is: both mean the numbers are not an answer, both must reach the wire as PackageReport.Incomplete
+// rather than as zero pending, and a caller made to tell them apart is a caller that could get it wrong.
+//
+// A platform that does not implement PolicyGatedPackages is asked nothing, which is what keeps this from
+// being a change to the Linux agent: Ubuntu and Debian reach p.UpgradablePackages exactly as before.
+func upgradablePackages(ctx context.Context, p Platform, local policy.Policy) ([]Package, error) {
+	if gated, ok := p.(PolicyGatedPackages); ok {
+		if permitted, why := gated.PackagesPermittedBy(local); !permitted {
+			return nil, fmt.Errorf("local policy refuses it: %s (%s)", why, local.Source())
+		}
+	}
+	return p.UpgradablePackages(ctx)
+}
+
 // hostname returns the host's name, or "unknown" if it cannot be read.
 //
 // It never fails, because a heartbeat with an odd hostname is far more useful than no heartbeat, and
@@ -124,8 +144,13 @@ func hostname() string {
 	return name
 }
 
-// kernelRelease returns the running kernel version.
-func kernelRelease() string {
+// KernelRelease reads the running kernel version from KernelReleasePath.
+//
+// It is exported so that the Linux platform implementations share one reader rather than two, and it
+// lives here rather than in that package because the path it reads is declared here beside it. It never
+// fails: a heartbeat carrying "unknown" is worth more than no heartbeat, and nothing downstream treats
+// this string as anything but display.
+func KernelRelease() string {
 	raw, err := os.ReadFile(KernelReleasePath)
 	if errors.Is(err, os.ErrNotExist) || err != nil {
 		return "unknown"

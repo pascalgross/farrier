@@ -1,3 +1,10 @@
+//go:build linux
+
+// The ownership half of AdoptStateDir is Linux-only — a uid and a gid come out of a stat structure that
+// exists on no other platform — so its tests are too. Without this tag the file typechecks only on
+// Linux while claiming to belong to every build, which is invisible until something analyses the tree
+// for another platform and reports an undefined symbol in a test nobody was looking at.
+
 package agent
 
 import (

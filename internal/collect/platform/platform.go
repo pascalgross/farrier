@@ -1,28 +1,14 @@
-// Package platform holds one Farrier collect.Platform implementation per distribution family.
-//
-// Detect chooses between them from /etc/os-release. Adding a family means adding a file here and a case
-// in newFor; nothing else in the codebase learns about it, which is the property docs/EXTENDING.md
-// promises about this seam.
-//
-// Every implementation must state in its own doc comment what it does about each of the four
-// silent-wrong-answer traps listed in the collect package documentation. All four produce a plausible
-// number rather than an error, so a reviewer cannot check them by reading the code for correctness —
-// only by reading what the author says they thought about.
+//go:build linux
+
 package platform
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/pascalgross/farrier/internal/collect"
 )
-
-// Detect identifies the host and returns the matching platform implementation.
-//
-// It reads the real /etc/os-release. DetectFrom takes a path, for tests and for inspecting a chroot.
-func Detect() (collect.Platform, collect.Distribution, error) {
-	return DetectFrom(collect.OSReleasePath)
-}
 
 // DetectFrom identifies a host from an explicit os-release path.
 func DetectFrom(path string) (collect.Platform, collect.Distribution, error) {
@@ -77,3 +63,25 @@ func splitRelease(release string) (label, archive string) {
 	}
 	return release, ""
 }
+
+// Services reports systemd unit state, and whether the list was truncated.
+//
+// Both Linux families answer this identically, so it is one method on a shared type rather than two
+// copies: systemd is systemd on Ubuntu and on Debian, and a per-family override would be a seam where
+// there is no difference to express. It is on the seam at all because Windows answers the same question
+// from the SCM, which shares nothing with D-Bus but the shape of the result.
+func (systemdServices) Services(ctx context.Context) ([]collect.Unit, bool, error) {
+	return collect.ListUnits(ctx)
+}
+
+// KernelRelease returns the running kernel release, or "unknown".
+//
+// Shared for the same reason Services is: /proc/sys/kernel/osrelease is the answer on both families.
+func (systemdServices) KernelRelease() string { return collect.KernelRelease() }
+
+// systemdServices supplies the two seam methods that are identical on every systemd host.
+//
+// It is embedded by Ubuntu and Debian rather than duplicated into each, because a copy is a place for
+// the two to drift and there is no per-family difference here to justify one. It carries no state: it
+// exists to hold methods, which is the whole reason Go allows an empty struct to have them.
+type systemdServices struct{}

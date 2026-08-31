@@ -116,6 +116,12 @@ jobs:
                 -o "dist/$arch/$helper" "./helpers/$helper"
             done
           done
+          # The Windows agent, through the same Makefile target a maintainer runs, so that what ships
+          # and what `make windows` produces cannot drift. It is read-only by design — see
+          # docs/SECURITY.md §12 — and carries the operator's CLI too, because `farrier enroll` runs on
+          # the host and a machine without it can never enrol.
+          make windows VERSION="${{ steps.version.outputs.version }}" COMMIT="$(git rev-parse --short HEAD)"
+
           # Written to a temporary file and moved into place: `find … | tee dist/SHA256SUMS` creates
           # the file before find has finished walking, so it lists itself with a checksum of nothing.
           find dist -type f -print0 | xargs -0 sha256sum > "$RUNNER_TEMP/SHA256SUMS"
@@ -144,6 +150,7 @@ jobs:
             dist/SHA256SUMS
             dist/amd64/*
             dist/arm64/*
+            dist/farrier-agent-windows-amd64.zip
 
   publish:
     name: Publish

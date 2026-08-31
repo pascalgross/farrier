@@ -1,3 +1,5 @@
+//go:build linux
+
 package platform
 
 import (
@@ -29,6 +31,8 @@ import (
 //  4. apt-check. Not used. The simulation parse is the only path, so a host without
 //     update-notifier-common reports the same numbers as one with it.
 type Ubuntu struct {
+	systemdServices
+
 	// dist is the distribution this instance was built for.
 	dist collect.Distribution
 }

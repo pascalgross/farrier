@@ -1,18 +1,34 @@
-// Command farrier-agent is the Farrier agent that runs on a managed Ubuntu or Debian host.
+//go:build linux || windows
+
+// Command farrier-agent is the Farrier agent that runs on a managed host.
 //
 // It connects outbound to a control plane and never listens. There is no server-to-agent direction in
 // the protocol at all: every byte moves on a connection this process opened, which is why a managed
 // host needs no inbound firewall rule and why putting the fleet behind a VPN buys nothing. See
 // docs/PROTOCOL.md.
 //
-// The agent holds no privilege. It runs as the farrier user with an empty capability bounding set
-// under the hardened unit in packaging/farrier-agent.service; the three helpers in /usr/libexec/farrier
-// are the only privileged operations that exist, and each re-enforces the root-owned policy itself.
+// The agent holds no privilege. On Linux it runs as the farrier user with an empty capability bounding
+// set under the hardened unit in packaging/farrier-agent.service; the three helpers in
+// /usr/libexec/farrier are the only privileged operations that exist, and each re-enforces the
+// root-owned policy itself. This binary changes nothing by itself: every privileged operation happens in
+// one of those helpers, reached over the unix sockets in /run/farrier and never through sudo — with the
+// agent's sandbox in force, execve drops the setuid bit, so sudo cannot become root at all.
+// `farrier-agent doctor` checks that boundary from this process's own account.
 //
-// This binary changes nothing by itself. Every privileged operation happens in one of the three root
-// helpers, reached over the unix sockets in /run/farrier and never through sudo — with the agent's
-// sandbox in force, execve drops the setuid bit, so sudo cannot become root at all. `farrier-agent
-// doctor` checks that boundary from this process's own account.
+// The build constraint above names the two platforms an agent exists for, and the two builds are not the
+// same product. A Windows agent executes the read tier and nothing else, because the mechanism that
+// keeps a host sovereign over privileged work is a fresh, socket-activated root helper re-reading the
+// host's own policy — and Windows has nothing of that shape, so a privileged operation there would rest
+// on the agent process alone. That is enforced in code rather than remembered: internal/agent's
+// hostProfile is a const in a build-tagged file, the acceptance path refuses anything outside it, and
+// TestGuaranteeTheWindowsProfileHoldsOnlyReadIntents fails if a privileged member is ever added to it.
+// docs/SECURITY.md §12 is the argument in full.
+//
+// A build for any third platform is still nothing, and deliberately so. It would very nearly succeed —
+// the tree is close to portable — and the binary that came out would read /etc/os-release, execute
+// /usr/bin/apt-get and dial unix sockets under /run/farrier, failing every operation while looking to an
+// operator like a supported platform. A build that fails with "build constraints exclude all Go files"
+// is a sentence somebody wrote.
 package main
 
 import (
@@ -40,9 +56,10 @@ import (
 
 // StateDir is where the agent keeps everything it writes.
 //
-// It is the only writable location the systemd unit grants, which is deliberate: an agent that can
-// write nowhere else cannot be talked into leaving something behind in a directory that matters.
-const StateDir = "/var/lib/farrier"
+// It is agent.DefaultStateDir rather than a second copy of the path, because the two disagreeing would
+// mean a flag default pointing somewhere the agent does not look — and the path differs by platform now,
+// so a literal here would have been right on exactly one of them.
+const StateDir = agent.DefaultStateDir
 
 // usage prints the command list.
 //
@@ -54,7 +71,7 @@ func usage() {
 usage:
   farrier-agent run             run the agent in the foreground, as systemd does
   farrier-agent facts           collect and print exactly what this host would report
-  farrier-agent policy check    validate /etc/farrier/policy.toml and print the effective policy
+  farrier-agent policy check    validate the local policy file and print the effective policy
   farrier-agent doctor          check this host's privileged path from the agent's own account
   farrier-agent version         print the version
 
@@ -125,32 +142,38 @@ func runCommand(argv []string) int {
 	}
 	setupLogging()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// The loop, as a closure, so that the platform decides where its context comes from. On Linux that
+	// is a signal handler; on Windows, when the process was started by the service control manager, it
+	// is the SCM's own stop request — which arrives as a message on a channel rather than as a signal,
+	// and which the process must acknowledge within a deadline or be killed.
+	loop := func(ctx context.Context) int {
+		slog.Info("farrier agent starting",
+			"version", buildinfo.Version,
+			"commit", buildinfo.Revision(),
+			"state_dir", *stateDir,
+			"profile", agent.HostProfile(),
+			"intents", len(intent.ProfileMembers(agent.HostProfile())),
+			"helper_sockets", privilegedEndpoints(),
+		)
+		reportState(*policyPath)
 
-	slog.Info("farrier agent starting",
-		"version", buildinfo.Version,
-		"commit", buildinfo.Revision(),
-		"state_dir", *stateDir,
-		"intents", len(intent.Names()),
-		"helper_sockets", privsep.Endpoints(),
-	)
-	reportState(*policyPath)
+		instance, err := agent.New(agent.Options{StateDir: *stateDir, PolicyPath: *policyPath})
+		if err != nil {
+			slog.Warn("not enrolled; reporting local state only",
+				"error", err,
+				"note", "run `farrier enroll --server URL --token TOKEN` to connect this host. "+
+					"Updates continue to be applied from the local policy either way.")
+			return idle(ctx, *policyPath, *interval)
+		}
 
-	instance, err := agent.New(agent.Options{StateDir: *stateDir, PolicyPath: *policyPath})
-	if err != nil {
-		slog.Warn("not enrolled; reporting local state only",
-			"error", err,
-			"note", "run `farrier enroll --server URL --token TOKEN` to connect this host. "+
-				"Updates continue to be applied from the local policy either way.")
-		return idle(ctx, *policyPath, *interval)
+		if err := instance.Run(ctx, agent.Options{SkipStartupJitter: *noJitter}); err != nil {
+			slog.Error("the agent stopped with an error", "error", err)
+			return 1
+		}
+		return 0
 	}
 
-	if err := instance.Run(ctx, agent.Options{SkipStartupJitter: *noJitter}); err != nil {
-		slog.Error("the agent stopped with an error", "error", err)
-		return 1
-	}
-	return 0
+	return runService(loop)
 }
 
 // idle reports local state on a timer for a host that is not enrolled.

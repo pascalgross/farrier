@@ -54,6 +54,17 @@ func (s *stubPlatform) RebootRequired(context.Context) (collect.RebootReport, er
 	return s.reboot, s.err
 }
 
+// Services reports no services, because these tests are about job acceptance rather than about facts.
+//
+// A stub rather than a call to collect.ListUnits: reaching D-Bus would make them fail on any machine
+// without systemd, including the container CI runs in.
+func (s *stubPlatform) Services(context.Context) ([]collect.Unit, bool, error) {
+	return nil, false, nil
+}
+
+// KernelRelease reports a fixed release, for the same reason Identify reports a fixed distribution.
+func (s *stubPlatform) KernelRelease() string { return "6.1.0-stub" }
+
 // SubscriptionStatus reports Ubuntu Pro state.
 func (s *stubPlatform) SubscriptionStatus(context.Context) (*collect.Subscription, error) {
 	return &collect.Subscription{Applicable: true}, s.err

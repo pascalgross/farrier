@@ -15,7 +15,10 @@ DIST    := dist
 # -s -w strip the symbol table and DWARF; the agent ships to other people's servers and there is no
 # reason for it to be larger than it needs to be. The version is stamped rather than compiled in from a
 # constant so that a build from a tag and a build from a branch are distinguishable in a heartbeat.
-LDFLAGS := -s -w \
+# -buildid= is here rather than only in the release workflow so that `make windows` produces the same
+# bytes the release does. Without it a maintainer checking a published archive against a local build
+# gets a different checksum and has no way to tell a real difference from a build-id.
+LDFLAGS := -s -w -buildid= \
 	-X github.com/pascalgross/farrier/internal/buildinfo.Version=$(VERSION) \
 	-X github.com/pascalgross/farrier/internal/buildinfo.Commit=$(COMMIT)
 
@@ -46,6 +49,49 @@ helpers: $(DIST) ## Build the three root helpers
 	@for h in apply-updates restart-unit reboot-host; do \
 	  CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(DIST)/$$h ./helpers/$$h; \
 	done
+
+# The Windows agent, and the archive it ships in.
+#
+# A zip with two binaries, the installer and the default policy, rather than an MSI. MSI has no
+# equivalent of dpkg's conffile handling, and WiX's default major-upgrade schedule uninstalls before it
+# installs — which deletes an edited trusted-signers and reinstalls it empty, re-opening every
+# destructive operation an administrator had closed with no symptom until a signature that should verify
+# does not. The installer keeps both files by hand instead, which is a promise a script can actually make.
+WINDOWS_DIST := $(DIST)/windows
+
+.PHONY: windows
+windows: $(DIST) ## Build the Windows agent and assemble its release archive
+	mkdir -p $(WINDOWS_DIST)
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-agent.exe ./cmd/farrier-agent
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-update-scan.exe ./cmd/farrier-update-scan
+	@# The operator's CLI ships in the archive for the same reason it is in the .deb rather than a
+	@# package of its own: `farrier enroll` runs ON the host, writing the private key and agent.json into
+	@# the local state directory, so a host that has only the agent can never enrol and idles for ever.
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier.exe ./cmd/farrier
+	cp packaging/windows/Install-FarrierAgent.ps1 $(WINDOWS_DIST)/
+	cp packaging/policy.toml $(WINDOWS_DIST)/
+	@# -X drops the extra fields that carry local timestamps and uids, so two builds of the same
+	@# source produce the same archive rather than one that only differs in metadata.
+	cd $(WINDOWS_DIST) && zip -q -X -r ../farrier-agent-windows-amd64.zip . && cd -
+	@echo "wrote $(DIST)/farrier-agent-windows-amd64.zip"
+
+# The Windows agent must keep cross-compiling, and `make ci` runs on Linux. Compiling it is not a test —
+# nothing here can exercise COM, the SCM or the registry — but a build failure is the one Windows defect
+# this project can catch without a Windows machine, and catching it costs seconds.
+.PHONY: windows-build
+windows-build: ## Check that the Windows agent still cross-compiles
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-agent
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-update-scan
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/farrier-agent ./cmd/farrier-update-scan \
+	  ./internal/winapi ./internal/updatescan ./internal/collect/platform
+	@# internal/wua is vetted by golangci-lint, which can scope the unsafeptr exclusion to the one
+	@# file that earns it. Raw `go vet` has no such setting, and excluding the whole package here
+	@# would stop checking the two files that do no unsafe work at all.
+	@echo "the Windows agent cross-compiles and vets clean"
 
 .PHONY: test
 test: ## Run unit tests
@@ -121,13 +167,30 @@ golangci-install: ## Install the pinned golangci-lint
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 
 .PHONY: golangci
-golangci: ## golangci-lint, if it is installed
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-	  golangci-lint run; \
-	else \
+golangci: ## golangci-lint, for this platform and for Windows
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
 	  echo "golangci-lint not installed; see https://golangci-lint.run/welcome/install/"; \
 	  exit 1; \
 	fi
+	golangci-lint run
+	@# And again for Windows, because a linter only ever analyses one platform. Every file behind
+	@# //go:build windows — the whole agent's platform layer, the COM chokepoint and the update scan —
+	@# is invisible to the pass above, so without this second one several thousand lines would ship
+	@# having been linted by nothing at all. It caught six real findings the first time it was run.
+	@#
+	@# The package list is explicit rather than ./... because internal/signing/backend/pkcs11 does not
+	@# build for Windows: purego's Dlopen is POSIX-only. That is a property of the operator's CLI, which
+	@# has never been built for Windows and is not a managed-host binary, so it is out of scope here
+	@# rather than a gap being papered over.
+	GOOS=windows GOARCH=amd64 golangci-lint run $(WINDOWS_PACKAGES)
+
+# The packages a Windows agent is built from, for the linter and the cross-compile check.
+#
+# Listed once and used twice so the two cannot drift apart — a package added to one and forgotten in the
+# other would be one that compiles and is never linted, which is the state this list exists to end.
+WINDOWS_PACKAGES := ./cmd/farrier/... ./cmd/farrier-agent/... ./cmd/farrier-update-scan/... \
+  ./internal/winapi/... ./internal/wua/... ./internal/updatescan/... \
+  ./internal/collect/... ./internal/agent/... ./internal/policy/... ./internal/run/...
 
 .PHONY: fmt
 fmt: ## Format Go source
@@ -243,4 +306,4 @@ actions-pinned: ## Every third-party action names a commit rather than a movable
 	@.github/scripts/actions-pinned.sh .
 
 .PHONY: ci
-ci: fmt-check vet doccheck actions-pinned test guarantee ## What CI runs, minus the pieces that need extra tooling
+ci: fmt-check vet doccheck actions-pinned windows-build test guarantee ## What CI runs, minus the pieces that need extra tooling

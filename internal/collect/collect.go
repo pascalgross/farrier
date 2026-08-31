@@ -27,6 +27,8 @@ package collect
 import (
 	"context"
 	"fmt"
+
+	"github.com/pascalgross/farrier/internal/policy"
 )
 
 // Bounds on what a single host may report, from docs/PROTOCOL.md §4.5.
@@ -58,6 +60,14 @@ const (
 
 	// FamilyDebian covers Debian stable and oldstable.
 	FamilyDebian Family = "debian"
+
+	// FamilyWindows covers the Windows Server releases in standard support.
+	//
+	// It is a family beside the two distribution families rather than a second axis, because everything
+	// downstream of this value asks the same question of it: which implementation answers for this host.
+	// A separate operating-system field would have to be threaded through the wire format, the store and
+	// the UI to say something this already says, and every place that forgot would default to Linux.
+	FamilyWindows Family = "windows"
 )
 
 // Distribution identifies the operating system of a host.
@@ -291,6 +301,26 @@ type Platform interface {
 	// UpgradablePackages lists pending updates with the security ones marked.
 	UpgradablePackages(ctx context.Context) ([]Package, error)
 
+	// Services reports the state of the host's service manager, and whether the list was truncated.
+	//
+	// It is on the seam rather than a package-level function because the two answers are not the same
+	// question asked twice: systemd unit state comes over D-Bus and Windows service state comes from
+	// the SCM, and they share nothing but the shape of the result. Gather used to call ListUnits
+	// directly, which this package's own documentation called a missing seam and a legitimate bug
+	// report — the type switch it would otherwise need in Gather is exactly what the seam exists to
+	// prevent.
+	Services(ctx context.Context) ([]Unit, bool, error)
+
+	// KernelRelease returns the running kernel or operating-system build, or "unknown".
+	//
+	// It never fails, for the reason hostname() never fails: a heartbeat carrying an odd version string
+	// is worth far more than no heartbeat, and the host is identified by its certificate rather than by
+	// this value. It is on the seam because the Linux answer is a file under /proc and the Windows
+	// answer is a registry build number, and a package-level function reading /proc would return
+	// "unknown" for every Windows host for ever — a silent wrong answer of exactly the class this
+	// interface exists to name.
+	KernelRelease() string
+
 	// SecurityOrigins returns the unattended-upgrades origin patterns for this family.
 	//
 	// It is informational: the security classification is done inside UpgradablePackages, because the
@@ -307,4 +337,27 @@ type Platform interface {
 	// nil means "not applicable" and must be rendered as such. Returning a zero-valued struct instead
 	// would make Debian indistinguishable from an Ubuntu host whose status could not be read.
 	SubscriptionStatus(ctx context.Context) (*Subscription, error)
+}
+
+// PolicyGatedPackages is the optional half of the Platform seam, for a platform whose package
+// enumeration is itself expensive or privileged.
+//
+// It is the same shape as PolicyGated one level up, and it exists for a reason that only appeared with
+// the second operating system. On Linux, listing pending updates is `apt-get --just-print`: local,
+// milliseconds, changes nothing — so no host has ever needed a way to refuse it, and Gather calls it
+// unconditionally. On Windows the same question is a Windows Update scan that goes to the network,
+// mutates state under %windir% and takes minutes. That is privileged work wearing a read class, and
+// docs/SECURITY.md's own rule for adding an intent applies to it: every privileged operation must be
+// refusable locally, or the guarantee is no longer true.
+//
+// A platform that does not implement it is asked nothing and behaves exactly as before, which is what
+// keeps this from being a change to the Linux agent.
+//
+// The reason is returned as well as the verdict so that the refusal reaches an operator as a sentence
+// rather than as a gap. A report marked incomplete with no explanation is the same shape of problem as
+// a report of zero pending updates on a host nobody could scan.
+type PolicyGatedPackages interface {
+	// PackagesPermittedBy reports whether local policy allows this host to enumerate its updates, and
+	// why not where it does not.
+	PackagesPermittedBy(p policy.Policy) (bool, string)
 }

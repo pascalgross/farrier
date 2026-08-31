@@ -35,6 +35,41 @@ var interpreterBasenames = map[string]bool{
 	"ssh": true, "scp": true, "sshpass": true,
 	"sudo": true, "su": true, "runuser": true, "pkexec": true, "doas": true,
 	"curl": true, "wget": true,
+
+	// The Windows spellings of the same capability. They are here although Farrier ships no Windows
+	// binary, because the list is what the check consults and a list that knows only the Unix names
+	// would let the first Windows allowlist entry through in review — while internal/intent's
+	// executionShapedFragments has refused an *intent* named "powershell" since before this line
+	// existed. The project had already decided; only the guard had not been told.
+	"powershell": true, "pwsh": true, "cmd": true,
+	"wscript": true, "cscript": true, "mshta": true,
+	"rundll32": true, "regsvr32": true, "msiexec": true,
+	"wmic": true, "forfiles": true,
+	"certutil": true, "bitsadmin": true,
+}
+
+// programBasename reduces a program path to the name looked up in interpreterBasenames.
+//
+// It exists because filepath.Base is not the right function here and fails silently when it is wrong.
+// The checks below run on a Linux runner, where filepath.Base of
+// `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` is the entire string — there is no "/" to
+// split on — so the interpreter lookup would match nothing and report success. Splitting on both
+// separators, folding case and dropping the executable suffix means one program has one name here,
+// whichever platform wrote the path and whichever platform runs the test.
+func programBasename(program string) string {
+	name := program
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	// Only the two suffixes Windows treats as a bare command name. Trimming a longer list would map
+	// a program genuinely called "deploy.cmd" onto "deploy" and answer a question nobody asked.
+	for _, suffix := range []string{".exe", ".com"} {
+		if after, found := strings.CutSuffix(name, suffix); found {
+			return after
+		}
+	}
+	return name
 }
 
 // TestGuaranteeOnlyAllowlistedProgramsCanRun is what earns this package its exemption.
@@ -85,8 +120,15 @@ func TestGuaranteeTheAllowlistHoldsNoInterpreters(t *testing.T) {
 	}
 	for _, p := range list {
 		s := string(p)
-		if !strings.HasPrefix(s, "/") {
-			t.Errorf("%q is not an absolute path", p)
+		// The interpreter question is asked first so that its answer is the one an author reads. A
+		// Windows path fails the absolute-path rule below as well, and "is not an absolute path" is
+		// the less useful of the two things to be told about powershell.exe.
+		if interpreterBasenames[programBasename(s)] {
+			t.Errorf("%q is an interpreter and may not be in the allowlist", p)
+		}
+		if !isAbsoluteProgramPath(s) {
+			t.Errorf("%q is not an absolute path. Resolving a program through PATH would let whoever "+
+				"controls the environment choose it, which is the weakness this list exists to remove.", p)
 		}
 		if s != strings.TrimSpace(s) {
 			t.Errorf("%q has surrounding whitespace", p)
@@ -94,8 +136,52 @@ func TestGuaranteeTheAllowlistHoldsNoInterpreters(t *testing.T) {
 		if strings.Contains(s, "..") {
 			t.Errorf("%q contains a relative path component", p)
 		}
-		if base := filepath.Base(s); interpreterBasenames[base] {
-			t.Errorf("%q is an interpreter and may not be in the allowlist", p)
+		// A Windows path must be under Program Files, and the reason is the one that makes an allowlist
+		// worth having: the agent's own service account must not be able to write the program it then
+		// executes. %ProgramData% is writable by ordinary accounts under its inherited ACL, so an entry
+		// there would turn this list into a formality.
+		if strings.Contains(s, `\`) && !strings.HasPrefix(s, `C:\Program Files\`) {
+			t.Errorf("%q is a Windows path outside Program Files. The agent's account must not be able "+
+				"to write a program this list permits it to run.", p)
+		}
+	}
+}
+
+// TestGuaranteeTheInterpreterCheckReadsAWindowsPath is the regression test for a hole that was open.
+//
+// Until this test existed, both interpreterBasenames maps held only Unix names and the lookup used
+// filepath.Base, so `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` in the allowlist would
+// have passed TestGuaranteeTheAllowlistHoldsNoInterpreters twice over: the map had no entry to match,
+// and on a Linux runner filepath.Base returns the whole string so there was nothing to look up anyway.
+// A guard that reads the one name it most needs to refuse and says nothing is worse than no guard,
+// because the green check is what a reviewer trusts instead of reading.
+//
+// It asserts the check, not the allowlist. The allowlist is POSIX-only today and the test above already
+// pins that; what is proved here is that the day a Windows path is proposed, the answer is no.
+func TestGuaranteeTheInterpreterCheckReadsAWindowsPath(t *testing.T) {
+	refused := []string{
+		`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		`C:\Program Files\PowerShell\7\pwsh.exe`,
+		`C:\Windows\System32\cmd.exe`,
+		`C:\Windows\System32\wscript.exe`,
+		`C:\Windows\System32\rundll32.exe`,
+		`C:\Windows\System32\msiexec.exe`,
+		`c:\windows\system32\CMD.EXE`, // case is not a way past
+		"powershell.exe",              // bare, as an argument vector's first element
+		"/usr/bin/pwsh",               // the Unix packaging of the same interpreter
+	}
+	for _, program := range refused {
+		if !interpreterBasenames[programBasename(program)] {
+			t.Errorf("%q is not recognised as an interpreter; programBasename gave %q",
+				program, programBasename(program))
+		}
+	}
+
+	// The suffix trimming must not reach past the two Windows treats as a bare command name, or a
+	// program legitimately called "deploy.cmd" would be read as "cmd" and refused for the wrong reason.
+	for _, program := range []string{"/usr/bin/apt-get", "/opt/farrier/deploy.cmd", "/usr/sbin/shutdown"} {
+		if interpreterBasenames[programBasename(program)] {
+			t.Errorf("%q is refused as an interpreter, which is a false positive", program)
 		}
 	}
 }
@@ -439,5 +525,65 @@ func TestATimedOutInvocationReturnsPromptly(t *testing.T) {
 	}
 	if elapsed > timeout+WaitDelay+30*time.Second {
 		t.Errorf("a timed-out invocation took %s to return; it must not linger past its wait delay", elapsed)
+	}
+}
+
+// isAbsoluteProgramPath reports whether a program path names one place and cannot be resolved elsewhere.
+//
+// filepath.IsAbs is not the function to use here, and the reason is the same one programBasename exists
+// for: it answers for the platform the test is running on, not for the platform the path is written for.
+// On the Linux runner that builds this repository, filepath.IsAbs of
+// `C:\Program Files\Farrier\farrier-update-scan.exe` is false — so a check built on it would report a
+// perfectly good Windows path as relative, and the obvious fix somebody would then apply is to delete
+// the check.
+//
+// Both forms are accepted because both are absolute in the sense that matters: neither is resolved
+// through PATH, and neither can be redirected by whoever controls the environment. A bare `\path` is
+// deliberately refused — it is relative to the current drive, which is exactly the ambiguity this rule
+// exists to remove.
+func isAbsoluteProgramPath(s string) bool {
+	if strings.HasPrefix(s, "/") {
+		return true
+	}
+	// A drive letter, a colon and a separator: `C:\...`.
+	if len(s) >= 3 && s[1] == ':' && s[2] == '\\' {
+		c := s[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
+}
+
+// TestGuaranteeTheAllowlistPathRuleReadsBothPlatforms pins the path check against its own blind spot.
+//
+// The rule above replaced strings.HasPrefix(s, "/") when the allowlist gained its first Windows entry,
+// and a rule that accepts more than it used to is exactly where a check quietly stops checking. These
+// cases are the ones that would make it useless: a bare program name resolved through PATH, a
+// drive-relative path, a UNC path pointing at a server somebody else controls, and the traversal forms.
+func TestGuaranteeTheAllowlistPathRuleReadsBothPlatforms(t *testing.T) {
+	absolute := []string{
+		"/usr/bin/apt-get",
+		`C:\Program Files\Farrier\farrier-update-scan.exe`,
+		`c:\Windows\System32\notepad.exe`,
+	}
+	for _, s := range absolute {
+		if !isAbsoluteProgramPath(s) {
+			t.Errorf("%q is absolute and was refused", s)
+		}
+	}
+
+	relative := []string{
+		"",
+		"apt-get",
+		"farrier-update-scan.exe",
+		`\Program Files\Farrier\farrier-update-scan.exe`, // relative to the current drive
+		`\\server\share\farrier-update-scan.exe`,         // a UNC path: absolute, but not on this host
+		`C:farrier-update-scan.exe`,                      // relative to the current directory on C:
+		"../../usr/bin/apt-get",
+		`C:/Program Files/Farrier/farrier-update-scan.exe`, // forward slashes: not the shipped form
+	}
+	for _, s := range relative {
+		if isAbsoluteProgramPath(s) {
+			t.Errorf("%q was accepted as an absolute program path", s)
+		}
 	}
 }

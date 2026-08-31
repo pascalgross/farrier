@@ -4,7 +4,8 @@
 
 **Fleet management for Ubuntu and Debian servers, without a remote shell.** The agent is
 outbound-only, runs a closed set of typed operations, and obeys a policy the control plane cannot
-change.
+change. Windows Server hosts are reported on read-only, for reasons
+[`docs/SECURITY.md` §12](docs/SECURITY.md#12-windows-hosts) sets out rather than as a first version.
 
 By [Pegasus Networks](https://pegasusnetworks.de). Licensed **Apache-2.0**.
 Documentation: [farrier.tools](https://farrier.tools).
@@ -95,7 +96,8 @@ workflow that no maintainer can override:
 ## What it does
 
 - **Inventory** — OS, kernel, hardware, network, uptime, Ubuntu Pro / ESM status where applicable.
-- **systemd service state** — read over D-Bus, not by parsing `systemctl` output.
+- **systemd service state** — read over D-Bus, not by parsing `systemctl` output. On Windows, service
+  state from the SCM, read with enumerate rights rather than as an administrator.
 - **Package update visibility** — security updates separated from the rest, correctly on both Ubuntu
   and Debian, plus `needrestart`'s answer to "which running services still hold the old library".
 - **Policy-gated update application** — the host decides what it will accept; the control plane can
@@ -153,6 +155,23 @@ Ubuntu 22.04 (jammy), 24.04 (noble), 26.04 (resolute); Debian 12 (bookworm) and 
 
 The policy is a rule rather than a list: **the Ubuntu LTS releases in standard support, plus Debian
 stable and oldstable.** Ubuntu 20.04 is excluded as ESM-only.
+
+Windows Server 2019, 2022 and 2025 — **read-only**, and that is the design rather than a first version.
+
+A Windows agent reports inventory, services, pending updates and reboot state, and refuses every
+privileged intent. The mechanism that keeps a Linux host sovereign over privileged work is a fresh,
+socket-activated root helper that re-reads the host's own policy and then exits; Windows has nothing of
+that shape, so a privileged operation there would rest on the agent process alone. Two capabilities
+cannot exist on Windows at all: there is no installable security-only subset of a cumulative update, so
+`packages.applySecurity` is refused rather than approximated, and there is no `needrestart`.
+
+The guarantee above is unchanged and unqualified — it says *any enrolled host* and names no operating
+system. Where a platform cannot carry a mechanism at the strength Linux carries it, Farrier does less
+there. [`docs/SECURITY.md` §12](docs/SECURITY.md#12-windows-hosts) works that out in full.
+Install with `packaging/windows/Install-FarrierAgent.ps1`, which is the only PowerShell in Farrier and
+runs once, from an administrator's session, before there is an agent to constrain — the agent itself
+invokes no interpreter, and `powershell.exe` is in the deny-lists that `internal/run` and
+`internal/intent` both check.
 
 ## Documentation
 

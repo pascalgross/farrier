@@ -114,20 +114,81 @@ var interpreterBasenames = map[string]bool{
 	"ssh": true, "scp": true, "sshpass": true,
 	"sudo": true, "su": true, "runuser": true, "pkexec": true, "doas": true,
 	"curl": true, "wget": true,
+
+	// The Windows spellings, present although Farrier ships no Windows binary. rundll32, regsvr32 and
+	// msiexec are here for the same reason env and xargs are: each runs a program of the caller's
+	// choosing, which is the capability this list is about rather than the word "shell". refused.go has
+	// refused an *intent* named "powershell" since long before this line; only the check that reads
+	// source had not been told.
+	"powershell": true, "pwsh": true, "cmd": true,
+	"wscript": true, "cscript": true, "mshta": true,
+	"rundll32": true, "regsvr32": true, "msiexec": true,
+	"wmic": true, "forfiles": true,
+	"certutil": true, "bitsadmin": true,
 }
 
-// execChokepoint is the one file permitted to execute a program named by a variable.
+// programBasename reduces a program path to the name looked up in interpreterBasenames.
 //
-// internal/run replaces the compile-time property this test enforces everywhere else with a stronger
-// run-time one: it holds a closed allowlist of absolute program paths and refuses anything else before
-// reaching exec. Concentrating process execution in one audited file is better security design than
-// scattering exec calls across the tree, and it is only an exemption from *this* check, not from the
-// rule — TestGuaranteeOnlyAllowlistedProgramsCanRun in that package asserts the allowlist is actually
-// enforced, and TestGuaranteeTheAllowlistHoldsNoInterpreters asserts what is in it.
+// It exists because filepath.Base is not the right function here and is wrong without saying so. This
+// test runs on a Linux runner, where filepath.Base of a Windows path returns the whole string — there
+// is no "/" in `C:\Windows\System32\cmd.exe` to split on — so the lookup would match nothing and the
+// check would pass while reading the name it exists to refuse. Splitting on both separators, folding
+// case and dropping the executable suffix gives one program one name here, whoever wrote the path.
+func programBasename(program string) string {
+	name := program
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	// Only the two suffixes Windows treats as a bare command name. A longer list would fold a program
+	// genuinely called "deploy.cmd" onto "deploy" and answer a question nobody asked.
+	for _, suffix := range []string{".exe", ".com"} {
+		if after, found := strings.CutSuffix(name, suffix); found {
+			return after
+		}
+	}
+	return name
+}
+
+// execChokepoints are the files permitted to reach code through a value this check cannot read.
 //
-// It is a single named path rather than a pattern on purpose. A second entry here would need its own
-// justification in this comment, which is exactly the friction that should exist.
-const execChokepoint = "internal/run/run.go"
+// Each entry buys its exemption the same way: it gives up the compile-time property this test enforces
+// everywhere else and replaces it with a stronger run-time one, in one audited file, proved by tests in
+// its own package rather than asserted here. An entry without that trade does not belong in this map,
+// and the map is named paths rather than a pattern on purpose — a third entry needs its own paragraph
+// below, which is exactly the friction that should exist.
+//
+// # internal/run/run.go
+//
+// The original, and the reason the mechanism exists. It executes a program named by a variable, and
+// replaces "the program is a compile-time constant" with a closed run-time allowlist of absolute paths
+// that refuses anything else before reaching exec. TestGuaranteeOnlyAllowlistedProgramsCanRun asserts
+// the allowlist is enforced; TestGuaranteeTheAllowlistHoldsNoInterpreters asserts what may be in it;
+// TestGuaranteeEveryAllowlistedProgramHasACaller keeps the runnable set equal to the reachable set.
+//
+// # internal/wua/comcall_windows.go
+//
+// A COM method call is a jump through a function pointer, which Go can express only as syscall.SyscallN
+// — so classifyExecCall sees a raw syscall, cannot read what it reaches, and refuses it. That refusal
+// is correct and this file does not argue with it; it pays for the exemption instead, and pays more
+// than internal/run does.
+//
+// What replaces the compile-time property is two closed tables and a check before every dispatch: one
+// CLSID may be created, one set of COM members may be invoked, and call() refuses anything else before
+// a pointer is dereferenced. Only IDispatch's own vtable slots are indexed directly, and only the five
+// that are fixed for every COM object that has ever existed, so no member is reached by an offset
+// somebody counted down an interface definition.
+//
+// And the trade is better than the first one, which is what justifies a second entry at all.
+// internal/run's allowlist is a statement about *identity*: apt-get may run, and what apt-get then does
+// is whatever apt-get can do. The methods table is a statement about *capability*: IUpdateDownloader
+// and IUpdateInstaller appear in neither table, so the process holding this code cannot download and
+// cannot install — TestGuaranteeTheMethodTableHoldsNoWriteCapability proves it, and
+// TestGuaranteeOnlyTheScanBinaryReachesCOM proves the agent never links any of it.
+var execChokepoints = map[string]string{
+	"internal/run/run.go":             "the process-execution allowlist",
+	"internal/wua/comcall_windows.go": "the COM dispatch tables",
+}
 
 // shellTextFragments are substrings that indicate an assembled shell command line.
 //
@@ -209,11 +270,15 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 	root := repoRoot(t)
 	fset := token.NewFileSet()
 
-	// The exemption must name a file that exists. Without this, deleting or renaming internal/run
-	// would silently turn the exemption into a dead constant and leave the check looking satisfied.
-	if _, err := os.Stat(filepath.Join(root, execChokepoint)); err != nil {
-		t.Fatalf("the exec chokepoint %s does not exist: %v.\nIf process execution has moved, move the "+
-			"exemption with it and move the allowlist tests too.", execChokepoint, err)
+	// Every exemption must name a file that exists. Without this, deleting or renaming one of them
+	// would silently turn the entry into a dead string and leave the check looking satisfied — and an
+	// exemption that outlives the code it exempted is one that will quietly cover whatever is next
+	// given that name.
+	for chokepoint, what := range execChokepoints {
+		if _, err := os.Stat(filepath.Join(root, chokepoint)); err != nil {
+			t.Fatalf("the chokepoint %s (%s) does not exist: %v.\nIf it has moved, move the exemption "+
+				"with it and move the tests that pay for it too.", chokepoint, what, err)
+		}
 	}
 
 	for _, files := range goFilesUnder(t, root) {
@@ -250,7 +315,7 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 				}
 
 				pos := fset.Position(call.Pos())
-				if rel == execChokepoint {
+				if _, exempt := execChokepoints[rel]; exempt {
 					return true
 				}
 
@@ -282,14 +347,17 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 						"become the thing that runs. See docs/SECURITY.md §2.1.", rel, pos.Line, pkg, fn)
 					return true
 				}
+				// Asked before the absolute-path rule so that its answer is the one an author reads: a
+				// Windows path fails both, and "not an absolute path" is the less useful thing to be
+				// told about powershell.exe.
+				if interpreterBasenames[programBasename(program)] {
+					t.Errorf("%s:%d: %s.%s runs the interpreter %q. No code path in Farrier may lead "+
+						"from a network message to something that interprets its arguments.",
+						rel, pos.Line, pkg, fn, program)
+				}
 				if !strings.HasPrefix(program, "/") {
 					t.Errorf("%s:%d: %s.%s runs %q, which is not an absolute path. Resolving a program "+
 						"through PATH lets whoever controls the environment choose it.",
-						rel, pos.Line, pkg, fn, program)
-				}
-				if base := filepath.Base(program); interpreterBasenames[base] {
-					t.Errorf("%s:%d: %s.%s runs the interpreter %q. No code path in Farrier may lead "+
-						"from a network message to something that interprets its arguments.",
 						rel, pos.Line, pkg, fn, program)
 				}
 				return true
@@ -397,7 +465,7 @@ func TestGuaranteeNoExecCommandIsBuiltAsAStructLiteral(t *testing.T) {
 			if err != nil {
 				rel = path
 			}
-			if rel == execChokepoint {
+			if _, exempt := execChokepoints[rel]; exempt {
 				continue
 			}
 			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
@@ -661,6 +729,7 @@ var managedHostBinaries = []string{
 	"helpers/apply-updates",
 	"helpers/restart-unit",
 	"helpers/reboot-host",
+	"cmd/farrier-update-scan",
 }
 
 // forbiddenOnAManagedHost are import paths that must not be reachable from those programs.
@@ -676,6 +745,97 @@ var forbiddenOnAManagedHost = map[string]string{
 		"exists so that only the operator's own tool links a backend",
 	"github.com/ebitengine/purego": "a foreign-function interface, which is how the PKCS#11 backend " +
 		"loads a module the operator names",
+}
+
+// TestGuaranteeTheAgentBinaryNamesItsPlatforms pins what a build for another platform may produce.
+//
+// The tree is close to portable and the Linux-ness of it lives in behaviour rather than in constraints:
+// internal/collect compiles for platforms it would then read /etc/os-release on. So the risk was never a
+// build that fails; it is a build that succeeds and produces an agent reporting nothing correctly while
+// an operator reads the running service as support for their platform.
+//
+// The constraint is what makes that impossible by accident, and this test is what keeps it from being
+// widened by somebody clearing a build error. Widening it is not forbidden — it is the commit that ships
+// an agent for a new platform — but it may not happen quietly, and it may not happen before that
+// platform has a collect.Platform implementation, an intent.Profile saying what it will execute, and a
+// section of docs/SECURITY.md saying which of the three mechanisms it enforces by test rather than by
+// convention. Editing this list is where that is noticed.
+func TestGuaranteeTheAgentBinaryNamesItsPlatforms(t *testing.T) {
+	root := repoRoot(t)
+
+	// Each managed-host binary, and the constraint it must carry. A binary absent from this map is one
+	// nobody decided the platforms for.
+	constrained := map[string]string{
+		filepath.Join("cmd", "farrier-agent", "main.go"):       "//go:build linux || windows",
+		filepath.Join("cmd", "farrier-update-scan", "main.go"): "//go:build windows",
+	}
+
+	for rel, want := range constrained {
+		raw, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v.\nIf this program has moved, move this test with it.", rel, err)
+		}
+		// The constraint has to be in the build-constraint region — before the package clause — or the
+		// Go tool treats it as an ordinary comment and the file builds everywhere while looking
+		// constrained.
+		head, _, found := strings.Cut(string(raw), "\npackage ")
+		if !found {
+			t.Fatalf("%s has no package clause", rel)
+		}
+		if !strings.Contains(head, want+"\n") {
+			t.Errorf("%s does not carry %q before its package clause.\n"+
+				"A managed-host binary must name the platforms it is for. Every collector, every helper\n"+
+				"socket and every package manager it drives belongs to one of them, and a binary that\n"+
+				"starts and reports nothing correctly is worse than one that never built. Widening this\n"+
+				"means adding a collect.Platform implementation, an intent.Profile, and a section of\n"+
+				"docs/SECURITY.md — in the same commit as this line.", rel, want)
+		}
+	}
+}
+
+// TestGuaranteeOnlyTheScanBinaryReachesCOM keeps the agent free of a runtime code loader.
+//
+// docs/SECURITY.md §3 and docs/EXTENDING.md both refuse one in the agent, without qualification and with
+// dlopen named as the example of what that means. Enumerating Windows updates requires loading wuapi.dll
+// through COM, which is that refusal's subject exactly — so it happens in cmd/farrier-update-scan, a
+// short-lived unprivileged process that holds no credential, and never in the process holding the host's
+// mTLS private key.
+//
+// "It does not today" is a fact about the current import graph rather than a property, which is why this
+// is asserted with the same machinery that keeps the signing backends away from managed-host binaries
+// rather than reviewed for. The one-line change that would break it — an import of internal/wua added to
+// a collector for convenience — is exactly the kind that reads as harmless in a diff.
+func TestGuaranteeOnlyTheScanBinaryReachesCOM(t *testing.T) {
+	root := repoRoot(t)
+	imports := moduleImportGraph(t, root)
+
+	const com = "github.com/pascalgross/farrier/internal/wua"
+	const scanner = "cmd/farrier-update-scan"
+
+	// The scanner must reach it, or the package is dead code and this test proves nothing.
+	if _, ok := imports[scanner]; !ok {
+		t.Fatalf("%s has no packages; if the scan binary has moved, move this list with it", scanner)
+	}
+	if _, reaches := reachableFrom(imports, scanner)[com]; !reaches {
+		t.Errorf("%s does not reach %s. If the COM code has moved, move this test with it; if it is "+
+			"gone, remove the chokepoint exemption in execChokepoints too.", scanner, com)
+	}
+
+	// Nothing else may.
+	for _, entry := range managedHostBinaries {
+		if entry == scanner {
+			continue
+		}
+		if _, ok := imports[entry]; !ok {
+			t.Fatalf("%s has no packages; if a binary has moved, move this list with it", entry)
+		}
+		if chain, reaches := reachableFrom(imports, entry)[com]; reaches {
+			t.Errorf("%s reaches %s, which loads wuapi.dll into the calling process.\n  through: %s\n"+
+				"See docs/SECURITY.md §3: there is no runtime plugin loader in the agent, ever. The scan "+
+				"runs in cmd/farrier-update-scan, which holds no credential.",
+				entry, com, strings.Join(chain, " → "))
+		}
+	}
 }
 
 // TestGuaranteeNoManagedHostBinaryLoadsASigningBackend keeps the safe seam safe.

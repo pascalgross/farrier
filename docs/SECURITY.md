@@ -27,6 +27,12 @@ in a release announcement, not on a slide — because it reads better that way.
 Farrier competes with Landscape, Salt, Uyuni and Rudder on exactly one axis: all of them ship a remote
 execution channel, and Farrier does not. That absence is the product.
 
+Neither paragraph names an operating system, and neither will. Farrier manages Ubuntu and Debian today
+and ships no agent for anything else; where another platform cannot carry a mechanism at the strength
+Linux carries it, Farrier does less there rather than qualifying the sentence above.
+[§12](#12-windows-hosts) is where that is worked out for Windows, and it is a set of decisions rather
+than a description of shipped code.
+
 ---
 
 ## 2. The three mechanisms
@@ -1181,3 +1187,177 @@ recognises, regardless of how difficult they are to reach. That includes:
 - any way to make a root helper act without re-checking policy;
 - any way to get a job accepted without a valid signature from the host's own `trusted-signers`, for
   an intent whose class requires one.
+
+---
+
+## 12. Windows hosts
+
+**A Windows agent ships, and it is a smaller product than the Linux one.** It executes the four
+read-class intents and refuses everything else — not as a staging decision to be revisited quietly, but
+because of 12.2 below. `cmd/farrier-agent` carries `//go:build linux || windows`, and
+`TestGuaranteeTheAgentBinaryNamesItsPlatforms` fails if a third platform is added without the three
+things that make one real: a `collect.Platform` implementation, an `intent.Profile` saying what it will
+execute, and a section of this document saying which mechanisms it enforces by test rather than by
+convention.
+
+What a host will execute is a compile-time set, not a run-time one. `internal/intent`'s `profiles` map
+is a second closed literal beside the catalogue — the catalogue itself is untouched, still ten members
+in one file — and `internal/agent`'s `hostProfile` is a `const` in a build-tagged file, so nothing can
+assign to it. The profile also travels on no wire in the direction that would matter: enforcement is on
+the host, against that constant.
+
+### 12.1 The guarantee does not change
+
+Both paragraphs of [§1](#1-the-guarantee) say **any enrolled host**. No operating system appears in
+either, and none will. A Windows host is inside the guarantee or it is not managed.
+
+That is a constraint on what may be built rather than a claim that it is easy. Where Windows cannot
+carry a mechanism at the strength Linux carries it, the answer is that Farrier does less on Windows —
+never that the sentence acquires a qualifier. The CI check that pins both paragraphs matches them word
+for word for exactly this reason: `grep`ping a fragment of the first one also matches "on any enrolled
+**Linux** host", which is how a guarantee narrows without anybody deciding to narrow it.
+
+### 12.2 Two of the three mechanisms port unchanged
+
+[§2](#2-the-three-mechanisms) says the guarantee is the emergent property of three mechanisms, each
+load-bearing on its own. Two of them are pure Go and are unaffected by the platform:
+
+- **[§2.1](#21-a-closed-intent-catalogue), the closed catalogue.** Same file, same ten members, same
+  compile-time map. A Windows agent adds no intent and no name. `internal/canonical`,
+  `internal/protocol` and the verifying half of `internal/signing` are likewise untouched.
+- **[§2.3](#23-offline-job-signing), offline job signing.** Ed25519 over canonical JSON, verified
+  against the host's own `trusted-signers`, in the unprivileged agent process. Nothing about it is
+  Linux.
+
+**[§2.2](#22-local-policy-sovereignty), local policy sovereignty, is where Windows differs**, and it is
+the one that decides what a Windows agent may do at all. Three Linux primitives carry it, and none has
+a Windows equivalent:
+
+| Linux | Why it is load-bearing | Windows |
+| --- | --- | --- |
+| `execve` with an argument vector | `internal/run` concatenates nothing; the program and each argument are separate strings the kernel copies | `CreateProcess` takes one command-line string that the callee re-parses under its own rules, and `msiexec.exe` and `cmd.exe` do not use `CommandLineToArgvW`'s algorithm |
+| systemd socket activation, `Accept=yes` | a **fresh** root helper per operation, which re-reads the root-owned policy itself and then exits | nothing starts a privileged process per accepted connection; a Windows helper is a resident service on a named pipe — all three things [§6](#6-host-privileges) refuses by name |
+| a service manager that applies the sandbox from reviewable text | `MemoryDenyWriteExecute` and the rest are declared in a unit file and enforced by PID 1, which is why `sudo` could not have worked without dismantling the sandbox | service registration has no equivalent line; the containment moves into registry values written by an installer, verified by nothing comparable to `systemd-analyze verify` and `testfleet` |
+
+### 12.3 What a Windows agent may do
+
+Read-only, and the read tier only. That is not a staging decision to be revisited quietly; it follows
+from 12.2. Without a privilege boundary of the same shape, there is no place for a privileged operation
+to be re-checked against the host's own policy, and [§1](#1-the-guarantee)'s second and third clauses
+would rest on the agent process alone.
+
+| Intent | On Windows |
+| --- | --- |
+| `facts.collect` | **ships** — `RtlGetVersion`, the `CurrentVersion` registry values, `GetComputerNameExW`, `GetTickCount64`, `GetAdaptersAddresses` |
+| `services.list` | **ships** — `OpenSCManagerW`, `EnumServicesStatusExW`, `QueryServiceConfigW` |
+| `reboot.checkRequired` | **ships**, and weaker than on Linux: the pending-reboot registry keys have no `needrestart` half. See 12.5 |
+| `packages.listUpgradable` | **ships**, and is **not a read intent on Windows**. See 12.4 |
+| `packages.applySecurity` | **permanently refused.** See 12.5 |
+| `packages.applyAll` | not implemented |
+| `service.start`, `service.stop`, `service.restart` | not implemented |
+| `host.reboot` | **refused.** See 12.5 |
+
+"Not implemented" is expressed the way the catalogue already expresses it: the agent refuses the intent
+and answers `unsupported_intent`, exactly as it does for a member no build has an executor for. The
+catalogue is not edited, no member gains a platform field, and no name is added or removed.
+
+Two tests keep that honest, and they check opposite directions.
+`TestGuaranteeTheLinuxProfileIsTheWholeCatalogue` fails if a catalogue member is ever added without
+being added to the Linux profile, because the symptom would otherwise be every Linux host quietly
+refusing it. `TestGuaranteeTheWindowsProfileHoldsOnlyReadIntents` fails if anything outside the read
+tier appears in the Windows one — checked by class rather than against a list of four names, because a
+list would have to be edited by the same hand in the same commit, which is a copy rather than a check.
+
+### 12.4 The update scan is privileged work wearing a read class
+
+On Linux `packages.listUpgradable` is `apt-get --just-print`: local, no network, no state change, and
+[§3](#3-the-intent-catalogue) can honestly say a read intent changes nothing. On Windows the same
+question is a Windows Update Agent scan, which goes to the network, mutates
+`%windir%\SoftwareDistribution`, and takes minutes. Both of §3's claims about the read tier become
+false.
+
+So it does not travel as a read intent on a Windows host without the thing every privileged intent must
+have: **a policy knob that lets the host refuse it.** That is step 6 of *Adding a new intent* in
+`docs/EXTENDING.md`, and it is not waived here. Without it, a control plane holding nothing but mTLS
+could drive every Windows host into a continuous scan loop, and the host would have been given no policy
+to exceed.
+
+The knob is `[updates] scan`, and it defaults to true — the opposite of `[containers] report`, for a
+reason worth stating: a container name describes what a business runs and is a disclosure a host has not
+agreed to make, whereas a count of missing patches is the number this product exists to show. A host
+that sets it false reports its updates as **unmeasured**, never as none.
+
+A second bound is not a policy key and is deliberately not configurable. The agent asks Windows Update
+at most once every six hours and serves a cached answer in between, because `Gather` runs on every full
+heartbeat and an uncached implementation would leave a host scanning continuously and reporting facts
+almost never. How stale a patch count may be is not a decision that differs usefully between hosts;
+whether the host scans at all is, and that is the key that exists.
+
+Two further decisions:
+
+- **The scan runs in a separate, unprivileged, short-lived process**, not in the agent. Enumerating
+  updates requires loading `wuapi.dll`, and [§3](#3-the-intent-catalogue) refuses a runtime code loader
+  in the agent without qualification — the agent holds the host's mTLS private key. A package-shipped
+  binary at a fixed absolute path, started through `internal/run` with a fixed argument vector, is the
+  same shape the agent already uses for `apt-get`: it does not parse apt's internals either.
+- **`ServerSelection` is `ssDefault`.** A host configured against WSUS is scanned against WSUS.
+  Farrier never selects `ssWindowsUpdate`, which would bypass an authority the host's owner chose.
+
+The privilege split in Microsoft's own API is worth recording, because it lands almost exactly where
+this catalogue's classes already are: `IUpdateSearcher` and `IUpdateSession` are available to the User
+group, `IUpdateDownloader` to Power Users and Administrators, and `IUpdateInstaller` to Administrators
+alone. Enumeration genuinely does not need privilege.
+
+### 12.5 What Windows cannot do, and why it is refused rather than approximated
+
+- **`packages.applySecurity` is permanently refused on Windows.** From Windows Server 2016 a quality
+  update is one indivisible cumulative package; `CategoryIDs` selects packages and does not subdivide
+  them. `[updates] allow = "security"` therefore cannot mean on Windows what `packaging/policy.toml`
+  says it means, and a host set to `security` would receive non-security changes. This is the one
+  routine member — the only operation the control plane signs with its own online key — so §3's
+  sentence that the control plane "can at most make a host do sooner what its own local policy already
+  permits it to do unattended" would become false. An approximation that reimplemented the filter would
+  also be the thing `helpers/apply-updates` exists not to do: there is no `unattended-upgrades` on
+  Windows to delegate the definition of "security" to.
+- **`host.reboot` is refused.** `InitiateSystemShutdownEx` documents that a success return does not mean
+  the shutdown will happen, and that with `bForceAppsClosed` false it can enter a state where the
+  shutdown neither completes nor can be aborted except by the console user, and no further shutdown can
+  be initiated. A job would durably record success, the host would not reboot, and every later attempt
+  would be blocked.
+- **`needrestart` has no Windows answer.** Windows cannot replace a file mapped by a running process; an
+  installer defers the rename to boot with `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`, which is why
+  `PendingFileRenameOperations` exists. The state `needrestart` detects cannot occur, so "which running
+  services still hold replaced libraries" — the question `internal/run` calls more actionable than
+  reboot-required — is not weakly answered on Windows. It is absent.
+
+### 12.6 What the root boundary does not check, on Windows
+
+In the spirit of [§6](#6-host-privileges)'s own list, written down rather than left to be discovered:
+
+- **COM class resolution is a registry lookup.** `CoCreateInstance` resolves a CLSID to a DLL through
+  `HKCR\CLSID\{...}\InprocServer32`. Anyone who can write that key can choose what the scan process
+  loads. That is local administrator, who is already above Farrier in the trust hierarchy by
+  [§9](#9-what-farrier-does-not-defend-against)'s first bullet — the adversary [§1](#1-the-guarantee)
+  names is a control plane, which cannot write a host's registry. It is recorded here because "the
+  agent loads no foreign code" is a claim with a footnote on Windows and should not read as one without.
+- **A result is fsynced, but its directory entry is not.** The agent's promise that a result reaches
+  the disk before an operation that may not return is kept one shade less firmly here. Every file is
+  still written to a temporary, flushed with `FlushFileBuffers`, and renamed with `MoveFileEx`, which is
+  atomic on NTFS — so a crash never exposes a truncated file and a reader never sees a half-written
+  credential. What Windows offers no way to do is flush the *directory entry*: `File.Sync` on a
+  directory handle is `FlushFileBuffers`, which is documented as requiring a handle opened for writing,
+  and a directory cannot be opened that way. A power loss in the window after a rename can therefore
+  leave the previous name in place. The file is intact either way, and the recovery for both cases is
+  the one the agent already has — the control plane re-issues the job, or the host is re-enrolled.
+
+  Reporting the failure instead was tried and is worse: it would make every atomic write return an error
+  after its rename had already succeeded, and enrolment writes the credential through that path — so the
+  agent would abort after the control plane had consumed the single-use token, leaving a host that is
+  registered and permanently unable to authenticate. A durability guarantee that cannot be kept must not
+  become a failure in the operation it was protecting.
+
+- **There is no conffile.** MSI has no equivalent of dpkg's conffile handling, and WiX's default major
+  upgrade removes the old product before installing the new one — which deletes an edited
+  `trusted-signers` and reinstalls it empty. A silent trust-anchor wipe on upgrade re-opens every
+  destructive operation an administrator had closed, with no symptom until a signature that should
+  verify does not. Any Windows packaging must solve this before it ships, and must be tested for it.

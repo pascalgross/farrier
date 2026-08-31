@@ -9,30 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pascalgross/farrier/internal/canonical"
 )
-
-// DefaultStateDir is where the agent keeps everything it writes.
-//
-// It is the only writable path the hardened systemd unit grants, which is deliberate: an agent that can
-// write nowhere else cannot be talked into leaving something behind in a directory that matters.
-const DefaultStateDir = "/var/lib/farrier"
-
-// DefaultServerCABundle is where an administrator puts the control plane's CA before enrolling.
-//
-// It exists because enrolment is the one request an agent makes with nothing on disk to verify against.
-// Every request after it uses the bundle the enrolment response carried, written to CABundleFile — but
-// that response is itself fetched over TLS, so the first connection needs an authority chosen locally
-// and in advance. `farrier enroll` reads this path when --ca is not given, which is what makes the
-// documented ordering — install the certificate, then enrol — mean something rather than being a step
-// that writes a file nothing opens.
-//
-// /etc/farrier rather than the state directory: this is administrator-supplied configuration, chosen
-// before the agent exists, and the state directory is the agent's to rewrite.
-const DefaultServerCABundle = "/etc/farrier/server-ca.crt"
 
 // File names inside the agent's state directory.
 const (
@@ -51,9 +31,6 @@ const (
 
 	// PendingResultsDir holds job results that have not been delivered yet.
 	PendingResultsDir = "pending-results"
-
-	// MachineIDPath is systemd's machine identifier, which is documented as confidential.
-	MachineIDPath = "/etc/machine-id"
 )
 
 // State is what the agent knows about its enrolment.
@@ -194,38 +171,21 @@ func WriteFileExclusive(path string, data []byte, perm os.FileMode) error {
 	return SyncDir(dir)
 }
 
-// SyncDir fsyncs a directory, making a rename inside it durable.
-//
-// Without this, a crash immediately after writing a pending job result can lose the rename even though
-// the file's own contents were synced — and a lost result for host.reboot is a job that completes by
-// the host disappearing and is never reported at all.
-func SyncDir(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("agent: opening %s to sync: %w", dir, err)
-	}
-	defer func() { _ = f.Close() }()
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("agent: syncing %s: %w", dir, err)
-	}
-	return nil
-}
-
 // MachineIDHash returns the salted hash of /etc/machine-id.
 //
 // The raw value is documented by systemd as confidential and is never transmitted. If no salt exists
 // yet — a source build rather than a package install — one is generated and stored, so that the hash is
 // stable across restarts. A hash that changed on every start would enrol the same machine repeatedly.
 func MachineIDHash(dir string) (string, error) {
-	id, err := os.ReadFile(MachineIDPath)
+	id, err := machineIdentity()
 	if err != nil {
-		return "", fmt.Errorf("agent: reading %s: %w", MachineIDPath, err)
+		return "", err
 	}
 	salt, err := loadOrCreateSalt(filepath.Join(dir, SaltFile))
 	if err != nil {
 		return "", err
 	}
-	return canonical.SaltedDigest(salt, []byte(strings.TrimSpace(string(id)))), nil
+	return canonical.SaltedDigest(salt, []byte(strings.TrimSpace(id))), nil
 }
 
 // loadOrCreateSalt reads the per-host salt, creating it if absent.
@@ -247,6 +207,16 @@ func loadOrCreateSalt(path string) ([]byte, error) {
 		return nil, err
 	}
 	return encoded, nil
+}
+
+// ownership is the numeric owner of a state directory, as the kernel reports it.
+//
+// It exists so that AdoptStateDir can be written once for every platform while the one call that is
+// genuinely Linux-only — reading a uid and gid out of a stat structure — lives behind a build tag. The
+// fields are int rather than uint32 because os.Lchown takes int, and converting once here is better
+// than converting at the call site inside a loop.
+type ownership struct {
+	uid, gid int
 }
 
 // AdoptStateDir gives the state directory's contents to whoever owns the directory.
@@ -278,7 +248,7 @@ func AdoptStateDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("agent: reading the state directory %s: %w", dir, err)
 	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
+	owner, ok := directoryOwner(info)
 	if !ok {
 		// Not Linux, which the agent is not built for. Nothing to do rather than a failure, because a
 		// state directory with no uid behind it is not a state directory anybody can be locked out of.
@@ -294,8 +264,8 @@ func AdoptStateDir(dir string) error {
 		// Lchown rather than Chown: a symlink in here should have its own ownership changed, never the
 		// thing it points at, which is how a writable state directory would otherwise become a way to
 		// chown a file elsewhere on the system.
-		if err := os.Lchown(path, int(owner.Uid), int(owner.Gid)); err != nil {
-			return fmt.Errorf("agent: giving %s to uid %d: %w", path, owner.Uid, err)
+		if err := os.Lchown(path, owner.uid, owner.gid); err != nil {
+			return fmt.Errorf("agent: giving %s to uid %d: %w", path, owner.uid, err)
 		}
 	}
 	return nil

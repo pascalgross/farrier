@@ -25,20 +25,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Path is where the policy file lives on a managed host.
-//
-// It is a constant rather than a configurable path because a policy file whose location the agent
-// chooses is a policy file the agent can point somewhere it controls. The helpers hard-code this same
-// constant, which is the point.
-const Path = "/etc/farrier/policy.toml"
-
-// PausedPath is the kill-switch marker a local administrator can create.
-//
-// Together with `systemctl stop farrier-agent` it is a stop the control plane cannot override, which is
-// why there is deliberately no agent.resume intent: an off switch that something else can flip back on
-// is not an off switch.
-const PausedPath = "/etc/farrier/paused"
-
 // Allow is how far a host will go in applying package updates.
 //
 // The three values are ordered, and that ordering is the whole of the clamping rule: the effective
@@ -134,6 +120,31 @@ type Updates struct {
 	// one, and docs/EXTENDING.md rules out a fourth. So it waits for a design rather than for an
 	// afternoon.
 	AutoApply bool `toml:"auto_apply"`
+
+	// Scan is whether this host will enumerate its pending updates when asked.
+	//
+	// It exists because on Windows the question is not free. `apt-get --just-print` is local, takes
+	// milliseconds and changes nothing, so no Linux host has ever needed a way to refuse it. A Windows
+	// Update scan goes to the network, mutates %windir%\SoftwareDistribution and takes minutes — which
+	// makes it privileged work wearing a read class, and docs/SECURITY.md's own rule for adding an
+	// intent applies: every privileged operation must be refusable locally, or the guarantee is no
+	// longer true. Without this key a control plane holding nothing but mTLS could drive every Windows
+	// host into a continuous scan loop, and the host would have been given no policy to exceed.
+	//
+	// It bounds the *scan*, not the applying — Allow does that, and the two are independent. A host with
+	// allow = "none" still has every reason to report what is pending; refusing to apply an update and
+	// refusing to look at it are different decisions.
+	//
+	// The shipped default is true, which is the opposite of [containers] report and for a defensible
+	// reason: a container name describes what a business runs, and is a disclosure a host has not agreed
+	// to make. A count of missing patches is the number this product exists to show, and an operator who
+	// installs a fleet agent has asked for it. What the key buys them is a way to say no on the hosts
+	// where the cost is not worth it.
+	//
+	// It has no effect on Linux. Reporting it on every host anyway is deliberate: a fleet is mixed, and
+	// a key that appeared only in Windows policy files would be one an operator meets for the first time
+	// during an incident.
+	Scan bool `toml:"scan"`
 
 	// Window is the maintenance window, empty meaning any time.
 	Window string `toml:"window"`
@@ -237,9 +248,13 @@ func Default() Policy {
 		Updates: Updates{
 			Allow:     AllowSecurity,
 			AutoApply: true,
-			Window:    "",
-			Timezone:  "UTC",
-			Reboot:    RebootNever,
+			// True, and it survives an absent key because Parse decodes over Default rather than into a
+			// zero value — so a policy file written before this key existed keeps reporting updates
+			// instead of silently going quiet on every host in an existing fleet.
+			Scan:     true,
+			Window:   "",
+			Timezone: "UTC",
+			Reboot:   RebootNever,
 		},
 		Services: Services{Restartable: nil},
 		// Written out rather than left to the zero value, because a default that matters is one a
@@ -265,7 +280,10 @@ func Default() Policy {
 // outage instead of an invisible one.
 func Closed() Policy {
 	p := Policy{
-		Updates:    Updates{Allow: AllowNone, AutoApply: false, Timezone: "UTC", Reboot: RebootNever},
+		// Scan is false here, unlike in Default. A host whose policy file does not parse has said
+		// nothing about what it permits, and an update scan is minutes of work and a network
+		// conversation — so the closed policy declines it along with everything else.
+		Updates:    Updates{Allow: AllowNone, AutoApply: false, Scan: false, Timezone: "UTC", Reboot: RebootNever},
 		Containers: Containers{Report: false},
 		Limits:     Limits{MaxJobAgeSeconds: 900},
 		source:     "closed (policy could not be loaded)",

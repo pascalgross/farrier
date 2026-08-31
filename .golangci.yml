@@ -122,6 +122,24 @@ linters:
         linters:
           - gosec
 
+      # comcall_windows.go is the second file that hands memory across an ABI boundary, and it is one
+      # file for the same reason ffi.go is. govet's unsafeptr check fires on every uintptr-to-pointer
+      # conversion reading a COM VARIANT, and can say nothing useful about any of them: a VARIANT is a
+      # tagged union, so its value slot must be uintptr for the integer cases, and a BSTR or an
+      # interface pointer read out of it necessarily starts life as one. What makes those conversions
+      # safe is a property govet cannot see — the memory belongs to oleaut32's allocator, not to Go's
+      # heap, so the collector will never move or free it — and every read is guarded by the VARIANT's
+      # own type tag before the slot is touched at all.
+      #
+      # gosec is excluded for the narrower reason it is elsewhere: G103 on the same conversions, and
+      # G115 on the deliberate 32-bit reinterpretations an HRESULT and a VARIANT_BOOL require.
+      # TestGuaranteeTheVariantLayoutMatchesWindows is what actually checks the part that could be
+      # wrong, and it runs on every platform.
+      - path: internal/wua/comcall_windows\.go
+        linters:
+          - govet
+          - gosec
+
 formatters:
   enable:
     - gofmt
