@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // accountFixture is one operator account in one fleet, with the provider that authenticates it.

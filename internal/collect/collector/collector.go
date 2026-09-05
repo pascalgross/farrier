@@ -1,4 +1,4 @@
-// Package collector holds the registry of extra fact collectors and the ones Farrier ships.
+// Package collector holds the registry of extra fact collectors and the ones HostSeal ships.
 //
 // It is a separate package from internal/collect so that registering a collector cannot create an
 // import cycle: a collector needs the types, and the fact gatherer needs the registry.
@@ -13,7 +13,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/hostseal/internal/collect"
 )
 
 // registry holds the registered collectors by name.

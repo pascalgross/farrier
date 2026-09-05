@@ -8,7 +8,7 @@
 #
 # What it asserts now is the harder half. That a host *can* be changed is easy to demonstrate and worth
 # little on its own; what matters is that the shipped policy refuses everything, that a permissive one
-# permits exactly what it names, and that the answer comes from /etc/farrier/policy.toml rather than
+# permits exactly what it names, and that the answer comes from /etc/hostseal/policy.toml rather than
 # from anything the caller said.
 #
 # Two operations are deliberately never carried out for real: applying updates would dist-upgrade the
@@ -44,22 +44,22 @@ check_refused() {
 # exit-4 branch above reachable at all. A dry run cannot reach an executor, so it could never tell us
 # whether one exists.
 check_refused "restarting a unit" \
-	'/usr/libexec/farrier/restart-unit --action restart --unit farrier-agent.service'
+	'/usr/libexec/hostseal/restart-unit --action restart --unit hostseal-agent.service'
 check_refused "rebooting" \
-	'/usr/libexec/farrier/reboot-host'
+	'/usr/libexec/hostseal/reboot-host'
 
 # Updates are the one exception, and stay a dry run even here. If the shipped policy were ever wrong
 # about allow = "security", the cost of finding that out with a real invocation is a dist-upgraded
 # instance and every later assertion in this run measuring a different machine.
 check_refused "applying all updates" \
-	'/usr/libexec/farrier/apply-updates --intent packages.applyAll --dry-run'
+	'/usr/libexec/hostseal/apply-updates --intent packages.applyAll --dry-run'
 
 # ---------------------------------------------------------------------------------------------------
 # Under a permissive policy, the same operations are permitted — and one of them actually happens.
 # ---------------------------------------------------------------------------------------------------
 
 say "installing a permissive policy"
-run_sh "$INSTANCE" 'cat > /etc/farrier/policy.toml <<TOML
+run_sh "$INSTANCE" 'cat > /etc/hostseal/policy.toml <<TOML
 [updates]
 allow = "all"
 auto_apply = true
@@ -68,12 +68,12 @@ timezone = "UTC"
 reboot = "window"
 
 [services]
-restartable = ["farrier-agent.service"]
+restartable = ["hostseal-agent.service"]
 
 [limits]
 max_job_age_seconds = 900
 TOML'
-run "$INSTANCE" farrier-agent policy check >/dev/null || fail "the permissive fixture does not parse"
+run "$INSTANCE" hostseal-agent policy check >/dev/null || fail "the permissive fixture does not parse"
 
 check_permitted() {
 	local description=$1; shift
@@ -83,27 +83,27 @@ check_permitted() {
 }
 
 check_permitted "applying all updates" \
-	'/usr/libexec/farrier/apply-updates --intent packages.applyAll --dry-run'
+	'/usr/libexec/hostseal/apply-updates --intent packages.applyAll --dry-run'
 check_permitted "rebooting inside an open window" \
-	'/usr/libexec/farrier/reboot-host --dry-run'
+	'/usr/libexec/hostseal/reboot-host --dry-run'
 
-# The one operation that is carried out rather than evaluated. farrier-agent.service is chosen because
+# The one operation that is carried out rather than evaluated. hostseal-agent.service is chosen because
 # it exists on every instance by definition and restarting it costs nothing; a unit that only some
 # releases ship would make this assertion skip on exactly the machine it needed to run on.
 say "restarting a permitted unit for real"
-before=$(run_sh "$INSTANCE" 'systemctl show farrier-agent.service --property=ExecMainStartTimestampMonotonic --value')
-run_sh "$INSTANCE" '/usr/libexec/farrier/restart-unit --action restart --unit farrier-agent.service' \
+before=$(run_sh "$INSTANCE" 'systemctl show hostseal-agent.service --property=ExecMainStartTimestampMonotonic --value')
+run_sh "$INSTANCE" '/usr/libexec/hostseal/restart-unit --action restart --unit hostseal-agent.service' \
 	>/dev/null || fail "the helper could not restart a unit the policy permits"
-after=$(run_sh "$INSTANCE" 'systemctl show farrier-agent.service --property=ExecMainStartTimestampMonotonic --value')
+after=$(run_sh "$INSTANCE" 'systemctl show hostseal-agent.service --property=ExecMainStartTimestampMonotonic --value')
 [ "$before" != "$after" ] || fail "the helper reported success but the unit did not restart"
-run "$INSTANCE" systemctl is-active --quiet farrier-agent.service \
+run "$INSTANCE" systemctl is-active --quiet hostseal-agent.service \
 	|| fail "the unit is not running after the helper restarted it"
 pass "a permitted unit was actually restarted, and the unit is running afterwards"
 
 # A unit the policy does not name is still refused, under the same permissive policy. This is the check
 # that proves the restart above came from services.restartable rather than from allow = "all".
 status=0
-run_sh "$INSTANCE" '/usr/libexec/farrier/restart-unit --action stop --unit systemd-journald.service' \
+run_sh "$INSTANCE" '/usr/libexec/hostseal/restart-unit --action stop --unit systemd-journald.service' \
 	>/dev/null 2>&1 || status=$?
 [ "$status" -eq 3 ] || fail "stopping an unnamed unit exited $status, expected 3"
 pass "a unit outside services.restartable is refused even under a permissive policy"
@@ -112,19 +112,19 @@ pass "a unit outside services.restartable is refused even under a permissive pol
 # The pause marker still outranks all of it.
 # ---------------------------------------------------------------------------------------------------
 
-run "$INSTANCE" touch /etc/farrier/paused
+run "$INSTANCE" touch /etc/hostseal/paused
 status=0
-run_sh "$INSTANCE" '/usr/libexec/farrier/restart-unit --action restart --unit farrier-agent.service' \
+run_sh "$INSTANCE" '/usr/libexec/hostseal/restart-unit --action restart --unit hostseal-agent.service' \
 	>/dev/null 2>&1 || status=$?
 [ "$status" -eq 3 ] || fail "a paused host exited $status on a permitted restart, expected 3"
-run "$INSTANCE" rm -f /etc/farrier/paused
+run "$INSTANCE" rm -f /etc/hostseal/paused
 pass "the pause marker refuses an operation the policy permits and an executor exists for"
 
 # ---------------------------------------------------------------------------------------------------
 # The structure of the privileged path, which no phase changes.
 # ---------------------------------------------------------------------------------------------------
 
-count=$(run_sh "$INSTANCE" 'ls -1 /usr/libexec/farrier | wc -l')
+count=$(run_sh "$INSTANCE" 'ls -1 /usr/libexec/hostseal | wc -l')
 [ "$count" -eq 3 ] || fail "there are $count root helpers, expected exactly 3"
 pass "there are exactly three root helpers"
 
@@ -135,18 +135,18 @@ pass "there are exactly three root helpers"
 # directory and reports every helper as advertising an option it does not have. The property
 # being asserted belongs to the options, so only the option lines are searched.
 for helper in apply-updates restart-unit reboot-host; do
-	run_sh "$INSTANCE" "! /usr/libexec/farrier/$helper --help 2>&1 | grep -v '^Usage of ' | grep -qiE 'command|script|exec|shell'" \
+	run_sh "$INSTANCE" "! /usr/libexec/hostseal/$helper --help 2>&1 | grep -v '^Usage of ' | grep -qiE 'command|script|exec|shell'" \
 		|| fail "$helper advertises an option that names a program to run"
 done
 pass "no helper accepts a command, a script or a path to execute"
 
 # And there is no second way in. The helpers are reachable over their sockets and by a root shell; the
 # sudoers entry that phase 0 shipped is gone, and its absence is asserted rather than assumed.
-run_sh "$INSTANCE" '[ ! -e /etc/sudoers.d/farrier ]' \
-	|| fail "an /etc/sudoers.d/farrier survives; there must be exactly one privileged path"
-run_sh "$INSTANCE" 'sudo -u farrier farrier-agent doctor' >/dev/null \
+run_sh "$INSTANCE" '[ ! -e /etc/sudoers.d/hostseal ]' \
+	|| fail "an /etc/sudoers.d/hostseal survives; there must be exactly one privileged path"
+run_sh "$INSTANCE" 'sudo -u hostseal hostseal-agent doctor' >/dev/null \
 	|| fail "the agent's own account cannot reach the root helpers"
 pass "the socket is the only privileged path, and the agent's account can reach it"
 
 say "restoring the shipped policy"
-lxc file push "$REPO/packaging/policy.toml" "$INSTANCE/etc/farrier/policy.toml"
+lxc file push "$REPO/packaging/policy.toml" "$INSTANCE/etc/hostseal/policy.toml"

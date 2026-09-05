@@ -63,11 +63,11 @@ func headerNamed(block, name string) (string, bool) {
 
 // TestTheSubjectLineIsTheEventsSummary is what decides whether the mail is read at all.
 //
-// "Farrier notification" is a subject somebody writes a folder rule for inside a week, and after that
+// "HostSeal notification" is a subject somebody writes a folder rule for inside a week, and after that
 // the alert has been delivered to a place nobody looks — which is indistinguishable from not having
 // been sent. The summary is the one line that says what happened, so it is the subject.
 func TestTheSubjectLineIsTheEventsSummary(t *testing.T) {
-	message := renderMail("farrier@example.org", []string{"oncall@example.org"}, testEvent)
+	message := renderMail("hostseal@example.org", []string{"oncall@example.org"}, testEvent)
 	block := headerBlock(t, message)
 
 	subject, ok := headerNamed(block, "Subject")
@@ -80,7 +80,7 @@ func TestTheSubjectLineIsTheEventsSummary(t *testing.T) {
 
 	// The envelope around it has to be there too, or the relay rejects a message no test noticed was
 	// malformed: a sender, a recipient list, and a content type that says the body is UTF-8 text.
-	if from, ok := headerNamed(block, "From"); !ok || from != "farrier@example.org" {
+	if from, ok := headerNamed(block, "From"); !ok || from != "hostseal@example.org" {
 		t.Errorf("From: %q", from)
 	}
 	if to, ok := headerNamed(block, "To"); !ok || to != "oncall@example.org" {
@@ -120,7 +120,7 @@ func TestASummaryCannotInjectMailHeaders(t *testing.T) {
 			"\r\nPay this invoice immediately.",
 		At: testEvent.At,
 	}
-	message := renderMail("farrier@example.org", []string{"oncall@example.org"}, hostile)
+	message := renderMail("hostseal@example.org", []string{"oncall@example.org"}, hostile)
 	block := headerBlock(t, message)
 
 	for _, line := range strings.Split(block, "\r\n") {
@@ -175,7 +175,7 @@ func TestSanitizeHeaderReplacesEveryLineBreak(t *testing.T) {
 // working" long after whoever renamed the host has forgotten doing it.
 func TestANonASCIISubjectIsEncodedRatherThanSentRaw(t *testing.T) {
 	summary := "wörter-01: Dienst fehlgeschlagen — Größe überschritten"
-	message := renderMail("farrier@example.org", []string{"oncall@example.org"},
+	message := renderMail("hostseal@example.org", []string{"oncall@example.org"},
 		Event{Kind: KindServiceFailed, Summary: summary, At: testEvent.At})
 	block := headerBlock(t, message)
 
@@ -202,7 +202,7 @@ func TestANonASCIISubjectIsEncodedRatherThanSentRaw(t *testing.T) {
 
 	// And an ASCII subject is left alone, which is the half that keeps a mail readable in a log or a
 	// packet capture. mime encodes only when it must, and this asserts that it is being let to.
-	ascii := renderMail("farrier@example.org", []string{"oncall@example.org"}, testEvent)
+	ascii := renderMail("hostseal@example.org", []string{"oncall@example.org"}, testEvent)
 	if subject, _ := headerNamed(headerBlock(t, ascii), "Subject"); strings.HasPrefix(subject, "=?") {
 		t.Errorf("an ASCII subject was encoded anyway: %q", subject)
 	}
@@ -317,7 +317,7 @@ func startRelay(t *testing.T, converse func(r *relay, conn net.Conn, in *bufio.R
 
 // config points an SMTPConfig at this relay.
 func (r *relay) config() SMTPConfig {
-	return SMTPConfig{Host: r.host, Port: r.port, From: "farrier@example.org"}
+	return SMTPConfig{Host: r.host, Port: r.port, From: "hostseal@example.org"}
 }
 
 // readLine reads one command line and records it.
@@ -526,7 +526,7 @@ func TestSTARTTLSIsTakenAndTheRelayIsVerified(t *testing.T) {
 // TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate uses for the same reason: a check that opts
 // itself out reports exactly what a passing one does, so where the environment is supposed to support
 // it, not running is a failure.
-const privilegedPortsEnv = "FARRIER_TEST_PRIVILEGED_PORTS"
+const privilegedPortsEnv = "HOSTSEAL_TEST_PRIVILEGED_PORTS"
 
 // implicitTLSPort is the port that selects implicit TLS, and the reason the test below can be skipped.
 //
@@ -787,7 +787,7 @@ func TestNetSMTPRefusesALineBreakInAnAddress(t *testing.T) {
 	// And a clean address is accepted by the same relay, or every assertion above would be satisfied
 	// by a client that could not send anything at all.
 	r, client := conversingRelay(t)
-	if err := client.Mail("farrier@example.org"); err != nil {
+	if err := client.Mail("hostseal@example.org"); err != nil {
 		t.Fatalf("a clean sender was refused, so this test proves nothing: %v", err)
 	}
 	if err := client.Rcpt("oncall@example.org"); err != nil {

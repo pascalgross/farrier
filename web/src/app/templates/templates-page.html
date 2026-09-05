@@ -5,7 +5,7 @@
 @if (error()) {
   <mat-card class="max-w-xl mx-auto mt-12">
     <mat-card-content class="!pt-6 flex items-start gap-3">
-      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
       <p class="m-0">{{ error() }}</p>
     </mat-card-content>
   </mat-card>
@@ -15,7 +15,7 @@
   <header class="mb-6">
     <h1 class="text-2xl font-medium m-0">Templates</h1>
     <p class="m-0 mt-2 text-sm opacity-80 max-w-3xl">
-      Cloud-init user-data that Farrier stores, versions and renders — and never delivers. Rendering
+      Cloud-init user-data that HostSeal stores, versions and renders — and never delivers. Rendering
       produces text you paste into whatever creates the machine; the control plane has no path to a
       host, before enrolment or after it.
     </p>
@@ -47,13 +47,13 @@
               <mat-card-content class="!pt-6 flex flex-wrap items-center gap-3">
                 <div class="min-w-0 flex-1">
                   <p class="m-0 font-medium">{{ template.name }}</p>
-                  <p class="m-0 text-xs opacity-70 farrier-numeric">
+                  <p class="m-0 text-xs opacity-70 hostseal-numeric">
                     v{{ template.latestVersion }} · stored by {{ template.createdBy || 'unknown' }}
                   </p>
                 </div>
 
                 @if (template.signed) {
-                  <span class="text-xs text-farrier-ok"
+                  <span class="text-xs text-hostseal-ok"
                         [matTooltip]="'Signed offline, so an enrolling agent may be handed it. The agent verifies the signature against its own trusted-signers; this control plane cannot produce one.'">
                     signed
                   </span>
@@ -97,13 +97,13 @@
           </mat-form-field>
 
           <p class="m-0 text-sm opacity-80">
-            Saved unsigned. A signature is made offline with <code>farrier sign-template</code>, by a
+            Saved unsigned. A signature is made offline with <code>hostseal sign-template</code>, by a
             key this control plane does not hold — which is exactly why an agent will accept a
             bootstrap signed that way and nothing else.
           </p>
 
           @if (actionError()) {
-            <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+            <p class="m-0 text-sm text-hostseal-bad">{{ actionError() }}</p>
           }
         </mat-card-content>
 
@@ -125,7 +125,7 @@
         @if (record.warnings.length > 0) {
           <mat-card class="mb-4">
             <mat-card-content class="!pt-6 flex items-start gap-3">
-              <mat-icon class="text-farrier-warn">warning_amber</mat-icon>
+              <mat-icon class="text-hostseal-warn">warning_amber</mat-icon>
               <div class="text-sm">
                 <p class="m-0 font-medium">This body looks like it carries secrets.</p>
                 <ul class="m-0 mt-2 pl-5">
@@ -161,14 +161,14 @@
             <mat-card-content class="!pt-4 flex flex-col gap-1">
               @for (revision of revisions(); track revision.version) {
                 <div class="flex flex-wrap items-center gap-3 py-1">
-                  <span class="farrier-numeric text-sm w-12">v{{ revision.version }}</span>
+                  <span class="hostseal-numeric text-sm w-12">v{{ revision.version }}</span>
 
-                  <span class="min-w-0 flex-1 text-xs opacity-70 farrier-numeric">
+                  <span class="min-w-0 flex-1 text-xs opacity-70 hostseal-numeric">
                     {{ stored(revision) }} · {{ revision.createdBy || 'unknown' }}
                   </span>
 
                   @if (revision.signed) {
-                    <span class="text-xs text-farrier-ok"
+                    <span class="text-xs text-hostseal-ok"
                           [matTooltip]="'Signed offline by ' + (revision.signerKeyId || 'an unnamed key') + ', so an enrolling agent may be handed it.'">
                       signed
                     </span>
@@ -234,7 +234,7 @@
             }
 
             @if (actionError()) {
-              <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+              <p class="m-0 text-sm text-hostseal-bad">{{ actionError() }}</p>
             }
           </mat-card-content>
 
@@ -250,19 +250,19 @@
             </mat-card-header>
 
             <mat-card-content class="!pt-4 flex flex-col gap-3">
-              <p class="m-0 text-sm text-farrier-warn flex items-start gap-2">
+              <p class="m-0 text-sm text-hostseal-warn flex items-start gap-2">
                 <mat-icon class="!w-5 !h-5 !text-lg" aria-hidden="true">vpn_key</mat-icon>
                 <span>{{ result.note }}</span>
               </p>
 
               @if (result.tokenExpiresAt) {
-                <p class="m-0 text-sm opacity-80 farrier-numeric">
+                <p class="m-0 text-sm opacity-80 hostseal-numeric">
                   The enrolment token in it expires at {{ result.tokenExpiresAt }}.
                 </p>
               }
 
               @if (result.warnings.length > 0) {
-                <ul class="m-0 pl-5 text-sm text-farrier-warn">
+                <ul class="m-0 pl-5 text-sm text-hostseal-warn">
                   @for (warning of result.warnings; track warning) {
                     <li>{{ warning }}</li>
                   }
@@ -286,7 +286,7 @@
             <p class="m-0">Open a template to read it, render it, or start its next version.</p>
             <p class="m-0 mt-3">
               There is no control here that delivers a template to a running host, and there will not
-              be one. Pushing configuration to an already-enrolled machine is the tier Farrier does
+              be one. Pushing configuration to an already-enrolled machine is the tier HostSeal does
               not build — it is the whole reason an attacker who owns this control plane still cannot
               run code on your fleet.
             </p>

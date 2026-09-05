@@ -9,7 +9,7 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// This file is the only place in Farrier that hands Go memory to a C ABI, and it is one file on
+// This file is the only place in HostSeal that hands Go memory to a C ABI, and it is one file on
 // purpose. Every unsafe.Pointer conversion in the project lives here, where a reviewer can read all of
 // them at once and where .golangci.yml can scope gosec's G103 to a single named path with a written
 // reason. Nothing above this layer sees a pointer.
@@ -21,14 +21,14 @@ import (
 // at the price of an ABI that the compiler cannot check — which is what the size assertions in
 // pkcs11_test.go are for.
 //
-// The library is loaded only when an operator hands `farrier sign` a pkcs11: reference naming a
+// The library is loaded only when an operator hands `hostseal sign` a pkcs11: reference naming a
 // module. It is emphatically not the plugin loader docs/EXTENDING.md refuses: that refusal is about
 // the *agent*, which loads no code at run time and does not link this package at all — a property
 // TestGuaranteeNoManagedHostBinaryLoadsASigningBackend asserts rather than assumes.
 
 // ckULong is PKCS#11's CK_ULONG.
 //
-// Eight bytes on every platform Farrier ships to, which is what makes the struct layouts below right.
+// Eight bytes on every platform HostSeal ships to, which is what makes the struct layouts below right.
 // It is a named type so that a plain int cannot be passed where the ABI expects this width.
 type ckULong = uint64
 
@@ -73,7 +73,7 @@ const (
 	ckoPublicKey  ckULong = 2
 	ckoPrivateKey ckULong = 3
 
-	// The CKA_KEY_TYPE values Farrier's two wire algorithms can come from.
+	// The CKA_KEY_TYPE values HostSeal's two wire algorithms can come from.
 	ckkEC        ckULong = 0x03
 	ckkECEdwards ckULong = 0x40
 	ckkRSA       ckULong = 0x00

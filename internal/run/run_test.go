@@ -36,7 +36,7 @@ var interpreterBasenames = map[string]bool{
 	"sudo": true, "su": true, "runuser": true, "pkexec": true, "doas": true,
 	"curl": true, "wget": true,
 
-	// The Windows spellings of the same capability. They are here although Farrier ships no Windows
+	// The Windows spellings of the same capability. They are here although HostSeal ships no Windows
 	// binary, because the list is what the check consults and a list that knows only the Unix names
 	// would let the first Windows allowlist entry through in review — while internal/intent's
 	// executionShapedFragments has refused an *intent* named "powershell" since before this line
@@ -109,7 +109,7 @@ func TestGuaranteeOnlyAllowlistedProgramsCanRun(t *testing.T) {
 
 // TestGuaranteeTheAllowlistHoldsNoInterpreters asserts what may be in the list at all.
 //
-// The allowlist is the complete set of processes Farrier can start. Every member must be an absolute
+// The allowlist is the complete set of processes HostSeal can start. Every member must be an absolute
 // path, so that nothing about the environment can change which binary runs, and none may be a program
 // that turns its arguments into code — which is the same requirement the source-level check makes
 // everywhere else, stated here about data rather than about syntax.
@@ -179,7 +179,7 @@ func TestGuaranteeTheInterpreterCheckReadsAWindowsPath(t *testing.T) {
 
 	// The suffix trimming must not reach past the two Windows treats as a bare command name, or a
 	// program legitimately called "deploy.cmd" would be read as "cmd" and refused for the wrong reason.
-	for _, program := range []string{"/usr/bin/apt-get", "/opt/farrier/deploy.cmd", "/usr/sbin/shutdown"} {
+	for _, program := range []string{"/usr/bin/apt-get", "/opt/hostseal/deploy.cmd", "/usr/sbin/shutdown"} {
 		if interpreterBasenames[programBasename(program)] {
 			t.Errorf("%q is refused as an interpreter, which is a false positive", program)
 		}
@@ -336,7 +336,7 @@ func repoRoot(t *testing.T) string {
 func TestGuaranteeAptIsNeverUsedInsteadOfAptGet(t *testing.T) {
 	for _, p := range Allowlist() {
 		if filepath.Base(string(p)) == "apt" {
-			t.Errorf("%q is in the allowlist; Farrier uses apt-get, whose output format is stable", p)
+			t.Errorf("%q is in the allowlist; HostSeal uses apt-get, whose output format is stable", p)
 		}
 	}
 }
@@ -347,9 +347,9 @@ func TestGuaranteeAptIsNeverUsedInsteadOfAptGet(t *testing.T) {
 // program does, which would make the allowlist a statement about file names rather than about
 // behaviour.
 func TestCommandReplacesTheEnvironment(t *testing.T) {
-	t.Setenv("FARRIER_TEST_LEAK", "should-not-appear")
+	t.Setenv("HOSTSEAL_TEST_LEAK", "should-not-appear")
 
-	// /usr/bin/apt-get is on the allowlist and present on the distributions Farrier targets. Where it
+	// /usr/bin/apt-get is on the allowlist and present on the distributions HostSeal targets. Where it
 	// is absent — a developer's machine, a minimal CI image — there is nothing to observe and the
 	// assertion about environment handling is made by reading Options.Env's documented contract.
 	if _, err := os.Stat(string(AptGet)); err != nil {
@@ -435,7 +435,7 @@ func TestGuaranteeNoInvocationCanOutliveItsDeadline(t *testing.T) {
 }
 
 // runTestModeVar selects what this binary does when re-executed as a fixture process.
-const runTestModeVar = "FARRIER_RUN_TEST_MODE"
+const runTestModeVar = "HOSTSEAL_RUN_TEST_MODE"
 
 // fixtureLifetime is how long a fixture process lives when nothing kills it first.
 //
@@ -533,7 +533,7 @@ func TestATimedOutInvocationReturnsPromptly(t *testing.T) {
 // filepath.IsAbs is not the function to use here, and the reason is the same one programBasename exists
 // for: it answers for the platform the test is running on, not for the platform the path is written for.
 // On the Linux runner that builds this repository, filepath.IsAbs of
-// `C:\Program Files\Farrier\farrier-update-scan.exe` is false — so a check built on it would report a
+// `C:\Program Files\HostSeal\hostseal-update-scan.exe` is false — so a check built on it would report a
 // perfectly good Windows path as relative, and the obvious fix somebody would then apply is to delete
 // the check.
 //
@@ -562,7 +562,7 @@ func isAbsoluteProgramPath(s string) bool {
 func TestGuaranteeTheAllowlistPathRuleReadsBothPlatforms(t *testing.T) {
 	absolute := []string{
 		"/usr/bin/apt-get",
-		`C:\Program Files\Farrier\farrier-update-scan.exe`,
+		`C:\Program Files\HostSeal\hostseal-update-scan.exe`,
 		`c:\Windows\System32\notepad.exe`,
 	}
 	for _, s := range absolute {
@@ -574,12 +574,12 @@ func TestGuaranteeTheAllowlistPathRuleReadsBothPlatforms(t *testing.T) {
 	relative := []string{
 		"",
 		"apt-get",
-		"farrier-update-scan.exe",
-		`\Program Files\Farrier\farrier-update-scan.exe`, // relative to the current drive
-		`\\server\share\farrier-update-scan.exe`,         // a UNC path: absolute, but not on this host
-		`C:farrier-update-scan.exe`,                      // relative to the current directory on C:
+		"hostseal-update-scan.exe",
+		`\Program Files\HostSeal\hostseal-update-scan.exe`, // relative to the current drive
+		`\\server\share\hostseal-update-scan.exe`,          // a UNC path: absolute, but not on this host
+		`C:hostseal-update-scan.exe`,                       // relative to the current directory on C:
 		"../../usr/bin/apt-get",
-		`C:/Program Files/Farrier/farrier-update-scan.exe`, // forward slashes: not the shipped form
+		`C:/Program Files/HostSeal/hostseal-update-scan.exe`, // forward slashes: not the shipped form
 	}
 	for _, s := range relative {
 		if isAbsoluteProgramPath(s) {

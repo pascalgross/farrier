@@ -15,8 +15,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // maxResponseBytes bounds what the agent will read from the control plane.

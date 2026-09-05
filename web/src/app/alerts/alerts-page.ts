@@ -89,7 +89,7 @@ const CONDITIONS: ConditionSpec[] = [
  * fired are indistinguishable from an inbox.
  */
 @Component({
-  selector: 'farrier-alerts-page',
+  selector: 'hostseal-alerts-page',
   imports: [
     FormsModule,
     MatButtonModule,

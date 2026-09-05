@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // TestGuaranteeAResultTheControlPlaneWillNeverAcceptDoesNotStayForEver is the regression test for a

@@ -1,6 +1,6 @@
-# Extending Farrier
+# Extending HostSeal
 
-Farrier is extensible in specific, named places and closed everywhere else. This document lists both,
+HostSeal is extensible in specific, named places and closed everywhere else. This document lists both,
 because "where can I add things" and "where will my pull request be rejected" are the same question
 and it is rude to answer only the first half.
 
@@ -61,7 +61,7 @@ it. A platform that does not implement this behaves exactly as it did before the
 
 Add a file under `internal/collect/platform/`, implement the interface, and return it from that
 package's `Detect`. `Detect` is build-tagged rather than switching on `runtime.GOOS`: on Linux it parses
-os-release and chooses a distribution family, on Windows it asks the kernel. Farrier ships `ubuntu`,
+os-release and chooses a distribution family, on Windows it asks the kernel. HostSeal ships `ubuntu`,
 `debian` and `windows`.
 
 Four differences between families are already known to produce **silent wrong answers** rather than
@@ -84,13 +84,13 @@ type Collector interface {
 }
 ```
 
-Collectors are read-only by construction and run as the unprivileged `farrier` user with no
+Collectors are read-only by construction and run as the unprivileged `hostseal` user with no
 capabilities. A collector that needs root is not a collector; it is a request for a new intent, which
 is a different and much longer conversation.
 
 Add a file under `internal/collect/collector` with a `Register` call in its `init`, and nothing else in
 the codebase learns about it. Output appears under the collector's name in the facts document's `extra`
-object. Farrier ships two.
+object. HostSeal ships two.
 
 `network` is also what justifies `AF_NETLINK` in the systemd unit's `RestrictAddressFamilies`:
 `net.Interfaces` uses a netlink socket on Linux and returns nothing without it, silently.
@@ -152,10 +152,10 @@ Specified and not yet written: `sshagent` (including FIDO2 `ed25519-sk`) and `gp
 no vendor is hard-coded: a PKCS#11 key is named with an RFC 7512 URI, which is what every other tool
 that talks to a token already speaks, and a cloud is named by its own scheme rather than by a flag.
 
-A backend registers itself with `internal/signing/backend` from its `init`, and `farrier` blank-imports
+A backend registers itself with `internal/signing/backend` from its `init`, and `hostseal` blank-imports
 the ones it ships — the shape `database/sql` uses. `--key` takes a reference, and a reference selects a
 backend if and only if it begins with a registered scheme and a colon; everything else is a path, so
-`--key ~/.config/farrier/ops.key` keeps meaning what it always did. The parser touches no filesystem:
+`--key ~/.config/hostseal/ops.key` keeps meaning what it always did. The parser touches no filesystem:
 a rule that depended on what happened to exist on disk would mean different things on two machines.
 
 The registry lives one directory below `internal/signing` so that the agent and the control plane, which
@@ -164,12 +164,12 @@ operator names, that is asserted rather than reviewed for. See
 `TestGuaranteeNoManagedHostBinaryLoadsASigningBackend`. It is not the plugin loader this document
 refuses below: that refusal is about the agent, and this is the operator's own tool.
 
-**A backend ships only when `farrier sign` can exercise it end to end.** Signing is the one path where
+**A backend ships only when `hostseal sign` can exercise it end to end.** Signing is the one path where
 being wrong is unrecoverable: a signature no host accepts arrives as a trust anchor that has stopped
 working, days later, on machines nobody can easily inspect. An implementation that nothing drives is
 untested code in the worst place to have it, so a backend and the means to use it land together. The
 table above is the only list of which ones exist —
-`TestTheBackendsThisBuildLinksAreTheOnesTheDocumentationLists` holds it to what `farrier` actually
+`TestTheBackendsThisBuildLinksAreTheOnesTheDocumentationLists` holds it to what `hostseal` actually
 links, because the same list restated in a doc comment went two releases out of date before anybody
 noticed.
 
@@ -201,7 +201,7 @@ Whatever the backend, the audit log and the UI always record **which** signer au
 ### `notify.Sink` — an outbound notification
 
 ```go
-// Sink delivers an event to something outside Farrier.
+// Sink delivers an event to something outside HostSeal.
 type Sink interface {
     Name() string
     Deliver(ctx context.Context, ev Event) error
@@ -251,7 +251,7 @@ Two implementations ship, and they compose through `auth.Chain` rather than repl
 | Implementation | The credential | What it is for |
 | --- | --- | --- |
 | `Accounts` | an address and a password, then a session cookie | people. It is what makes the audit trail name somebody and the two-person approval rule satisfiable. |
-| `APITokens` | a token belonging to one account, `Authorization: Bearer frr_…` | scripts. It authenticates *as* that account, so nothing downstream has to know which of the two a request arrived on. |
+| `APITokens` | a token belonging to one account, `Authorization: Bearer hsl_…` | scripts. It authenticates *as* that account, so nothing downstream has to know which of the two a request arrived on. |
 
 There used to be a third, `StaticToken`: one shared bearer token per fleet, configured with a flag. It
 is gone rather than deprecated, for the reasons [`SECURITY.md`
@@ -267,7 +267,7 @@ would survive its own revocation.
 
 Both reach `internal/store`, which is why this package does — a property of local accounts rather than
 of the seam, since an OIDC implementation would reach an issuer instead. A third implementation adds a
-type here and an argument to the `auth.Chain` call in `cmd/farrier-server`; `Chain` asks every member,
+type here and an argument to the `auth.Chain` call in `cmd/hostseal-server`; `Chain` asks every member,
 so adding one cannot silently shadow another. What it must do is set `Identity.Provider`, for the reason
 above, and `Identity.Credential` — an OIDC or SAML implementation produces a session like any other,
 because what that field distinguishes is not where the identity came from but whether a person is at the
@@ -301,7 +301,7 @@ projection rather than a page that reads whatever the API returns, is
 One piece of it is worth knowing before you copy it. The live event feed reads the stream with `fetch`
 and a `ReadableStream`, not with `EventSource`, because `EventSource` cannot set a request header —
 and the browser's credential needs one. The cookie itself travels on its own, but the control plane
-refuses a cookie-authenticated request without `X-Farrier-Session`, which is the cross-site request
+refuses a cookie-authenticated request without `X-HostSeal-Session`, which is the cross-site request
 forgery defence and is not something `EventSource` can supply. The usual workaround puts a credential
 into the query string, and from there into every access log and proxy trace it passes. The cost is the
 reconnect loop in `core/event-stream.ts`, which `EventSource` would otherwise have supplied.
@@ -344,7 +344,7 @@ The permanently-refused list is in
 command", and none of the three will grow a parameter that names a program.
 
 The agent reaches them over one unix socket each, activated by systemd, and never through `sudo` —
-nothing in Farrier is setuid. The routing table in `internal/privsep` is the complete statement of which
+nothing in HostSeal is setuid. The routing table in `internal/privsep` is the complete statement of which
 intent reaches which helper, and it is checked against the catalogue on every build. Adding a socket, or
 widening the group on one of the three, is the same request as adding a fourth helper.
 
@@ -388,7 +388,7 @@ mTLS key.
 **Not a seam.** The interface exists so that tests do not need a database. It is not a portability
 layer and pull requests adding MySQL or SQLite backends will be declined.
 
-Farrier uses Postgres features that are load-bearing rather than incidental: `JSONB` with GIN indexes
+HostSeal uses Postgres features that are load-bearing rather than incidental: `JSONB` with GIN indexes
 for facts that gain fields constantly, partial indexes for the job claim, `LISTEN`/`NOTIFY` to wake
 long-polls without Redis, and `SELECT … FOR UPDATE SKIP LOCKED` for atomic job claiming. Abstracting
 those away would mean reimplementing a job queue and a pub/sub system badly, and then shipping a
@@ -409,7 +409,7 @@ This is the process, not an invitation.
 4. Update `internal/intent`, and update the expected-set literal in the guarantee test in the same
    commit — CI will fail until you do.
 5. If it needs root, it goes in one of the three existing helpers, and that helper re-reads and
-   re-enforces `/etc/farrier/policy.toml` itself. It does not get a new helper, and it does not get a
+   re-enforces `/etc/hostseal/policy.toml` itself. It does not get a new helper, and it does not get a
    new socket: add it to the routing table in `internal/privsep` naming the helper that already
    performs work of that kind, or the guarantee suite fails.
 6. Add the policy knob that lets a host refuse it. Every privileged intent must be refusable locally,

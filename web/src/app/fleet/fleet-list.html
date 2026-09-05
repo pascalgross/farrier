@@ -6,7 +6,7 @@
   @case ('failed') {
     <mat-card class="max-w-xl mx-auto mt-12">
       <mat-card-content class="!pt-6 flex items-start gap-3">
-        <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+        <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
         <p class="m-0">{{ error() }}</p>
       </mat-card-content>
     </mat-card>
@@ -16,10 +16,10 @@
     <header class="mb-6 flex flex-wrap items-baseline gap-x-8 gap-y-2">
       <h1 class="text-2xl font-medium m-0">Fleet</h1>
 
-      <p class="m-0 text-sm opacity-80 farrier-numeric">
+      <p class="m-0 text-sm opacity-80 hostseal-numeric">
         {{ onlineCount() }} of {{ hosts().length }} online
         @if (securityBacklog() > 0) {
-          · <span class="text-farrier-bad">{{ securityBacklog() }} security updates outstanding</span>
+          · <span class="text-hostseal-bad">{{ securityBacklog() }} security updates outstanding</span>
         }
         @if (rebootCount() > 0) {
           · {{ rebootCount() }} awaiting reboot
@@ -27,7 +27,7 @@
       </p>
     </header>
 
-    <farrier-enrol-panel class="block mb-6" />
+    <hostseal-enrol-panel class="block mb-6" />
 
     @if (hosts().length === 0) {
       <mat-card class="max-w-2xl">
@@ -55,19 +55,19 @@
           <td mat-cell *matCellDef="let host">
             <div class="flex flex-wrap items-center gap-1">
               @if (host.revoked) {
-                <mat-chip class="!bg-farrier-bad/20" matTooltip="This host's certificates have been withdrawn. It keeps patching from its local policy.">revoked</mat-chip>
+                <mat-chip class="!bg-hostseal-bad/20" matTooltip="This host's certificates have been withdrawn. It keeps patching from its local policy.">revoked</mat-chip>
               } @else if (host.online) {
-                <mat-chip class="!bg-farrier-ok/20">online</mat-chip>
+                <mat-chip class="!bg-hostseal-ok/20">online</mat-chip>
               } @else {
-                <mat-chip class="!bg-farrier-quiet/20">offline</mat-chip>
+                <mat-chip class="!bg-hostseal-quiet/20">offline</mat-chip>
               }
 
               @if (host.paused) {
-                <mat-chip class="!bg-farrier-warn/20"
-                          matTooltip="/etc/farrier/paused exists on this host. The control plane cannot override it: there is deliberately no resume operation.">paused</mat-chip>
+                <mat-chip class="!bg-hostseal-warn/20"
+                          matTooltip="/etc/hostseal/paused exists on this host. The control plane cannot override it: there is deliberately no resume operation.">paused</mat-chip>
               }
               @if (host.clockSkewed) {
-                <mat-chip class="!bg-farrier-warn/20" [matTooltip]="'Clock ' + offset(host) + '. Privileged operations fail closed beyond five minutes.'">clock</mat-chip>
+                <mat-chip class="!bg-hostseal-warn/20" [matTooltip]="'Clock ' + offset(host) + '. Privileged operations fail closed beyond five minutes.'">clock</mat-chip>
               }
             </div>
           </td>
@@ -78,18 +78,18 @@
           <td mat-cell *matCellDef="let host">
             <span [class.opacity-60]="!host.facts">{{ release(host) }}</span>
             @if (unsupportedRelease(host)) {
-              <mat-icon class="!text-base align-middle text-farrier-warn"
-                        matTooltip="Farrier supports the Ubuntu LTS releases in standard support, plus Debian stable and oldstable.">warning</mat-icon>
+              <mat-icon class="!text-base align-middle text-hostseal-warn"
+                        matTooltip="HostSeal supports the Ubuntu LTS releases in standard support, plus Debian stable and oldstable.">warning</mat-icon>
             }
             @if (host.facts?.kernel) {
-              <div class="text-xs opacity-70 farrier-numeric">{{ host.facts.kernel }}</div>
+              <div class="text-xs opacity-70 hostseal-numeric">{{ host.facts.kernel }}</div>
             }
           </td>
         </ng-container>
 
         <ng-container matColumnDef="updates">
           <th mat-header-cell *matHeaderCellDef>Updates</th>
-          <td mat-cell *matCellDef="let host" class="farrier-numeric">
+          <td mat-cell *matCellDef="let host" class="hostseal-numeric">
             @if (host.facts?.packages; as packages) {
               <!--
                 A host that could not run the query sends the same two zeroes a fully patched host
@@ -97,11 +97,11 @@
                 security updates" is the reassuring half of an answer nobody gave.
               -->
               @if (packages.incomplete) {
-                <span class="text-farrier-warn">could not be determined</span>
+                <span class="text-hostseal-warn">could not be determined</span>
               } @else if (packages.upgradableSecurity > 0) {
-                <span class="text-farrier-bad font-medium">{{ packages.upgradableSecurity }} security</span>
+                <span class="text-hostseal-bad font-medium">{{ packages.upgradableSecurity }} security</span>
               } @else {
-                <span class="text-farrier-ok">no security updates</span>
+                <span class="text-hostseal-ok">no security updates</span>
               }
               @if (!packages.incomplete) {
                 <div class="text-xs opacity-70">{{ packages.upgradableTotal }} total</div>
@@ -117,7 +117,7 @@
           <td mat-cell *matCellDef="let host">
             @if (host.facts?.reboot; as reboot) {
               @if (reboot.required) {
-                <span class="text-farrier-warn font-medium">required</span>
+                <span class="text-hostseal-warn font-medium">required</span>
               } @else if (reboot.conclusive === false) {
                 <!--
                   "No" and "nothing here can tell" are different answers. `/var/run/reboot-required`
@@ -159,7 +159,7 @@
 
         <ng-container matColumnDef="lastSeen">
           <th mat-header-cell *matHeaderCellDef>Last seen</th>
-          <td mat-cell *matCellDef="let host" class="farrier-numeric">
+          <td mat-cell *matCellDef="let host" class="hostseal-numeric">
             {{ age(host) }}
             @if (host.uptimeSeconds > 0) {
               <div class="text-xs opacity-70">up {{ uptime(host) }}</div>
@@ -169,7 +169,7 @@
 
         <tr mat-header-row *matHeaderRowDef="columns"></tr>
         <tr mat-row *matRowDef="let row; columns: columns"
-            [class.farrier-attention]="needsAttention(row)"></tr>
+            [class.hostseal-attention]="needsAttention(row)"></tr>
       </table>
     }
   }

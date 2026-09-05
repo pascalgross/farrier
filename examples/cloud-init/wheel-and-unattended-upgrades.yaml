@@ -1,10 +1,10 @@
 #cloud-config
 
 # A first-boot baseline: unattended security updates, a wheel group, su restricted to it, and one
-# administrator in that group. It is an example rather than a default — Farrier ships no template, and
+# administrator in that group. It is an example rather than a default — HostSeal ships no template, and
 # a baseline is a decision somebody makes about their own fleet.
 #
-# Farrier stores and renders this and never delivers it. The rendered user-data goes to whatever creates
+# HostSeal stores and renders this and never delivers it. The rendered user-data goes to whatever creates
 # the machine — a hypervisor, Terraform, MAAS, a provider's user-data field — and cloud-init applies it
 # at first boot. There is no path from the control plane to an already-running host; see
 # docs/SECURITY.md section 7.
@@ -12,8 +12,8 @@
 # {{admin_user}} is a substitution site, filled in by POST /api/v1/templates/{name}/render. Substitution
 # is textual, so the value is the operator's to get right: it lands in a YAML document and in a group
 # name, and a rendered document is read by the person who pastes it. A template used as a Tier 2
-# bootstrap (`farrier enroll --bootstrap`) is applied as exactly the bytes that were signed, so replace
-# the placeholder with a literal name *before* `farrier sign-template` rather than expecting a host to
+# bootstrap (`hostseal enroll --bootstrap`) is applied as exactly the bytes that were signed, so replace
+# the placeholder with a literal name *before* `hostseal sign-template` rather than expecting a host to
 # fill it in.
 
 package_update: true
@@ -56,8 +56,8 @@ write_files:
       DPkg::Lock::Timeout "600";
       Acquire::Retries "3";
 
-      // A reboot is not the update mechanism's decision. Farrier reports that one is required, and
-      // `host.reboot` is a destructive intent bounded by the host's own /etc/farrier/policy.toml —
+      // A reboot is not the update mechanism's decision. HostSeal reports that one is required, and
+      // `host.reboot` is a destructive intent bounded by the host's own /etc/hostseal/policy.toml —
       // which is the only place that answer belongs.
       Unattended-Upgrade::Automatic-Reboot "false";
       Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
@@ -70,13 +70,13 @@ write_files:
   # The administrator's name as data, in a file, rather than spliced into the command line below. A
   # rendered value is text somebody supplied; read back with "$(cat ...)" it reaches usermod as one
   # argument whatever it contains.
-  - path: /run/farrier-baseline/wheel-member
+  - path: /run/hostseal-baseline/wheel-member
     owner: root:root
     permissions: '0600'
     content: |
       {{admin_user}}
 
-  - path: /run/farrier-baseline/apply.sh
+  - path: /run/hostseal-baseline/apply.sh
     owner: root:root
     permissions: '0700'
     content: |
@@ -129,7 +129,7 @@ write_files:
         printf '%s\n' "$wheel_line" >> "$pam_su"
       fi
 
-      user=$(cat /run/farrier-baseline/wheel-member)
+      user=$(cat /run/hostseal-baseline/wheel-member)
       usermod --append --groups wheel "$user"
 
       # Four assertions, one per thing that can silently not have happened: the PAM edit, the group
@@ -140,7 +140,7 @@ write_files:
       systemctl is-enabled apt-daily-upgrade.timer > /dev/null
 
 runcmd:
-  # Argument vectors rather than shell strings, here and in every other Farrier document that runs
+  # Argument vectors rather than shell strings, here and in every other HostSeal document that runs
   # something: a list is arguments, a string is a command line somebody else's value can end up in.
   - [ systemctl, enable, --now, apt-daily.timer, apt-daily-upgrade.timer ]
-  - [ sh, /run/farrier-baseline/apply.sh ]
+  - [ sh, /run/hostseal-baseline/apply.sh ]

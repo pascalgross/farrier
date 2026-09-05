@@ -14,13 +14,13 @@ import { ApiService } from '../core/api.service';
 /**
  * The complete set of operations this control plane can ask a host to perform.
  *
- * This page exists because Farrier's central claim is about a set being small and closed, and a claim an
+ * This page exists because HostSeal's central claim is about a set being small and closed, and a claim an
  * operator can check from the running system in one screen is worth considerably more than the same
  * claim in a README. It shows the permanently refused list alongside the implemented one, for the same
  * reason: what is deliberately absent is as much the product as what is present.
  */
 @Component({
-  selector: 'farrier-catalogue',
+  selector: 'hostseal-catalogue',
   imports: [
     MatCardModule,
     MatChipsModule,

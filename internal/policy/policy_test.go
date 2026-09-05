@@ -188,13 +188,13 @@ func TestRestartableAllowsMatchesGlobs(t *testing.T) {
 		t.Error("the default policy permits restarting nginx.service; the list should be empty")
 	}
 
-	p.Services.Restartable = []string{"nginx.service", "farrier-*.service"}
-	for _, unit := range []string{"nginx.service", "farrier-agent.service", "farrier-x.service"} {
+	p.Services.Restartable = []string{"nginx.service", "hostseal-*.service"}
+	for _, unit := range []string{"nginx.service", "hostseal-agent.service", "hostseal-x.service"} {
 		if !p.RestartableAllows(unit) {
 			t.Errorf("%q should be permitted", unit)
 		}
 	}
-	for _, unit := range []string{"sshd.service", "nginx.socket", "farrier-agent.timer", "nginx"} {
+	for _, unit := range []string{"sshd.service", "nginx.socket", "hostseal-agent.timer", "nginx"} {
 		if p.RestartableAllows(unit) {
 			t.Errorf("%q should not be permitted", unit)
 		}

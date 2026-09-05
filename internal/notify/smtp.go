@@ -167,7 +167,7 @@ func (s *SMTP) Deliver(ctx context.Context, ev Event) error {
 
 // renderMail builds the message.
 //
-// The subject is the event's summary, not "Farrier notification": "web-01: 3 security updates
+// The subject is the event's summary, not "HostSeal notification": "web-01: 3 security updates
 // pending, 14 days old" is a mail somebody opens, and a generic subject is a folder rule within a
 // week. The rendering matters more than it sounds — it is the entire user interface of this sink.
 func renderMail(from string, to []string, ev Event) []byte {
@@ -198,7 +198,7 @@ func renderMail(from string, to []string, ev Event) []byte {
 	for _, key := range keys {
 		fmt.Fprintf(&b, "%s: %v\r\n", key, ev.Detail[key])
 	}
-	b.WriteString("\r\nSent by Farrier. The rule that matched is editable under Alerts in the UI.\r\n")
+	b.WriteString("\r\nSent by HostSeal. The rule that matched is editable under Alerts in the UI.\r\n")
 	return []byte(b.String())
 }
 

@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/id"
+	"github.com/pascalgross/hostseal/internal/id"
 )
 
 // NewID returns a lexically sortable, random identifier.
 //
 // A thin re-export of internal/id, kept because every call site in this package says server.NewID and
-// because the shape belongs to the whole product rather than to the control plane: `farrier sign`
+// because the shape belongs to the whole product rather than to the control plane: `hostseal sign`
 // generates job identifiers on an operator's laptop from the same function.
 func NewID() (string, error) { return id.New() }
 
@@ -38,11 +38,11 @@ func NewEnrollmentToken() (token, hash string, err error) {
 // than a shortcut.
 const enrollmentTokenBytes = 32
 
-// enrollmentTokenPrefix marks a Farrier enrolment token in a log or a paste.
+// enrollmentTokenPrefix marks a HostSeal enrolment token in a log or a paste.
 //
 // Secret scanners key on prefixes, and a token that looks like any other opaque string is one nobody's
 // tooling can recognise when it turns up somewhere it should not be.
-const enrollmentTokenPrefix = "frr_"
+const enrollmentTokenPrefix = "hsl_"
 
 // EnrollmentTokenStandIn returns a value the exact length of a real token, and no use as one.
 //

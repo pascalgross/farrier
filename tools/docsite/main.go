@@ -45,7 +45,7 @@ var assets embed.FS
 //
 // Output is a flat file rather than a directory with an index, so that every link between pages is a
 // bare file name. That survives the site being served from a repository sub-path
-// (user.github.io/farrier/) and from a custom domain root without regenerating anything, and it makes
+// (user.github.io/hostseal/) and from a custom domain root without regenerating anything, and it makes
 // the built output browsable over file:// — which is how somebody checks a documentation change
 // locally.
 type page struct {
@@ -71,7 +71,7 @@ type page struct {
 // be in a folder acquires pages nobody decided to publish, and loses ordering that carries meaning: the
 // guarantee comes before the protocol because nobody should read the second without the first.
 var pages = []page{
-	{Source: "README.md", Output: "index.html", Title: "Farrier",
+	{Source: "README.md", Output: "index.html", Title: "HostSeal",
 		Summary: "Fleet management without a remote shell"},
 	{Source: "docs/INSTALL.md", Output: "install.html", Title: "Installing",
 		Summary: "A control plane, a host, and what a fresh agent will not do"},
@@ -110,7 +110,7 @@ type document struct {
 func main() {
 	root := flag.String("root", ".", "repository root")
 	out := flag.String("out", "public", "directory to write the site into")
-	repo := flag.String("repo", "https://github.com/pascalgross/farrier", "repository URL for source links")
+	repo := flag.String("repo", "https://github.com/pascalgross/hostseal", "repository URL for source links")
 	ref := flag.String("ref", "main", "git ref that source links point at")
 	flag.Parse()
 

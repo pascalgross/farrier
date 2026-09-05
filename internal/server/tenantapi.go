@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/auth"
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/auth"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // MaxTenantRequestBytes bounds a tenant-administration request body.
@@ -316,7 +316,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, who auth.I
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// checkWebhookURL answers the request itself when a webhook URL is one Farrier will not post to.
+// checkWebhookURL answers the request itself when a webhook URL is one HostSeal will not post to.
 //
 // It returns whether the caller may continue, in the shape the handlers around it already use, so that
 // both write paths refuse the same values with the same message. The empty string is how a tenant says

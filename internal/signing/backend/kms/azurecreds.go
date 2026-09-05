@@ -28,7 +28,7 @@ type azureTokenResponse struct {
 // absent — client-certificate authentication and workload identity federation — and their escape
 // hatch is the same one command every provider here has:
 //
-//	FARRIER_KMS_BEARER_TOKEN="$(az account get-access-token --resource https://vault.azure.net --query accessToken -o tsv)"
+//	HOSTSEAL_KMS_BEARER_TOKEN="$(az account get-access-token --resource https://vault.azure.net --query accessToken -o tsv)"
 //
 // which is documented in docs/INSTALL.md rather than implemented as a third credential chain.
 func azureToken(ctx context.Context, scope string) (string, error) {

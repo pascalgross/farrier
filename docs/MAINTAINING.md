@@ -6,11 +6,19 @@ setting that lives only in somebody's memory is a setting that will be wrong aft
 
 > [!IMPORTANT]
 > One decision on this page is irreversible: the URL of the APT repository. It is written into
-> `/etc/apt/sources.list.d/farrier.sources` on every host that ever installs the agent, including
+> `/etc/apt/sources.list.d/hostseal.sources` on every host that ever installs the agent, including
 > fleets that will later be unreachable. Read [§4](#4-the-apt-repository-url) before the first release,
 > not after it.
 
 ## 1. Repository basics
+
+**The repository must be named `hostseal`.** The Go module path is
+`github.com/pascalgross/hostseal`, and the image labels, the unit files, the issue templates and the
+release workflow all name that URL. GitHub redirects the old name, so nothing breaks loudly if the
+rename is pending — which is the problem: `go get` follows the redirect and records the *new* path, so
+the mismatch surfaces first in somebody else's build rather than in this repository's CI. Rename it,
+and leave the redirect in place rather than creating anything at the old name, because a repository
+created there would silently take over the redirect for every existing clone.
 
 **The default branch must be `main`.** Every workflow keyed to a push — `ci`, `guarantee`, `security`
 and `pages` — names it, so a repository whose default branch is something else looks healthy and runs
@@ -22,7 +30,7 @@ from the name of the first branch pushed to it, which is rarely the one anybody 
 | Setting | Value |
 | --- | --- |
 | Description | Fleet management for Ubuntu and Debian servers, without a remote shell. The agent is outbound-only, runs a closed set of typed operations, and obeys a policy the control plane cannot change. |
-| Website | `https://farrier.tools` |
+| Website | `https://hostseal.io` |
 | Topics | `ubuntu` `debian` `fleet-management` `patch-management` `unattended-upgrades` `systemd` `golang` `devops` `sysadmin` `security` |
 | Issues | On |
 | Discussions | On — the issue templates link to it for proposals |
@@ -85,7 +93,7 @@ The workflow passes `enablement: true` to `actions/configure-pages`, so the firs
 `main` will turn Pages on by itself if it has not been turned on by hand. Setting it explicitly is
 still worth doing, because the failure mode when it is off is a red deploy at the end of a release.
 
-**Custom domain: `farrier.tools`.**
+**Custom domain: `hostseal.io`.**
 
 - Apex: four `A` records to `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
   `185.199.111.153`, and the four matching `AAAA` records for `2606:50c0:8000::153` through
@@ -93,11 +101,11 @@ still worth doing, because the failure mode when it is off is a red deploy at th
   stays in the rotation, so roughly one request in five reaches the wrong machine — including one
   `apt-get update` in five. An intermittent repository failure is considerably harder to diagnose than
   a total one, and it also blocks GitHub from issuing the certificate.
-- `www.farrier.tools`: a `CNAME` to `pascalgross.github.io`.
-- Enter `farrier.tools` in the Pages settings, wait for the certificate, then tick *Enforce HTTPS*.
+- `www.hostseal.io`: a `CNAME` to `pascalgross.github.io`.
+- Enter `hostseal.io` in the Pages settings, wait for the certificate, then tick *Enforce HTTPS*.
 
 GitHub Pages accepts exactly one custom domain per site, so the domain configured here is also the
-domain under which `/apt` is served. That makes `farrier.tools` permanently load-bearing, which is a
+domain under which `/apt` is served. That makes `hostseal.io` permanently load-bearing, which is a
 real obligation and worth naming rather than discovering: see §4.
 
 The site is laid out as:
@@ -114,23 +122,23 @@ practical benefit is that the archive signing key is absent from every documenta
 
 ## 4. The APT repository URL
 
-Set the repository variable **`FARRIER_APT_URL`** (Settings → Secrets and variables → Actions →
+Set the repository variable **`HOSTSEAL_APT_URL`** (Settings → Secrets and variables → Actions →
 Variables) to:
 
 ```
-https://farrier.tools/apt
+https://hostseal.io/apt
 ```
 
 The release workflow refuses to publish without it, deliberately, rather than defaulting to something
 somebody would have to live with.
 
-This URL cannot be migrated. It is written into `/etc/apt/sources.list.d/farrier.sources` on every
+This URL cannot be migrated. It is written into `/etc/apt/sources.list.d/hostseal.sources` on every
 host that installs the agent, and a host forgotten in a rack somewhere is exactly the one that most
-needs to keep receiving updates. `pascalgross.github.io/farrier/apt` was the alternative and is worse:
+needs to keep receiving updates. `pascalgross.github.io/hostseal/apt` was the alternative and is worse:
 it would tie a permanent URL to an account name and a repository name, either of which may change if
 the project ever moves to an organisation.
 
-**`farrier.tools` must therefore never be allowed to lapse.** It is not a marketing asset that can be
+**`hostseal.io` must therefore never be allowed to lapse.** It is not a marketing asset that can be
 dropped when the project's attention moves elsewhere; it is infrastructure that hosts depend on.
 Concretely:
 
@@ -159,8 +167,8 @@ gpg --batch --full-generate-key <<'KEY'
 Key-Type: RSA
 Key-Length: 4096
 Key-Usage: sign
-Name-Real: Farrier Archive Signing Key
-Name-Email: farrier@pegasusnetworks.de
+Name-Real: HostSeal Archive Signing Key
+Name-Email: hostseal@hostseal.io
 Expire-Date: 0
 %commit
 KEY
@@ -169,7 +177,7 @@ gpg --list-secret-keys --keyid-format=long
 ```
 
 RSA 4096 rather than an elliptic curve: this key has to be verifiable by the `gpgv` on the oldest
-release Farrier supports, and RSA is the one algorithm no version of it has ever been without.
+release HostSeal supports, and RSA is the one algorithm no version of it has ever been without.
 
 No expiry, because an expired archive key breaks `apt-get update` on every host at once, and the repair
 is a person visiting each of them. The mitigation for a key that never expires is where it is kept.
@@ -187,9 +195,9 @@ and are exactly the kind of place a file is later found by someone who was not t
 passphrase-free signing key does not survive that.
 
 ```bash
-gpg --armor --export-secret-keys farrier@pegasusnetworks.de \
-  | op document create - --title "Farrier archive signing key (private)" \
-      --file-name farrier-archive-key.asc --vault <company-vault>
+gpg --armor --export-secret-keys hostseal@hostseal.io \
+  | op document create - --title "HostSeal archive signing key (private)" \
+      --file-name hostseal-archive-key.asc --vault <company-vault>
 ```
 
 Piped rather than written to a file first, so the unprotected key never touches a disk. Record the
@@ -201,8 +209,8 @@ applies: this must outlive one person's account.
 If a password manager is genuinely not available, encrypt the export before it goes anywhere:
 
 ```bash
-gpg --armor --export-secret-keys farrier@pegasusnetworks.de \
-  | gpg --symmetric --cipher-algo AES256 --armor > farrier-archive-key.asc.gpg
+gpg --armor --export-secret-keys hostseal@hostseal.io \
+  | gpg --symmetric --cipher-algo AES256 --armor > hostseal-archive-key.asc.gpg
 ```
 
 and keep that passphrase somewhere other than beside the file.
@@ -253,12 +261,12 @@ make every documentation push wait for an approval. The `github-pages` environme
 default deployment rule (the default branch, nothing else) and holds no secrets of ours.
 
 The public half needs no configuration: `mkapt.sh` exports it into the published repository as
-`farrier-archive-keyring.gpg`, which is what hosts install.
+`hostseal-archive-keyring.gpg`, which is what hosts install.
 
 ## 6. Cutting a release
 
 ```bash
-git tag -s v0.1.0 -m "Farrier 0.1.0"
+git tag -s v0.1.0 -m "HostSeal 0.1.0"
 git push origin v0.1.0
 ```
 

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // SessionCookieName is where a signed-in browser's credential lives.
@@ -22,7 +22,7 @@ import (
 // credential that a script running on the page cannot read. The interface previously kept a bearer
 // token in localStorage and said in its own comment that this was a trade worth naming; this is the
 // other side of that trade being taken.
-const SessionCookieName = "farrier_session"
+const SessionCookieName = "hostseal_session"
 
 // SessionHeader is the header a cookie-authenticated request must carry.
 //
@@ -38,7 +38,7 @@ const SessionCookieName = "farrier_session"
 //
 // The value is not checked. Its presence is the proof; a value would imply a secret that has to be
 // distributed, stored and compared, and would add nothing a header name does not already say.
-const SessionHeader = "X-Farrier-Session"
+const SessionHeader = "X-HostSeal-Session"
 
 // The three numbers that decide how long a sign-in lasts.
 //
@@ -152,7 +152,7 @@ func (a *Accounts) Name() string { return "local-account" }
 // the moment the control plane could not tell whether it had.
 //
 // Both windows are checked against this process's clock rather than the database's, matching every
-// other validity window in Farrier. docs/SECURITY.md treats clock skew as a boundary, and a credential
+// other validity window in HostSeal. docs/SECURITY.md treats clock skew as a boundary, and a credential
 // that outlived its window because two machines disagreed is the least visible way for that to matter.
 func (a *Accounts) Authenticate(ctx context.Context, r *http.Request) (*Identity, error) {
 	cookie, err := r.Cookie(SessionCookieName)
@@ -460,7 +460,7 @@ var decoyHash = sync.OnceValue(func() string {
 		// A hash of a constant is worse than a hash of a random string and much better than skipping
 		// the verification, which is the whole point of this value. crypto/rand failing at all is a
 		// broken machine.
-		token = "farrier-decoy-password"
+		token = "hostseal-decoy-password"
 	}
 	hashed, err := HashPassword(token)
 	if err != nil {

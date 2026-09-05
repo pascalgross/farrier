@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // gcpScheme selects this provider.

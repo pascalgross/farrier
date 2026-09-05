@@ -14,16 +14,16 @@ set -euo pipefail
 
 : "${INSTANCE:?}"
 
-if [ "${FARRIER_VM:-1}" != "1" ]; then
+if [ "${HOSTSEAL_VM:-1}" != "1" ]; then
 	skip "running in a container, where a reboot does not exercise what this scenario tests"
 	exit 0
 fi
 
-SPOOL=/var/lib/farrier/pending-results
+SPOOL=/var/lib/hostseal/pending-results
 JOB=01JTESTFLEETREBOOT
 
 say "writing a pending result the way the agent does, and syncing it"
-run_sh "$INSTANCE" "install -d -o farrier -g farrier -m 0750 $SPOOL"
+run_sh "$INSTANCE" "install -d -o hostseal -g hostseal -m 0750 $SPOOL"
 run_sh "$INSTANCE" "cat > $SPOOL/$JOB.json <<'JSON'
 {
   \"jobId\": \"$JOB\",
@@ -33,7 +33,7 @@ run_sh "$INSTANCE" "cat > $SPOOL/$JOB.json <<'JSON'
   \"exitCode\": 0
 }
 JSON
-chown farrier:farrier $SPOOL/$JOB.json
+chown hostseal:hostseal $SPOOL/$JOB.json
 chmod 0640 $SPOOL/$JOB.json
 sync $SPOOL/$JOB.json
 sync $SPOOL"
@@ -62,7 +62,7 @@ pass "the pending result survived a hard reboot"
 # The earlier version of this repeated the previous assertion verbatim and established nothing; what
 # matters is that the agent *looked*, and that a result it could not deliver stays on disk. A result is
 # removed only after a 2xx, which is what stops a lost response from turning into a re-execution.
-run_sh "$INSTANCE" "journalctl -u farrier-agent.service --no-pager --since '-5 min' \
+run_sh "$INSTANCE" "journalctl -u hostseal-agent.service --no-pager --since '-5 min' \
 	| grep -q 'held from an earlier run\|pending job result'" \
 	|| skip "the agent has not logged a delivery attempt yet; it is unenrolled on this machine"
 

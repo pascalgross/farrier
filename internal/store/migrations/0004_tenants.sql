@@ -16,7 +16,7 @@
 -- FORCE is the half that is easy to omit and worthless to omit: without it the table owner — which is
 -- the role running the application — bypasses every policy below and the isolation is decoration. A
 -- role with BYPASSRLS or SUPERUSER bypasses them too, whatever this file says, which is why
--- farrier-server refuses to start on such a role rather than serving without the boundary it claims.
+-- hostseal-server refuses to start on such a role rather than serving without the boundary it claims.
 --
 -- Two rows have to be findable before the tenant is known, because finding them is *how* the tenant
 -- becomes known: the certificate presented on an agent request, and the enrolment token presented by a
@@ -26,7 +26,7 @@
 -- instead of a whole table.
 --
 -- A note for whoever writes migration 0005: FORCE applies to this file's successors too. A migration
--- that has to touch existing tenant rows must either set farrier.tenant per tenant or disable the
+-- that has to touch existing tenant rows must either set hostseal.tenant per tenant or disable the
 -- policy around itself. This one does its backfill before the policies exist, which is why the
 -- ALTER ... ENABLE statements are all at the end.
 
@@ -211,27 +211,27 @@ ALTER TABLE job_results FORCE  ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS hosts_tenant_isolation ON hosts;
 CREATE POLICY hosts_tenant_isolation ON hosts
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 DROP POLICY IF EXISTS jobs_tenant_isolation ON jobs;
 CREATE POLICY jobs_tenant_isolation ON jobs
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 DROP POLICY IF EXISTS job_results_tenant_isolation ON job_results;
 CREATE POLICY job_results_tenant_isolation ON job_results
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 -- The two tables that have to be readable before the tenant is known.
 --
 -- An agent presents a certificate and a new machine presents an enrolment token, and in both cases
 -- discovering which tenant the caller belongs to *is* the lookup. Exempting the tables would put two
 -- whole tables outside the boundary; instead the policy admits the single row whose key the caller
--- named in farrier.resolve_key. That key is a SHA-256 the caller already holds — of a certificate this
+-- named in hostseal.resolve_key. That key is a SHA-256 the caller already holds — of a certificate this
 -- CA issued, or of a token issued to that tenant — so naming one is not a way of finding another. Every
--- other access to these tables goes through farrier.tenant like everything else.
+-- other access to these tables goes through hostseal.tenant like everything else.
 ALTER TABLE certificates      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE certificates      FORCE  ROW LEVEL SECURITY;
 ALTER TABLE enrollment_tokens ENABLE ROW LEVEL SECURITY;
@@ -239,16 +239,16 @@ ALTER TABLE enrollment_tokens FORCE  ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS certificates_tenant_isolation ON certificates;
 CREATE POLICY certificates_tenant_isolation ON certificates
-    USING      (tenant_id = current_setting('farrier.tenant', true)
-                OR fingerprint = current_setting('farrier.resolve_key', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true)
+                OR fingerprint = current_setting('hostseal.resolve_key', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 DROP POLICY IF EXISTS enrollment_tokens_tenant_isolation ON enrollment_tokens;
 CREATE POLICY enrollment_tokens_tenant_isolation ON enrollment_tokens
-    USING      (tenant_id = current_setting('farrier.tenant', true)
-                OR hash = current_setting('farrier.resolve_key', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true)
-                OR hash = current_setting('farrier.resolve_key', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true)
+                OR hash = current_setting('hostseal.resolve_key', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true)
+                OR hash = current_setting('hostseal.resolve_key', true));
 
 -- tenants itself is deliberately not under a tenant policy: it is the table a platform administrator
 -- manages, and a row in it is the tenant rather than something belonging to one. Reaching it at all

@@ -6,14 +6,14 @@
 </p>
 <p class="text-sm opacity-80 max-w-3xl">
   This credential administers fleets and reaches no fleet's hosts or jobs — every operator route
-  refuses it. That is the point of having two credentials rather than one: running Farrier for other
+  refuses it. That is the point of having two credentials rather than one: running HostSeal for other
   people should not require being able to read what they run.
 </p>
 
 @if (error()) {
   <mat-card class="max-w-xl mt-6">
     <mat-card-content class="!pt-6 flex items-start gap-3">
-      <mat-icon class="text-farrier-bad" aria-hidden="true">error_outline</mat-icon>
+      <mat-icon class="text-hostseal-bad" aria-hidden="true">error_outline</mat-icon>
       <p class="m-0">{{ error() }}</p>
     </mat-card-content>
   </mat-card>
@@ -57,7 +57,7 @@
     </mat-form-field>
 
     @if (actionError()) {
-      <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+      <p class="m-0 text-sm text-hostseal-bad">{{ actionError() }}</p>
     }
   </mat-card-content>
 
@@ -144,10 +144,10 @@
             <div class="flex flex-wrap items-center gap-3">
               <p class="m-0 text-sm opacity-80 flex-1 min-w-48">
                 Retiring this fleet removes its hosts, certificates, enrolment tokens, jobs, results
-                and accounts. It reaches no machine — nothing in Farrier does — so its agents keep
+                and accounts. It reaches no machine — nothing in HostSeal does — so its agents keep
                 running on their own local policy and are refused at their next request.
               </p>
-              <button mat-stroked-button type="button" class="!text-farrier-bad"
+              <button mat-stroked-button type="button" class="!text-hostseal-bad"
                       (click)="askToRetire(fleet)">
                 {{ retiring() === fleet.id ? 'Keep it' : 'Retire fleet' }}
               </button>
@@ -165,7 +165,7 @@
                 </mat-hint>
               </mat-form-field>
 
-              <button mat-flat-button type="button" class="self-start !bg-farrier-bad"
+              <button mat-flat-button type="button" class="self-start !bg-hostseal-bad"
                       [disabled]="!canRetire()" (click)="retire(fleet)">
                 Retire {{ fleet.slug }}
               </button>

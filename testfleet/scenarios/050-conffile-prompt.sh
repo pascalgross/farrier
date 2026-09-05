@@ -19,7 +19,7 @@ say "picking a package with a conffile and editing it"
 # A package that is small, present on both families, and ships a conffile.
 run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
 	apt-get install -y -qq --reinstall logrotate' >/dev/null
-run_sh "$INSTANCE" 'printf "\n# edited by the Farrier test fleet\n" >> /etc/logrotate.conf'
+run_sh "$INSTANCE" 'printf "\n# edited by the HostSeal test fleet\n" >> /etc/logrotate.conf'
 
 # The naive form: noninteractive frontend and nothing else. dpkg is given a sixty-second deadline, which
 # is long enough that hitting it means dpkg is waiting for an answer rather than being slow — the
@@ -42,7 +42,7 @@ fi
 run_sh "$INSTANCE" 'export DEBIAN_FRONTEND=noninteractive
 	dpkg --configure -a >/dev/null 2>&1 || true'
 
-# The form Farrier's executor must use. It has to complete, and it has to keep the administrator's
+# The form HostSeal's executor must use. It has to complete, and it has to keep the administrator's
 # edited file rather than silently replacing it.
 say "reinstalling the way the executor must"
 correct_status=0
@@ -60,7 +60,7 @@ if [ "$correct_status" -ne 0 ]; then
 fi
 pass "the run completes with --force-confdef, --force-confold and a lock timeout"
 
-run_sh "$INSTANCE" 'grep -q "edited by the Farrier test fleet" /etc/logrotate.conf' \
+run_sh "$INSTANCE" 'grep -q "edited by the HostSeal test fleet" /etc/logrotate.conf' \
 	|| fail "the administrator's edited conffile was replaced"
 pass "the administrator's edit was kept, not overwritten"
 

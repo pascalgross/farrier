@@ -115,7 +115,7 @@ var interpreterBasenames = map[string]bool{
 	"sudo": true, "su": true, "runuser": true, "pkexec": true, "doas": true,
 	"curl": true, "wget": true,
 
-	// The Windows spellings, present although Farrier ships no Windows binary. rundll32, regsvr32 and
+	// The Windows spellings, present although HostSeal ships no Windows binary. rundll32, regsvr32 and
 	// msiexec are here for the same reason env and xargs are: each runs a program of the caller's
 	// choosing, which is the capability this list is about rather than the word "shell". refused.go has
 	// refused an *intent* named "powershell" since long before this line; only the check that reads
@@ -259,7 +259,7 @@ func goFilesUnder(t *testing.T, root string) map[string][]string {
 	return byDir
 }
 
-// TestGuaranteeNoCodePathReachesAShell asserts every process Farrier starts is a compile-time constant.
+// TestGuaranteeNoCodePathReachesAShell asserts every process HostSeal starts is a compile-time constant.
 //
 // This is the mechanical form of the first sentence of docs/SECURITY.md §2.1. Two things are checked
 // for every exec call in shipped code: that the program is an absolute path fixed at compile time —
@@ -325,7 +325,7 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 				// "the check found nothing wrong".
 				if shape.opaque {
 					t.Errorf("%s:%d: %s.%s executes through a shape this check cannot read.\n"+
-						"%s Every process Farrier starts goes through internal/run. "+
+						"%s Every process HostSeal starts goes through internal/run. "+
 						"See docs/SECURITY.md §2.1.", rel, pos.Line, pkg, fn, shape.why)
 					return true
 				}
@@ -342,7 +342,7 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 				program, resolved := resolveStringExpr(programArg, consts)
 				if !resolved {
 					t.Errorf("%s:%d: the program passed to %s.%s is not a compile-time constant.\n"+
-						"Farrier requires every executed program to be a literal absolute path, or a "+
+						"HostSeal requires every executed program to be a literal absolute path, or a "+
 						"package-level string constant, so that no expression in the repository can "+
 						"become the thing that runs. See docs/SECURITY.md §2.1.", rel, pos.Line, pkg, fn)
 					return true
@@ -351,7 +351,7 @@ func TestGuaranteeNoCodePathReachesAShell(t *testing.T) {
 				// Windows path fails both, and "not an absolute path" is the less useful thing to be
 				// told about powershell.exe.
 				if interpreterBasenames[programBasename(program)] {
-					t.Errorf("%s:%d: %s.%s runs the interpreter %q. No code path in Farrier may lead "+
+					t.Errorf("%s:%d: %s.%s runs the interpreter %q. No code path in HostSeal may lead "+
 						"from a network message to something that interprets its arguments.",
 						rel, pos.Line, pkg, fn, program)
 				}
@@ -484,7 +484,7 @@ func TestGuaranteeNoExecCommandIsBuiltAsAStructLiteral(t *testing.T) {
 				pos := fset.Position(lit.Pos())
 				t.Errorf("%s:%d: an exec.Cmd is constructed here as a struct literal.\n"+
 					"A command built field by field escapes the argument check on exec.Command, and "+
-					"every process Farrier starts goes through internal/run. See docs/SECURITY.md §2.1.",
+					"every process HostSeal starts goes through internal/run. See docs/SECURITY.md §2.1.",
 					rel, pos.Line)
 				return true
 			})
@@ -572,7 +572,7 @@ func resolveStringExpr(e ast.Expr, consts map[string]string) (string, bool) {
 
 // TestGuaranteeRootHelpersTakeNoPolicyPath is local policy sovereignty at the helper's own inputs.
 //
-// The agent can write /var/lib/farrier. A helper that accepted --policy would therefore be a helper a
+// The agent can write /var/lib/hostseal. A helper that accepted --policy would therefore be a helper a
 // compromised agent could point at a file it had just written itself, and local policy would end there:
 // the enforcement would still run, as root, against exactly the policy the attacker chose. The same
 // applies to the socket the agent reaches the helper on, which is why privsep.Request carries no field
@@ -580,7 +580,7 @@ func resolveStringExpr(e ast.Expr, consts map[string]string) (string, bool) {
 //
 // The check is on the source rather than on behaviour because the failure is a flag somebody adds back
 // for testing and forgets to remove. internal/helper.Authorise still takes a path, which is what tests
-// and `farrier-agent policy check` use; nothing reachable from the agent does.
+// and `hostseal-agent policy check` use; nothing reachable from the agent does.
 func TestGuaranteeRootHelpersTakeNoPolicyPath(t *testing.T) {
 	root := repoRoot(t)
 	fset := token.NewFileSet()
@@ -719,29 +719,29 @@ func TestGuaranteeAnAlertRuleCannotProduceAJob(t *testing.T) {
 
 // managedHostBinaries are the programs that run on a machine somebody else owns.
 //
-// The agent, the control plane and the three root helpers. `farrier` is deliberately not here: it is
+// The agent, the control plane and the three root helpers. `hostseal` is deliberately not here: it is
 // the operator's own tool, run by a person at a terminal, and it is the one program that may load a
 // PKCS#11 module or reach a network — which is the whole reason the property below is about these
 // five and not about the repository.
 var managedHostBinaries = []string{
-	"cmd/farrier-agent",
-	"cmd/farrier-server",
+	"cmd/hostseal-agent",
+	"cmd/hostseal-server",
 	"helpers/apply-updates",
 	"helpers/restart-unit",
 	"helpers/reboot-host",
-	"cmd/farrier-update-scan",
+	"cmd/hostseal-update-scan",
 }
 
 // forbiddenOnAManagedHost are import paths that must not be reachable from those programs.
 //
 // Both entries are about the same sentence, which docs/SECURITY.md §3 and docs/EXTENDING.md both
 // state: there is no runtime plugin loader in the agent, ever, and dlopen is named as an example of
-// what that means. The signing backends now contain one — `farrier` loads a PKCS#11 module an operator
+// what that means. The signing backends now contain one — `hostseal` loads a PKCS#11 module an operator
 // names — and purego is what it loads with. Neither may become reachable from a program that runs on a
 // managed host, and "it is not today" is a fact about the current import graph rather than a property,
 // which is what this test converts it into.
 var forbiddenOnAManagedHost = map[string]string{
-	"github.com/pascalgross/farrier/internal/signing/backend": "the signing-backend registry, which " +
+	"github.com/pascalgross/hostseal/internal/signing/backend": "the signing-backend registry, which " +
 		"exists so that only the operator's own tool links a backend",
 	"github.com/ebitengine/purego": "a foreign-function interface, which is how the PKCS#11 backend " +
 		"loads a module the operator names",
@@ -766,8 +766,8 @@ func TestGuaranteeTheAgentBinaryNamesItsPlatforms(t *testing.T) {
 	// Each managed-host binary, and the constraint it must carry. A binary absent from this map is one
 	// nobody decided the platforms for.
 	constrained := map[string]string{
-		filepath.Join("cmd", "farrier-agent", "main.go"):       "//go:build linux || windows",
-		filepath.Join("cmd", "farrier-update-scan", "main.go"): "//go:build windows",
+		filepath.Join("cmd", "hostseal-agent", "main.go"):       "//go:build linux || windows",
+		filepath.Join("cmd", "hostseal-update-scan", "main.go"): "//go:build windows",
 	}
 
 	for rel, want := range constrained {
@@ -797,7 +797,7 @@ func TestGuaranteeTheAgentBinaryNamesItsPlatforms(t *testing.T) {
 //
 // docs/SECURITY.md §3 and docs/EXTENDING.md both refuse one in the agent, without qualification and with
 // dlopen named as the example of what that means. Enumerating Windows updates requires loading wuapi.dll
-// through COM, which is that refusal's subject exactly — so it happens in cmd/farrier-update-scan, a
+// through COM, which is that refusal's subject exactly — so it happens in cmd/hostseal-update-scan, a
 // short-lived unprivileged process that holds no credential, and never in the process holding the host's
 // mTLS private key.
 //
@@ -809,8 +809,8 @@ func TestGuaranteeOnlyTheScanBinaryReachesCOM(t *testing.T) {
 	root := repoRoot(t)
 	imports := moduleImportGraph(t, root)
 
-	const com = "github.com/pascalgross/farrier/internal/wua"
-	const scanner = "cmd/farrier-update-scan"
+	const com = "github.com/pascalgross/hostseal/internal/wua"
+	const scanner = "cmd/hostseal-update-scan"
 
 	// The scanner must reach it, or the package is dead code and this test proves nothing.
 	if _, ok := imports[scanner]; !ok {
@@ -832,7 +832,7 @@ func TestGuaranteeOnlyTheScanBinaryReachesCOM(t *testing.T) {
 		if chain, reaches := reachableFrom(imports, entry)[com]; reaches {
 			t.Errorf("%s reaches %s, which loads wuapi.dll into the calling process.\n  through: %s\n"+
 				"See docs/SECURITY.md §3: there is no runtime plugin loader in the agent, ever. The scan "+
-				"runs in cmd/farrier-update-scan, which holds no credential.",
+				"runs in cmd/hostseal-update-scan, which holds no credential.",
 				entry, com, strings.Join(chain, " → "))
 		}
 	}
@@ -875,7 +875,7 @@ func TestGuaranteeNoManagedHostBinaryLoadsASigningBackend(t *testing.T) {
 // denies os/exec here as it does everywhere else.
 func moduleImportGraph(t *testing.T, root string) map[string][]string {
 	t.Helper()
-	const modulePath = "github.com/pascalgross/farrier/"
+	const modulePath = "github.com/pascalgross/hostseal/"
 
 	graph := map[string][]string{}
 	fset := token.NewFileSet()
@@ -921,11 +921,11 @@ func moduleImportGraph(t *testing.T, root string) map[string][]string {
 
 // reachableFrom returns every import reachable from one package, with the chain that reached it.
 //
-// The chain is what makes a failure actionable. "farrier-agent reaches purego" is a fact somebody then
-// has to go and find; "farrier-agent → internal/agent → internal/signing/backend/pkcs11 → purego" is
+// The chain is what makes a failure actionable. "hostseal-agent reaches purego" is a fact somebody then
+// has to go and find; "hostseal-agent → internal/agent → internal/signing/backend/pkcs11 → purego" is
 // the line to delete.
 func reachableFrom(graph map[string][]string, entry string) map[string][]string {
-	const modulePath = "github.com/pascalgross/farrier/"
+	const modulePath = "github.com/pascalgross/hostseal/"
 
 	seen := map[string][]string{}
 	var walk func(dir string, chain []string)

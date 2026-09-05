@@ -23,55 +23,55 @@ export const routes: Routes = [
     path: '',
     pathMatch: 'full',
     loadComponent: () => import('./fleet/fleet-list').then((m) => m.FleetList),
-    title: 'Fleet — Farrier',
+    title: 'Fleet — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'hosts/:id',
     loadComponent: () => import('./fleet/host-detail').then((m) => m.HostDetail),
-    title: 'Host — Farrier',
+    title: 'Host — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'jobs',
     loadComponent: () => import('./jobs/jobs-list').then((m) => m.JobsList),
-    title: 'Jobs — Farrier',
+    title: 'Jobs — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'catalogue',
     loadComponent: () => import('./catalogue/catalogue').then((m) => m.Catalogue),
-    title: 'Operations — Farrier',
+    title: 'Operations — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'services',
     loadComponent: () => import('./services/services-page').then((m) => m.ServicesPage),
-    title: 'Services — Farrier',
+    title: 'Services — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'events',
     loadComponent: () => import('./events/events-page').then((m) => m.EventsPage),
-    title: 'Events — Farrier',
+    title: 'Events — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'alerts',
     loadComponent: () => import('./alerts/alerts-page').then((m) => m.AlertsPage),
-    title: 'Alerts — Farrier',
+    title: 'Alerts — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'templates',
     loadComponent: () => import('./templates/templates-page').then((m) => m.TemplatesPage),
-    title: 'Templates — Farrier',
+    title: 'Templates — HostSeal',
   },
   {
     canMatch: [notPlatform],
     path: 'wallboard',
     loadComponent: () => import('./wallboard/wallboard').then((m) => m.Wallboard),
-    title: 'Wallboard — Farrier',
+    title: 'Wallboard — HostSeal',
   },
   {
     // The published board, and the only route in this application that renders without a session.
@@ -87,20 +87,20 @@ export const routes: Routes = [
     data: { public: true },
     path: 'board',
     loadComponent: () => import('./wallboard/wallboard').then((m) => m.Wallboard),
-    title: 'Wallboard — Farrier',
+    title: 'Wallboard — HostSeal',
   },
   {
     canMatch: [notOperator],
     path: 'fleets',
     loadComponent: () => import('./fleets/fleets-page').then((m) => m.FleetsPage),
-    title: 'Fleets — Farrier',
+    title: 'Fleets — HostSeal',
   },
   {
     // The one route both credentials reach, so it carries no guard: everybody has an account and
     // everybody has a password to change.
     path: 'account',
     loadComponent: () => import('./account/account-page').then((m) => m.AccountPage),
-    title: 'Account — Farrier',
+    title: 'Account — HostSeal',
   },
   { path: '**', redirectTo: '' },
 ];

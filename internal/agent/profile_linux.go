@@ -2,7 +2,7 @@
 
 package agent
 
-import "github.com/pascalgross/farrier/internal/intent"
+import "github.com/pascalgross/hostseal/internal/intent"
 
 // hostProfile is the set of catalogue members this build will execute.
 //

@@ -3,14 +3,14 @@
   before being told a unit failed. The events themselves are never urgent enough to interrupt
   somebody mid-word, and the inbox holds every one of them.
 -->
-<div class="farrier-toasts" role="status" aria-live="polite">
+<div class="hostseal-toasts" role="status" aria-live="polite">
   @for (event of toasts(); track event.id) {
-    <article class="farrier-toast">
+    <article class="hostseal-toast">
       <mat-icon [class]="tone(event)" aria-hidden="true">{{ icon(event) }}</mat-icon>
 
       <div class="min-w-0 flex-1">
         <p class="m-0 text-sm">{{ event.summary }}</p>
-        <p class="m-0 mt-1 text-xs opacity-70 farrier-numeric">
+        <p class="m-0 mt-1 text-xs opacity-70 hostseal-numeric">
           {{ label(event) }}
           @if (event.hostId) {
             ·

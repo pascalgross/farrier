@@ -29,7 +29,7 @@ const CgroupRoot = "/sys/fs/cgroup"
 // clockTicksPerSecond is the USER_HZ that /proc/<pid>/stat expresses process times in.
 //
 // It is sysconf(_SC_CLK_TCK), which Go cannot call without cgo, and cgo is not worth giving up a static
-// binary for one number that has been 100 on every Linux port Farrier runs on. The value is named
+// binary for one number that has been 100 on every Linux port HostSeal runs on. The value is named
 // rather than written inline because getting it wrong scales every reported start time by a constant
 // factor, which looks like a clock problem on the host rather than a units problem in the agent — and
 // people chase clock problems for a long time.

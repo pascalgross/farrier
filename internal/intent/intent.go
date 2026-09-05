@@ -1,4 +1,4 @@
-// Package intent defines the closed catalogue of operations a Farrier job can be.
+// Package intent defines the closed catalogue of operations a HostSeal job can be.
 //
 // It exists to make one sentence of docs/SECURITY.md mechanically true: "the wire protocol carries an
 // enumerated, typed operation — never a command string". Everything in this package is arranged so
@@ -89,7 +89,7 @@ const (
 )
 
 // The destructive members of the catalogue. Each requires a signature from a key in the host's own
-// /etc/farrier/trusted-signers, plus second-person approval in the control plane.
+// /etc/hostseal/trusted-signers, plus second-person approval in the control plane.
 //
 // There is deliberately no graded tier below this by blast radius. A design in which "small"
 // destructive operations took weaker authorisation would weaken the claim to "cannot reboot your fleet
@@ -177,7 +177,7 @@ type Spec struct {
 	// Class is the authorisation tier.
 	Class Class
 
-	// Summary is one line of human-readable description, shown in the UI and in farrier sign.
+	// Summary is one line of human-readable description, shown in the UI and in hostseal sign.
 	Summary string
 
 	// Implemented reports whether an executor exists behind this member on the agent.
@@ -210,7 +210,7 @@ type Spec struct {
 	Decode func(raw []byte) (Params, error)
 }
 
-// catalogue is the complete, closed set of operations Farrier can perform.
+// catalogue is the complete, closed set of operations HostSeal can perform.
 //
 // It is unexported and has no mutating accessor on purpose: exporting the map, or providing a Register
 // function, would turn the catalogue into a registry and make the set of possible operations a
@@ -303,7 +303,7 @@ var catalogue = map[Name]Spec{
 
 // Lookup returns the spec for a name, and whether the name is in the catalogue.
 //
-// It is the only way to get from a value that arrived over the network to something Farrier will act
+// It is the only way to get from a value that arrived over the network to something HostSeal will act
 // on, and it is deliberately a total function with a boolean rather than one that returns a
 // zero-valued Spec: a caller that ignores the second result gets a Spec with an empty Class, which
 // fails every subsequent check closed.

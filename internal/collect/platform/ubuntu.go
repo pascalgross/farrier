@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/run"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/run"
 )
 
 // Ubuntu implements collect.Platform for the Ubuntu LTS releases in standard support.
@@ -82,7 +82,7 @@ func (u *Ubuntu) RebootRequired(ctx context.Context) (collect.RebootReport, erro
 	return report, nil
 }
 
-// proStatus is the subset of `pro status --format json` Farrier reads.
+// proStatus is the subset of `pro status --format json` HostSeal reads.
 //
 // Only three fields are decoded because only three are displayed. Decoding the whole document would
 // mean a schema change in ubuntu-advantage-tools breaking fact collection for a host, which is a large

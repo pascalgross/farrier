@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/agent"
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/server"
-	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/signing/backend/file"
+	"github.com/pascalgross/hostseal/internal/agent"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/server"
+	"github.com/pascalgross/hostseal/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing/backend/file"
 )
 
 // adminJSON performs an administrative API call as one of the two operators and returns the response.

@@ -123,7 +123,7 @@ func newUpdateSession() (*object, error) {
 	return &object{ptr: ptr}, nil
 }
 
-// call is the chokepoint: the one function in Farrier that dispatches through a COM function pointer.
+// call is the chokepoint: the one function in HostSeal that dispatches through a COM function pointer.
 //
 // Every call is checked against the methods table first, by name and by argument count, and refused
 // before a pointer is dereferenced if it is not there. That check is what this file's exemption from

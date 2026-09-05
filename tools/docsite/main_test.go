@@ -18,7 +18,7 @@ const repoRoot = "../.."
 // follows every link by hand.
 func TestTheRealSiteBuilds(t *testing.T) {
 	out := t.TempDir()
-	if err := build(repoRoot, out, "https://github.com/pascalgross/farrier", "main"); err != nil {
+	if err := build(repoRoot, out, "https://github.com/pascalgross/hostseal", "main"); err != nil {
 		t.Fatalf("the documentation site does not build: %v", err)
 	}
 	for _, p := range pages {
@@ -49,11 +49,11 @@ func TestEveryPageSourceExists(t *testing.T) {
 // repository with a link to nothing and requires the build to refuse it.
 func TestABrokenLinkFailsTheBuild(t *testing.T) {
 	root := t.TempDir()
-	write(t, root, "README.md", "# Farrier\n\n[gone](docs/NOPE.md)\n")
+	write(t, root, "README.md", "# HostSeal\n\n[gone](docs/NOPE.md)\n")
 
 	saved := pages
 	t.Cleanup(func() { pages = saved })
-	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "HostSeal"}}
 
 	err := build(root, filepath.Join(root, "public"), "https://example.invalid/r", "main")
 	if err == nil {
@@ -70,13 +70,13 @@ func TestABrokenLinkFailsTheBuild(t *testing.T) {
 // indication that anything is wrong, which is the more misleading of the two failures.
 func TestABrokenAnchorFailsTheBuild(t *testing.T) {
 	root := t.TempDir()
-	write(t, root, "README.md", "# Farrier\n\n[section](guide.md#gone)\n")
+	write(t, root, "README.md", "# HostSeal\n\n[section](guide.md#gone)\n")
 	write(t, root, "guide.md", "# Guide\n\n## A section that is here\n")
 
 	saved := pages
 	t.Cleanup(func() { pages = saved })
 	pages = []page{
-		{Source: "README.md", Output: "index.html", Title: "Farrier"},
+		{Source: "README.md", Output: "index.html", Title: "HostSeal"},
 		{Source: "guide.md", Output: "guide.html", Title: "Guide"},
 	}
 
@@ -96,7 +96,7 @@ func TestABrokenAnchorFailsTheBuild(t *testing.T) {
 // rather than either breaking or being dropped.
 func TestLinksToUnpublishedFilesPointAtTheForge(t *testing.T) {
 	root := t.TempDir()
-	write(t, root, "README.md", "# Farrier\n\n[licence](LICENSE) and [helpers](helpers)\n")
+	write(t, root, "README.md", "# HostSeal\n\n[licence](LICENSE) and [helpers](helpers)\n")
 	write(t, root, "LICENSE", "Apache-2.0\n")
 	if err := os.MkdirAll(filepath.Join(root, "helpers"), 0o755); err != nil {
 		t.Fatalf("creating a directory: %v", err)
@@ -104,7 +104,7 @@ func TestLinksToUnpublishedFilesPointAtTheForge(t *testing.T) {
 
 	saved := pages
 	t.Cleanup(func() { pages = saved })
-	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "HostSeal"}}
 
 	out := filepath.Join(root, "public")
 	if err := build(root, out, "https://example.invalid/r", "v1"); err != nil {
@@ -128,12 +128,12 @@ func TestLinksToUnpublishedFilesPointAtTheForge(t *testing.T) {
 // otherwise knows about.
 func TestAnImageIsCopiedIntoTheSiteAndAMissingOneFailsTheBuild(t *testing.T) {
 	root := t.TempDir()
-	write(t, root, "README.md", "# Farrier\n\n![](brand/mark.svg)\n")
+	write(t, root, "README.md", "# HostSeal\n\n![](brand/mark.svg)\n")
 	write(t, root, "brand/mark.svg", "<svg/>\n")
 
 	saved := pages
 	t.Cleanup(func() { pages = saved })
-	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "HostSeal"}}
 
 	out := filepath.Join(root, "public")
 	if err := build(root, out, "https://example.invalid/r", "v1"); err != nil {
@@ -147,7 +147,7 @@ func TestAnImageIsCopiedIntoTheSiteAndAMissingOneFailsTheBuild(t *testing.T) {
 		t.Errorf("the copied image is %q", copied)
 	}
 
-	write(t, root, "README.md", "# Farrier\n\n![](brand/gone.svg)\n")
+	write(t, root, "README.md", "# HostSeal\n\n![](brand/gone.svg)\n")
 	err := build(root, out, "https://example.invalid/r", "v1")
 	if err == nil || !strings.Contains(err.Error(), "brand/gone.svg") {
 		t.Fatalf("an image that is not in the repository built anyway: %v", err)
@@ -177,11 +177,11 @@ func TestADestinationWithASchemeIsLeftAlone(t *testing.T) {
 
 	// End to end, because the unit above cannot see whether the walk acts on the answer.
 	root := t.TempDir()
-	write(t, root, "README.md", "# Farrier\n\n![](data:image/svg+xml,<svg/>)\n")
+	write(t, root, "README.md", "# HostSeal\n\n![](data:image/svg+xml,<svg/>)\n")
 
 	saved := pages
 	t.Cleanup(func() { pages = saved })
-	pages = []page{{Source: "README.md", Output: "index.html", Title: "Farrier"}}
+	pages = []page{{Source: "README.md", Output: "index.html", Title: "HostSeal"}}
 
 	out := filepath.Join(root, "public")
 	if err := build(root, out, "https://example.invalid/r", "v1"); err != nil {

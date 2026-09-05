@@ -7,7 +7,7 @@
 // conditional, no loop, no include, no expression language, and above all no way for a template to
 // cause anything to execute — a renderer that gained a `{{ exec }}` or a conditional that shells out
 // would defeat the guarantee without touching the intent catalogue at all, because it would be the exec
-// channel wearing a hat. cloud-init interprets the result, on the machine, at first boot; Farrier only
+// channel wearing a hat. cloud-init interprets the result, on the machine, at first boot; HostSeal only
 // ever hands the text over.
 //
 // Rendered output is a credential in its own right — it usually carries a live enrolment token — and

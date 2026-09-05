@@ -1,4 +1,4 @@
-// Package buildinfo carries the version stamped into a Farrier binary at link time.
+// Package buildinfo carries the version stamped into a HostSeal binary at link time.
 //
 // It exists as its own package, rather than a pair of variables in each main package, because all
 // three binaries and the three root helpers need the same values and the agent reports them in every
@@ -26,13 +26,13 @@ func String() string {
 	return Version + " (" + Commit + ")"
 }
 
-// UserAgent returns the HTTP User-Agent a Farrier component identifies itself with.
+// UserAgent returns the HTTP User-Agent a HostSeal component identifies itself with.
 //
 // Agents are identifiable in a control plane's access log on purpose. When a fleet misbehaves — a
 // backoff bug, a heartbeat storm — the first question is which agent version is doing it, and the
 // answer should not require correlating against the database.
 func UserAgent(component string) string {
-	return "farrier-" + component + "/" + Version
+	return "hostseal-" + component + "/" + Version
 }
 
 // Revision returns the VCS revision the Go toolchain recorded, when the linker did not stamp one.

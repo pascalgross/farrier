@@ -351,7 +351,7 @@ func unreadableTokens(slots ...ckULong) *module {
 // beside it: a reference carrying both slot-id= and serial= honoured the number and ignored the serial,
 // so a slot number that had gone stale — and slot numbering is not stable across a replug on every
 // module — resolved to whatever token is in that slot now. If that token holds a key with the same
-// label, findOne finds it and `farrier sign` signs with a key the operator did not name.
+// label, findOne finds it and `hostseal sign` signs with a key the operator did not name.
 //
 // That is the failure the whole of #35 is about, reached by the one route #35 did not close, and it got
 // worse rather than better when serial= started meaning something: the message telling an operator to

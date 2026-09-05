@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/hostseal/internal/collect"
 )
 
 // DetectFrom identifies a host from an explicit os-release path.

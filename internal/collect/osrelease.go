@@ -55,7 +55,7 @@ func ParseOSRelease(path string) (map[string]string, error) {
 
 // supportedUbuntu is the set of Ubuntu releases in standard support.
 //
-// The policy Farrier states is a rule — the Ubuntu LTS releases in standard support, plus Debian stable
+// The policy HostSeal states is a rule — the Ubuntu LTS releases in standard support, plus Debian stable
 // and oldstable — and this is that rule written down at a point in time. It needs revisiting when a
 // release leaves standard support, which is why the reason is recorded here rather than only in the
 // README: 20.04 is absent because it is ESM-only, not because it was forgotten.
@@ -65,7 +65,7 @@ var supportedUbuntu = map[string]bool{
 	"resolute": true, // 26.04
 }
 
-// supportedDebian is the set of Debian releases Farrier supports: stable and oldstable.
+// supportedDebian is the set of Debian releases HostSeal supports: stable and oldstable.
 var supportedDebian = map[string]bool{
 	"bookworm": true, // 12, oldstable
 	"trixie":   true, // 13, stable
@@ -92,7 +92,7 @@ func DistributionFromOSRelease(fields map[string]string) (Distribution, error) {
 
 	// ID_LIKE is consulted so that a derivative naming itself something else still lands on the right
 	// implementation. A Debian derivative that reported as its own ID and got no platform at all would
-	// be a host Farrier refused to look at, which helps nobody.
+	// be a host HostSeal refused to look at, which helps nobody.
 	like := strings.Fields(strings.ToLower(fields["ID_LIKE"]))
 	switch {
 	case id == "ubuntu":

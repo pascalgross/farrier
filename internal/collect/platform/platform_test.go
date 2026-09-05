@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/collect"
+	"github.com/pascalgross/hostseal/internal/collect"
 )
 
 // fixture reads captured command output from the collect package's testdata.

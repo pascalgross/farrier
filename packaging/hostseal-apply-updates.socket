@@ -1,0 +1,47 @@
+# The socket the hostseal agent reaches the apply-updates root helper on.
+#
+# This replaces the sudoers entry phase 0 shipped. NoNewPrivileges=yes and sudo(8) are mutually
+# exclusive — execve drops the setuid bit when the no-new-privileges bit is set — and systemd implies
+# that bit from eight directives hostseal-agent.service sets, so making sudo work would have meant
+# dropping most of the agent's sandbox. See ../docs/SECURITY.md section 6 and ../internal/privsep.
+#
+# The authorisation is the socket's ownership, and then the helper's own reading of SO_PEERCRED, and
+# then the root-owned policy file. Three independent checks, in that order, none of which trusts
+# anything the caller says about itself.
+
+[Unit]
+Description=HostSeal apply-updates helper socket
+Documentation=file:///usr/share/doc/hostseal-agent/SECURITY.md
+
+[Socket]
+ListenStream=/run/hostseal/apply-updates.sock
+SocketUser=root
+SocketGroup=hostseal
+SocketMode=0660
+
+# Accept=yes is the inetd arrangement: systemd accepts the connection and starts one instance of
+# hostseal-apply-updates@.service per connection, with the connection as its standard input. There is
+# therefore no listening socket inside a privileged process, no accept loop of HostSeal's own, and no
+# resident root daemon — the helper exists for exactly as long as one operation does.
+Accept=yes
+
+# The directory comes from tmpfiles.d rather than from RuntimeDirectory=, because three units each
+# declaring the same runtime directory would have the first one to stop delete it out from under the
+# other two.
+RemoveOnStop=yes
+
+# One operation at a time, per helper. The agent runs jobs sequentially anyway; this bounds what a
+# compromised agent process can start in parallel, and it is the reason apt-get is never racing itself
+# for the dpkg lock from two HostSeal jobs at once.
+MaxConnections=2
+
+# Deliberately generous. systemd stops a socket unit that is triggered too fast and leaves it stopped,
+# and a host whose helper socket has latched off is a host that can never be patched again until
+# somebody notices — which is precisely the class of "wedged for good" failure this project has already
+# closed twice elsewhere. Only the hostseal user can reach this socket at all, so the limit is a runaway
+# backstop rather than an access control.
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=200
+
+[Install]
+WantedBy=sockets.target

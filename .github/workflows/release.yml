@@ -4,7 +4,7 @@
 # rebuild the tag and get the same bytes — which is the only way "the agent has no remote execution
 # channel" is checkable against the binary somebody actually installed. And the APT repository is signed
 # with a key that lives in this workflow and nowhere else, published to a custom domain, because the
-# repository URL is written into /etc/apt/sources.list.d/farrier.sources on every host that ever
+# repository URL is written into /etc/apt/sources.list.d/hostseal.sources on every host that ever
 # installs the agent and can never be migrated afterwards.
 name: release
 
@@ -102,23 +102,23 @@ jobs:
         run: |
           export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
           for arch in amd64 arm64; do
-            for cmd in farrier-agent farrier-server farrier; do
+            for cmd in hostseal-agent hostseal-server hostseal; do
               GOARCH=$arch go build -trimpath \
                 -ldflags "-s -w -buildid= \
-                  -X github.com/pascalgross/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }} \
-                  -X github.com/pascalgross/farrier/internal/buildinfo.Commit=$(git rev-parse --short HEAD)" \
+                  -X github.com/pascalgross/hostseal/internal/buildinfo.Version=${{ steps.version.outputs.version }} \
+                  -X github.com/pascalgross/hostseal/internal/buildinfo.Commit=$(git rev-parse --short HEAD)" \
                 -o "dist/$arch/$cmd" "./cmd/$cmd"
             done
             for helper in apply-updates restart-unit reboot-host; do
               GOARCH=$arch go build -trimpath \
                 -ldflags "-s -w -buildid= \
-                  -X github.com/pascalgross/farrier/internal/buildinfo.Version=${{ steps.version.outputs.version }}" \
+                  -X github.com/pascalgross/hostseal/internal/buildinfo.Version=${{ steps.version.outputs.version }}" \
                 -o "dist/$arch/$helper" "./helpers/$helper"
             done
           done
           # The Windows agent, through the same Makefile target a maintainer runs, so that what ships
           # and what `make windows` produces cannot drift. It is read-only by design — see
-          # docs/SECURITY.md §12 — and carries the operator's CLI too, because `farrier enroll` runs on
+          # docs/SECURITY.md §12 — and carries the operator's CLI too, because `hostseal enroll` runs on
           # the host and a machine without it can never enrol.
           make windows VERSION="${{ steps.version.outputs.version }}" COMMIT="$(git rev-parse --short HEAD)"
 
@@ -150,7 +150,7 @@ jobs:
             dist/SHA256SUMS
             dist/amd64/*
             dist/arm64/*
-            dist/farrier-agent-windows-amd64.zip
+            dist/hostseal-agent-windows-amd64.zip
 
   publish:
     name: Publish
@@ -205,12 +205,12 @@ jobs:
           # The repository URL is written into every host's sources file and can never be migrated, so
           # it is a repository variable rather than a literal here — and the build fails loudly if
           # nobody has set it, rather than publishing to a URL somebody has to live with.
-          FARRIER_APT_URL: ${{ vars.FARRIER_APT_URL }}
+          HOSTSEAL_APT_URL: ${{ vars.HOSTSEAL_APT_URL }}
         run: |
-          if [ -z "$FARRIER_APT_URL" ]; then
-            echo "The repository variable FARRIER_APT_URL is not set." >&2
+          if [ -z "$HOSTSEAL_APT_URL" ]; then
+            echo "The repository variable HOSTSEAL_APT_URL is not set." >&2
             echo "Set it to a custom domain CNAME'd to GitHub Pages before the first release:" >&2
-            echo "this URL is written into /etc/apt/sources.list.d/farrier.sources on every host that" >&2
+            echo "this URL is written into /etc/apt/sources.list.d/hostseal.sources on every host that" >&2
             echo "ever installs the agent, including fleets you will not be able to contact later." >&2
             exit 1
           fi
@@ -243,14 +243,14 @@ jobs:
             ## Installing
 
             ```bash
-            curl -fsSL ${{ vars.FARRIER_APT_URL }}/farrier-archive-keyring.gpg \
-              | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg > /dev/null
-            curl -fsSL ${{ vars.FARRIER_APT_URL }}/farrier.sources \
-              | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
-            sudo apt-get update && sudo apt-get install farrier-agent
+            curl -fsSL ${{ vars.HOSTSEAL_APT_URL }}/hostseal-archive-keyring.gpg \
+              | sudo tee /usr/share/keyrings/hostseal-archive-keyring.gpg > /dev/null
+            curl -fsSL ${{ vars.HOSTSEAL_APT_URL }}/hostseal.sources \
+              | sudo tee /etc/apt/sources.list.d/hostseal.sources > /dev/null
+            sudo apt-get update && sudo apt-get install hostseal-agent
             ```
 
-            The agent installs with no keys in `/etc/farrier/trusted-signers` and a policy that permits
+            The agent installs with no keys in `/etc/hostseal/trusted-signers` and a policy that permits
             security updates and nothing else. It will report on the host and keep it patched, and will
             do nothing else until you say otherwise.
 

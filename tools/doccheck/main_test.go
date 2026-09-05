@@ -199,7 +199,7 @@ func TestCheckPathSkipsVendorAndTestdata(t *testing.T) {
 
 // TestCheckPathHonoursTheTestsFlag asserts _test.go files can be excluded.
 //
-// Farrier checks its own test files, because a guarantee test whose reason for existing is not written
+// HostSeal checks its own test files, because a guarantee test whose reason for existing is not written
 // down is one a future maintainer deletes to make a build pass. The flag exists for consumers of this
 // tool who make the other choice.
 func TestCheckPathHonoursTheTestsFlag(t *testing.T) {

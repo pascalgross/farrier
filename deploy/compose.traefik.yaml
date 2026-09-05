@@ -12,12 +12,12 @@
 # options: refuse every agent, or believe a header. A header is set by whoever is talking to the server,
 # so believing one would mean anything that can reach the proxy's back end can claim to be any enrolled
 # host. So: a TCP router with TLS passthrough, SNI as the only thing Traefik looks at, and the TLS
-# session running end to end between the agent and farrier-server.
+# session running end to end between the agent and hostseal-server.
 #
 # What follows from that:
 #
-#   * The certificate a browser sees is the one farrier-server presents, not one Traefik obtained. On a
-#     default installation that is issued by Farrier's own CA and a browser will say so. The answer is
+#   * The certificate a browser sees is the one hostseal-server presents, not one Traefik obtained. On a
+#     default installation that is issued by HostSeal's own CA and a browser will say so. The answer is
 #     a second hostname for the interface, where Traefik does terminate and can use Let's Encrypt:
 #     compose.traefik-ui.yaml. Feeding a certificate into the container instead — the commented block
 #     below — also works, and costs a restart on every renewal.
@@ -34,48 +34,48 @@
 #   docker network create traefik
 
 services:
-  farrier-server:
+  hostseal-server:
     # The port is the proxy's now. !override rather than a second list, because Compose merges lists by
     # appending — without it the published port would still be there, which is the failure mode where a
     # carefully proxied service is also reachable on 8443 from the internet.
     ports: !override []
-    networks: [farrier, traefik]
+    networks: [hostseal, traefik]
     environment:
       # Compose uses .env for label interpolation but does not otherwise expose it to the container.
-      # The entrypoint passes this value to farrier-server so its private certificate is valid for the
+      # The entrypoint passes this value to hostseal-server so its private certificate is valid for the
       # public name agents use through this passthrough router.
-      FARRIER_AGENT_HOSTNAME: ${FARRIER_AGENT_HOSTNAME:?set FARRIER_AGENT_HOSTNAME in .env}
+      HOSTSEAL_AGENT_HOSTNAME: ${HOSTSEAL_AGENT_HOSTNAME:?set HOSTSEAL_AGENT_HOSTNAME in .env}
       # The address the interface's enrolment instructions name, which defaults to the hostname above.
       # It is a separate setting because with compose.traefik-ui.yaml the interface has a hostname of
       # its own, and that is the one hostname where the agent API is refused — so an instruction built
       # from the browser's request would be confidently wrong.
-      FARRIER_AGENT_URL: ${FARRIER_AGENT_URL:-}
+      HOSTSEAL_AGENT_URL: ${HOSTSEAL_AGENT_URL:-}
     labels:
       traefik.enable: "true"
       # Named explicitly because this container is on two networks and Traefik would otherwise pick one
       # of them to dial — and the postgres-facing one is not reachable from Traefik at all.
       traefik.docker.network: traefik
 
-      traefik.tcp.routers.farrier.rule: HostSNI(`${FARRIER_AGENT_HOSTNAME:?set FARRIER_AGENT_HOSTNAME in .env}`)
-      traefik.tcp.routers.farrier.entrypoints: ${FARRIER_TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.tcp.routers.hostseal.rule: HostSNI(`${HOSTSEAL_AGENT_HOSTNAME:?set HOSTSEAL_AGENT_HOSTNAME in .env}`)
+      traefik.tcp.routers.hostseal.entrypoints: ${HOSTSEAL_TRAEFIK_ENTRYPOINT:-websecure}
       # The line that keeps client certificates working. Without it Traefik terminates, and every
       # enrolled agent gets a 401 that nothing on the agent side explains.
-      traefik.tcp.routers.farrier.tls.passthrough: "true"
-      traefik.tcp.services.farrier.loadbalancer.server.port: "8443"
+      traefik.tcp.routers.hostseal.tls.passthrough: "true"
+      traefik.tcp.services.hostseal.loadbalancer.server.port: "8443"
 
     # A certificate a browser trusts, on this hostname rather than on a second one. It is the
     # alternative to compose.traefik-ui.yaml, not a companion to it: pick one. Both files are read once,
     # at startup, by a process running as uid 65532 — so every renewal needs a
-    # `docker compose restart farrier-server`, which is the cost the interface overlay does not have. An
+    # `docker compose restart hostseal-server`, which is the cost the interface overlay does not have. An
     # agent is unaffected either way: it verifies against the CA bundle it was handed at enrolment
     # rather than against the public web of trust.
     #
     # volumes:
-    #   - ${FARRIER_TLS_DIR:-./tls}:/etc/farrier-server/tls:ro
+    #   - ${HOSTSEAL_TLS_DIR:-./tls}:/etc/hostseal-server/tls:ro
     # command:
     #   - serve
-    #   - --tls-cert=/etc/farrier-server/tls/fullchain.pem
-    #   - --tls-key=/etc/farrier-server/tls/privkey.pem
+    #   - --tls-cert=/etc/hostseal-server/tls/fullchain.pem
+    #   - --tls-key=/etc/hostseal-server/tls/privkey.pem
 
 networks:
   traefik:

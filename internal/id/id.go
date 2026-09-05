@@ -1,7 +1,7 @@
-// Package id generates the identifiers Farrier puts in front of people.
+// Package id generates the identifiers HostSeal puts in front of people.
 //
 // It is its own package because two things generate them — the control plane, for hosts and for
-// unsigned jobs, and `farrier sign`, for a job it is about to sign offline — and an identifier that had
+// unsigned jobs, and `hostseal sign`, for a job it is about to sign offline — and an identifier that had
 // two shapes would be an identifier nothing could validate. internal/protocol states the shape a job id
 // may take; this produces one that satisfies it.
 package id
@@ -32,7 +32,7 @@ var Encoding = base32.NewEncoding(alphabet).WithPadding(base32.NoPadding)
 // an index on the primary key is also an index on age, and a page of hosts or jobs comes back in a
 // sensible order without a second column. The remaining ten bytes are random, which is far more than
 // enough that two control planes generating identifiers independently will never collide — and, since
-// `farrier sign` also generates them on an operator's laptop, that a fleet's identifiers do not need a
+// `hostseal sign` also generates them on an operator's laptop, that a fleet's identifiers do not need a
 // central allocator to stay unique.
 func New() (string, error) {
 	var raw [16]byte

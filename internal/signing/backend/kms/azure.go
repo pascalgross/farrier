@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // azureScheme selects this provider.
@@ -50,7 +50,7 @@ func newAzure(resource string) (provider, error) {
 	host, path, ok := strings.Cut(resource, "/")
 	if !ok {
 		return nil, fmt.Errorf("kms: %q is not a Key Vault key. Name the vault host and the key "+
-			"version: azurekms:ops.vault.azure.net/keys/farrier-signing/9885aa55…#ops-kms-1", resource)
+			"version: azurekms:ops.vault.azure.net/keys/hostseal-signing/9885aa55…#ops-kms-1", resource)
 	}
 	if strings.Contains(host, ":") || strings.Contains(host, "@") {
 		return nil, fmt.Errorf("kms: %q is not a bare vault host; the transport is always https and "+
@@ -208,7 +208,7 @@ func (p *azureProvider) authorise(req *http.Request, _ []byte) error {
 // derFromJOSE re-encodes Key Vault's ECDSA signature as the ASN.1 DER the wire format carries.
 //
 // Key Vault defines ES256 as RFC 7518 does — the JWS form, which is the concatenation of R and S each
-// left-padded to the curve's size. Farrier's verifier is crypto/ecdsa's VerifyASN1, which expects a
+// left-padded to the curve's size. HostSeal's verifier is crypto/ecdsa's VerifyASN1, which expects a
 // DER SEQUENCE of two INTEGERs. An unconverted Azure signature therefore verifies nowhere: every host
 // in the fleet reports the key as producing signatures from no trusted signer, which reads as a broken
 // trust anchor rather than as sixty bytes in the wrong shape.

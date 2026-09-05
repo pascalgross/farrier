@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // TestGuaranteeASignedJobIDMustBeOneAHostCanReportAgainst is the regression test for an id taken on

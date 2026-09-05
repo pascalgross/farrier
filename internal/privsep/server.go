@@ -19,7 +19,7 @@ import (
 // It is the name the package's maintainer scripts create and the name the socket units give the helper
 // sockets as their group. Resolving it to a uid at run time rather than compiling one in is what makes
 // the check work on a host whose adduser picked a different number, which is every host.
-const AgentAccount = "farrier"
+const AgentAccount = "hostseal"
 
 // Peer is the kernel's account of who is on the other end of a helper socket.
 //
