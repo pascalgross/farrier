@@ -8,7 +8,7 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 )
 
-// unitPatterns are the unit types Farrier reports on.
+// unitPatterns are the unit types HostSeal reports on.
 //
 // Only the three types the intent catalogue can act on are listed. Reporting mounts, devices and slices
 // would triple the size of every heartbeat with rows nobody can do anything about.

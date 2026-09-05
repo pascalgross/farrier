@@ -1,5 +1,5 @@
 /**
- * Types mirroring the Farrier control plane's administrative API.
+ * Types mirroring the HostSeal control plane's administrative API.
  *
  * They are written by hand rather than generated, because there are few of them and because the shapes
  * are stable by design: `docs/PROTOCOL.md` says additive changes do not bump the version and unknown
@@ -29,7 +29,7 @@ export interface HostFacts {
   /** What the host calls itself. */
   hostname?: string;
 
-  /** Distribution identity, used to show the release and whether Farrier supports it. */
+  /** Distribution identity, used to show the release and whether HostSeal supports it. */
   distribution?: {
     /** The os-release ID, `ubuntu` or `debian`. */
     id: string;
@@ -39,7 +39,7 @@ export interface HostFacts {
     version: string;
     /** The os-release PRETTY_NAME. */
     prettyName?: string;
-    /** Whether this release is one Farrier supports. */
+    /** Whether this release is one HostSeal supports. */
     supported?: boolean;
   };
 
@@ -159,7 +159,7 @@ export interface Host {
   clockSkewed: boolean;
 
   /**
-   * Whether `/etc/farrier/paused` exists on the host.
+   * Whether `/etc/hostseal/paused` exists on the host.
    *
    * It is a local kill switch the control plane cannot override, and there is deliberately no
    * `agent.resume` intent — so this is shown as a state, never as something to toggle from here.
@@ -898,7 +898,7 @@ export interface CreateTemplateRequest {
   /** The cloud-config body. */
   body: string;
 
-  /** A detached signature made offline by `farrier sign-template`, absent for an unsigned version. */
+  /** A detached signature made offline by `hostseal sign-template`, absent for an unsigned version. */
   signature?: string;
 
   /** The signing key's identity, required with a signature. */
@@ -1099,7 +1099,7 @@ export interface IssuedApiToken {
  * mistake nothing on either machine names.
  */
 export interface EnrolmentInstructions {
-  /** The base URL to pass to `farrier enroll --server`. */
+  /** The base URL to pass to `hostseal enroll --server`. */
   agentUrl: string;
 
   /**

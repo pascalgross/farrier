@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/run"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/run"
 )
 
 // TestGuaranteeTheConffileOptionsAreOnEveryUpdateRun is the cheap early warning for a real trap.

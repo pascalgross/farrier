@@ -24,7 +24,7 @@ import { formatAge, formatDuration, formatOffset } from '../core/format';
  * logging in to it.
  */
 @Component({
-  selector: 'farrier-host-detail',
+  selector: 'hostseal-host-detail',
   imports: [
     MatButtonModule,
     MatCardModule,

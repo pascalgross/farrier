@@ -129,7 +129,7 @@ describe('FleetsPage', () => {
     fixture.detectChanges();
 
     const shown = text(fixture.nativeElement);
-    expect(shown).toContain('farrier-server accounts add --tenant acme');
+    expect(shown).toContain('hostseal-server accounts add --tenant acme');
     expect(shown).toContain('Nobody can sign in to it yet');
   });
 
@@ -228,7 +228,7 @@ describe('FleetsPage retirement', () => {
   /**
    * The page says what retirement does and what it does not reach.
    *
-   * "Delete the fleet" sounds like it uninstalls something. It does not: nothing in Farrier reaches a
+   * "Delete the fleet" sounds like it uninstalls something. It does not: nothing in HostSeal reaches a
    * machine, so those agents keep running on their own local policy and are refused at their next
    * request. Somebody about to press this needs to know that before they press it rather than after,
    * because the expectation it corrects is the one that makes the action sound reversible.

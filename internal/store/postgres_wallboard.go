@@ -132,7 +132,7 @@ func (s *scopedPostgres) ListWallboardShares(ctx context.Context) ([]WallboardSh
 // The instant comes from the caller rather than from now(), because the interface hands one in and the
 // in-memory store has no database clock to reach for. Both stores therefore answer the same question,
 // and the poll path keeps its window against a single clock — the reading docs/SECURITY.md §4.3 takes
-// of every other validity window in Farrier.
+// of every other validity window in HostSeal.
 func (s *scopedPostgres) WallboardShareBySecret(ctx context.Context, secretHash string,
 	now time.Time) (WallboardShare, error) {
 

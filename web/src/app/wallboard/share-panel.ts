@@ -59,7 +59,7 @@ const LIFETIMES: ShareLifetime[] = [
  * nothing to show again afterwards.
  */
 @Component({
-  selector: 'farrier-share-panel',
+  selector: 'hostseal-share-panel',
   imports: [
     DatePipe,
     FormsModule,

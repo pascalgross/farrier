@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/run"
-	"github.com/pascalgross/farrier/internal/updatescan"
-	"github.com/pascalgross/farrier/internal/winapi"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/run"
+	"github.com/pascalgross/hostseal/internal/updatescan"
+	"github.com/pascalgross/hostseal/internal/winapi"
 )
 
 // Windows implements collect.Platform for the Windows Server releases in standard support.
@@ -170,7 +170,7 @@ func (w *Windows) RebootRequired(context.Context) (collect.RebootReport, error) 
 
 // UpgradablePackages lists the updates Windows Update reports as pending.
 //
-// It starts farrier-update-scan and reads one JSON document from its output, which is the same shape the
+// It starts hostseal-update-scan and reads one JSON document from its output, which is the same shape the
 // Linux implementations use with apt-get: ask a program, parse what comes back, never reach into the
 // platform's own state. Here the separation carries more weight than convenience — enumerating updates
 // means loading wuapi.dll, and docs/SECURITY.md §3 refuses a runtime code loader in the process holding

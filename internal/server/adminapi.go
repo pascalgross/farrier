@@ -8,9 +8,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/provision"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/provision"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // hostView is one host as the API renders it.
@@ -52,7 +52,7 @@ type hostView struct {
 	// and none of them has to know the number.
 	ClockSkewed bool `json:"clockSkewed"`
 
-	// Paused reports whether /etc/farrier/paused exists on the host.
+	// Paused reports whether /etc/hostseal/paused exists on the host.
 	//
 	// It is a local kill switch the control plane cannot override, and there is deliberately no
 	// agent.resume intent, so the UI shows it as a state rather than something to toggle.
@@ -172,7 +172,7 @@ func (s *Server) handleRevokeHost(w http.ResponseWriter, r *http.Request, who op
 // the row that should not be there — an enrolment that failed halfway, a test host, a machine that has
 // been decommissioned. Like revocation it releases the machine-id hash, so the machine can enrol again.
 //
-// It does not reach the host. Nothing in Farrier does: a deleted host keeps running and keeps applying
+// It does not reach the host. Nothing in HostSeal does: a deleted host keeps running and keeps applying
 // its local policy, and simply has nowhere to report. Uninstalling the agent is a separate, local act.
 func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, who operator) {
 	hostID := r.PathValue("id")
@@ -324,7 +324,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, who o
 
 // handleCatalogue returns the complete intent catalogue this build knows.
 //
-// It exists so that an operator evaluating Farrier can see the entire set of things the control plane
+// It exists so that an operator evaluating HostSeal can see the entire set of things the control plane
 // is able to ask for, from the running server, without reading the source or trusting a web page. The
 // claim this project makes is about that set being small and closed, so it should be checkable in one
 // request.
@@ -400,7 +400,7 @@ func (s *Server) checkBootstrapIsIssuable(w http.ResponseWriter, r *http.Request
 	case !record.Signed():
 		writeError(w, http.StatusConflict, "unsigned_template",
 			"the latest version of "+name+" is not signed, so no enrolment could be issued it. "+
-				"Sign it with `farrier sign-template` and store the signed version first.")
+				"Sign it with `hostseal sign-template` and store the signed version first.")
 		return false
 	}
 

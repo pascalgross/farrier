@@ -1,9 +1,9 @@
-# Farrier web application
+# HostSeal web application
 
 The control plane's interface. Angular with Angular Material and Tailwind v4, standalone components,
 external `.html` and `.scss` per component, `@if`/`@for` block syntax throughout.
 
-It is built into `internal/server/assets` and embedded with `embed.FS`, so `farrier-server` ships as a
+It is built into `internal/server/assets` and embedded with `embed.FS`, so `hostseal-server` ships as a
 single binary with the interface inside it. That is the whole deployment: one binary and PostgreSQL.
 
 ```bash
@@ -14,7 +14,7 @@ pnpm start      # dev server on :4200
 ```
 
 `pnpm start` serves the application alone; point it at a control plane with `proxy.conf.json` if you
-want the API alongside it. Most work on this application is faster against `farrier-server serve`
+want the API alongside it. Most work on this application is faster against `hostseal-server serve`
 directly, which embeds the built bundle and needs no proxy at all.
 
 ## What the pages are for
@@ -23,7 +23,7 @@ directly, which embeds the built bundle and needs no proxy at all.
 | --- | --- |
 | **Fleet** | Every host and the four things an operator checks first: reachable, security updates outstanding, reboot needed, and whether anything is wrong with the clock or the policy. The last group is the one most dashboards omit, because it only matters once something has already gone wrong |
 | **Host** | One host in full. The local policy and the trusted signers get as much space as the inventory, which is unusual and is the point: those two are what bound this control plane, so an operator should be able to see what it could and could not make the host do |
-| **Operations** | The complete intent catalogue, including the permanently refused list. Farrier's central claim is about a set being small and closed, and a claim you can check from the running system in one screen is worth much more than the same claim in a README |
+| **Operations** | The complete intent catalogue, including the permanently refused list. HostSeal's central claim is about a set being small and closed, and a claim you can check from the running system in one screen is worth much more than the same claim in a README |
 
 ## Conventions
 

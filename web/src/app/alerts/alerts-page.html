@@ -5,7 +5,7 @@
 @if (error()) {
   <mat-card class="max-w-xl mx-auto mt-12">
     <mat-card-content class="!pt-6 flex items-start gap-3">
-      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
       <p class="m-0">{{ error() }}</p>
     </mat-card-content>
   </mat-card>
@@ -29,10 +29,10 @@
   @if (!mailConfigured()) {
     <mat-card class="mb-6 max-w-3xl">
       <mat-card-content class="!pt-6 flex items-start gap-3">
-        <mat-icon class="text-farrier-warn">mark_email_unread</mat-icon>
+        <mat-icon class="text-hostseal-warn">mark_email_unread</mat-icon>
         <p class="m-0 text-sm">
           This control plane has no mail relay, so recipients on a rule are recorded and never
-          delivered — every other route still works. Start <code>farrier-server</code> with
+          delivered — every other route still works. Start <code>hostseal-server</code> with
           <code>--smtp-host</code> and <code>--smtp-from</code> to enable mail.
         </p>
       </mat-card-content>
@@ -83,7 +83,7 @@
       </mat-form-field>
 
       @if (actionError()) {
-        <p class="m-0 text-sm text-farrier-bad">{{ actionError() }}</p>
+        <p class="m-0 text-sm text-hostseal-bad">{{ actionError() }}</p>
       }
     </mat-card-content>
 
@@ -109,7 +109,7 @@
             <div class="min-w-0 flex-1">
               <p class="m-0 font-medium">{{ describe(rule) }}</p>
 
-              <p class="m-0 mt-1 text-sm opacity-80 farrier-numeric">
+              <p class="m-0 mt-1 text-sm opacity-80 hostseal-numeric">
                 Cooldown {{ cooldown(rule) }} ·
                 @if (rule.emailTo.length > 0) {
                   mails {{ rule.emailTo.join(', ') }}
@@ -120,7 +120,7 @@
               </p>
 
               @if (rule.lastDeliveryError) {
-                <p class="m-0 mt-2 text-sm text-farrier-bad flex items-start gap-2">
+                <p class="m-0 mt-2 text-sm text-hostseal-bad flex items-start gap-2">
                   <mat-icon class="!w-4 !h-4 !text-base" aria-hidden="true">outgoing_mail</mat-icon>
                   <span>Last mail did not go out: {{ rule.lastDeliveryError }}</span>
                 </p>
@@ -129,7 +129,7 @@
               }
 
               @if (rule.emailTo.length > 0 && !mailConfigured()) {
-                <p class="m-0 mt-2 text-sm text-farrier-warn">
+                <p class="m-0 mt-2 text-sm text-hostseal-warn">
                   These recipients will not be mailed until this control plane has a relay.
                 </p>
               }

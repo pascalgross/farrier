@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/signing/backend"
+	"github.com/pascalgross/hostseal/internal/signing/backend"
 )
 
 // Scheme is the reference prefix that selects this backend.
@@ -16,7 +16,7 @@ const Scheme = "pkcs11"
 
 // uri is a parsed RFC 7512 PKCS#11 URI, reduced to the attributes this backend acts on.
 //
-// RFC 7512 is used rather than a syntax of Farrier's own because it is what every other tool that
+// RFC 7512 is used rather than a syntax of HostSeal's own because it is what every other tool that
 // talks to a token already speaks — OpenSSL, GnuTLS and p11-kit all take one — so an operator who has
 // configured a token once can paste what they already have. It is also the only vendor-neutral way to
 // name a key, which is the property docs/EXTENDING.md promises about this backend: no vendor is
@@ -59,7 +59,7 @@ type uri struct {
 //
 // Two attributes the RFC defines are refused rather than honoured, and both refusals are the point.
 // `pin-value` puts a PIN in a command line, where every user on the machine can read it from the
-// process list — the same reason `farrier key generate` never took a passphrase as a flag.
+// process list — the same reason `hostseal key generate` never took a passphrase as a flag.
 // `module-name` asks for a library to be found by name in a system module registry, which this build
 // does not consult; naming the path is what makes "which library did this load" answerable from the
 // reference itself.

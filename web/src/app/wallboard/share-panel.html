@@ -19,7 +19,7 @@
         link exists anywhere but in whoever copies it.
       -->
       @if (published(); as fresh) {
-        <div class="rounded p-3 flex flex-col gap-2 bg-farrier-warn/15">
+        <div class="rounded p-3 flex flex-col gap-2 bg-hostseal-warn/15">
           <div class="flex items-center gap-2 font-medium">
             <mat-icon aria-hidden="true">link</mat-icon>
             <span>{{ fresh.share.label }} — copy it now</span>
@@ -72,7 +72,7 @@
       </div>
 
       @if (publishError(); as failure) {
-        <p class="m-0 text-sm text-farrier-bad">{{ failure }}</p>
+        <p class="m-0 text-sm text-hostseal-bad">{{ failure }}</p>
       }
 
       <button mat-flat-button type="button" class="self-start" [disabled]="!canPublish()"
@@ -83,7 +83,7 @@
       <h3 class="m-0 mt-2 text-base font-medium">Published links</h3>
 
       @if (loadError(); as failure) {
-        <p class="m-0 text-sm text-farrier-bad">{{ failure }}</p>
+        <p class="m-0 text-sm text-hostseal-bad">{{ failure }}</p>
       } @else if (loading() && shares().length === 0) {
         <mat-progress-bar mode="indeterminate" aria-label="Loading the published links" />
       } @else if (shares().length === 0) {
@@ -110,7 +110,7 @@
                     <span class="text-xs opacity-70">· passphrase</span>
                   }
                 </div>
-                <div class="text-xs opacity-70 farrier-numeric">
+                <div class="text-xs opacity-70 hostseal-numeric">
                   Published {{ age(share.createdAt) }} by {{ share.createdBy }} ·
                   {{ share.expired ? 'expired' : 'expires' }}
                   {{ share.expiresAt | date: 'mediumDate' }} ·

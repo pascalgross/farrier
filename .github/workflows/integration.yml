@@ -81,11 +81,11 @@ jobs:
         # journal-collection step below. `ci` installs a trap that deletes them on exit, which would
         # make that step iterate an empty list every time it mattered.
         env:
-          FARRIER_RELEASES: ${{ matrix.release }}
+          HOSTSEAL_RELEASES: ${{ matrix.release }}
           # GitHub's runners support nested virtualisation, so the reboot scenarios test what they
           # claim to. If that ever stops being true, setting this to 0 keeps the rest of the suite
           # running and makes 070-reboot-result skip visibly rather than pass vacuously.
-          FARRIER_VM: "1"
+          HOSTSEAL_VM: "1"
         run: |
           ./testfleet/fleet.sh up
           ./testfleet/fleet.sh test

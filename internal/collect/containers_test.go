@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/policy"
 )
 
 // fixtureBootTime is the btime every container fixture's /proc/stat carries.

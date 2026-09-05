@@ -24,7 +24,7 @@ func TestAReferenceIsAPathUnlessItNamesABackend(t *testing.T) {
 		// value is what that backend must be handed.
 		value string
 	}{
-		{"/home/ops/.config/farrier/ops.key", FileScheme, "/home/ops/.config/farrier/ops.key"},
+		{"/home/ops/.config/hostseal/ops.key", FileScheme, "/home/ops/.config/hostseal/ops.key"},
 		{"./ops.key", FileScheme, "./ops.key"},
 		{"ops.key", FileScheme, "ops.key"},
 		// A colon after a separator is part of a path, not a scheme. This is every absolute path on a

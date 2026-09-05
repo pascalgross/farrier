@@ -1,4 +1,4 @@
-// Package platform holds one Farrier collect.Platform implementation per operating-system family.
+// Package platform holds one HostSeal collect.Platform implementation per operating-system family.
 //
 // On Linux, Detect chooses between them from /etc/os-release. Adding a distribution family means adding
 // a file here and a case in newFor; nothing else in the codebase learns about it, which is the property

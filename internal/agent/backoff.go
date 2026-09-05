@@ -27,7 +27,7 @@ type Backoff struct {
 	attempt int
 }
 
-// NewBackoff returns a backoff with Farrier's defaults.
+// NewBackoff returns a backoff with HostSeal's defaults.
 //
 // One second to five minutes. The cap matters more than the base: an agent that has been failing for an
 // hour should retry every few minutes, not every few hours, because the control plane coming back must

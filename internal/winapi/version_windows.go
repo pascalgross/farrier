@@ -18,7 +18,7 @@ import (
 // which the kernel call carries.
 const currentVersionKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion`
 
-// Version is what Farrier reports about a Windows host's operating system.
+// Version is what HostSeal reports about a Windows host's operating system.
 //
 // It exists as a struct rather than a handful of return values because the fields are read from two
 // different sources and a caller has no way to combine them correctly on its own — DisplayVersion is
@@ -51,10 +51,10 @@ type Version struct {
 	ServerCore bool
 }
 
-// Release returns the Windows Server release name, such as "2022", and whether Farrier supports it.
+// Release returns the Windows Server release name, such as "2022", and whether HostSeal supports it.
 //
 // The name comes from the build number rather than from ProductName, because ProductName is a string an
-// administrator can edit in the registry and the build number is not. A host Farrier does not support
+// administrator can edit in the registry and the build number is not. A host HostSeal does not support
 // gets its build number as its name — "build 14393" — rather than an empty string, so that the fleet
 // list says what the machine is instead of leaving a gap somebody has to go and look up.
 func (v Version) Release() (string, bool) {
@@ -143,7 +143,7 @@ func (v Version) PrettyName() string {
 	return name + " " + v.String()
 }
 
-// MachineGUID returns the host's Cryptography\MachineGuid, which Farrier uses as a stable identity.
+// MachineGUID returns the host's Cryptography\MachineGuid, which HostSeal uses as a stable identity.
 //
 // It is the Windows counterpart of /etc/machine-id and carries the same warning, which the caller must
 // honour: it is *cloned with a disk image*. A fleet built by copying one prepared virtual machine

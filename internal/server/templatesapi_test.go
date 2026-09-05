@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/server"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/server"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // templateBody is the cloud-init document most of these tests store.
@@ -28,7 +28,7 @@ import (
 // enrolment-token one, plus a password field so the secret-shape warning path is exercised on the same
 // document operators will actually write.
 const templateBody = "#cloud-config\nhostname: {{hostname}}\n" +
-	"runcmd:\n  - farrier enroll --token {{enrollmentToken}}\n"
+	"runcmd:\n  - hostseal enroll --token {{enrollmentToken}}\n"
 
 // saveTemplate stores one template version through the API and returns the decoded response.
 func (h *harness) saveTemplate(t *testing.T, token string, body map[string]any) map[string]any {
@@ -277,7 +277,7 @@ func (h *harness) enrollDirect(t *testing.T, req protocol.EnrollRequest) (int, p
 			t.Fatalf("generating a key: %v", err)
 		}
 		der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-			Subject: pkix.Name{CommonName: "farrier-agent"},
+			Subject: pkix.Name{CommonName: "hostseal-agent"},
 		}, key)
 		if err != nil {
 			t.Fatalf("creating a CSR: %v", err)
@@ -633,7 +633,7 @@ func TestABootstrapThatMintsItsOwnTokenIsRefusedAtEveryPoint(t *testing.T) {
 	}
 
 	// The half that matters more, because getting it wrong breaks templates that were working: a body
-	// full of braces that are not Farrier's is issuable. This is a real cloud-init jinja document —
+	// full of braces that are not HostSeal's is issuable. This is a real cloud-init jinja document —
 	// the header cloud-init requires, a variable it resolves on the machine, and a write_files payload
 	// carrying somebody else's template syntax to disk.
 	store1("jinja", "## template: jinja\n#cloud-config\nhostname: {{ v1.local_hostname }}\n"+
@@ -684,7 +684,7 @@ func TestABootstrapIsCheckedWhereItsBytesAreChosen(t *testing.T) {
 
 	// v2 lands afterwards, signed, and substitutes the one thing a verbatim body cannot.
 	if _, err := h.scoped().CreateTemplateVersion(context.Background(),
-		signed("#cloud-config\nruncmd:\n  - farrier enroll --token {{enrollmentToken}}\n")); err != nil {
+		signed("#cloud-config\nruncmd:\n  - hostseal enroll --token {{enrollmentToken}}\n")); err != nil {
 		t.Fatalf("storing v2: %v", err)
 	}
 

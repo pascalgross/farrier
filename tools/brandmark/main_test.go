@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,30 +69,47 @@ func TestTheIconDeclaresEveryImageWhereItActuallyIs(t *testing.T) {
 	}
 }
 
-// TestTheSmallestIconLeavesTheNailHolesOut pins the one place the outputs deliberately disagree.
+// TestTheSmallestIconLeavesTheGrooveOut pins the one place the outputs deliberately disagree.
 //
-// Below nailHoleFloor a hole is about a pixel across, which reads as a speck of dirt rather than as a
-// nail hole, so the small icon is drawn without them. That is a decision worth a test rather than a
-// comment: it looks exactly like a bug in the hole geometry to whoever finds it next.
-func TestTheSmallestIconLeavesTheNailHolesOut(t *testing.T) {
-	hole := nailCentres()[0]
+// Below grooveFloor the groove is about a pixel across, which reads as a speck of dirt rather than as
+// an impression, so the small icon is drawn without it. That is a decision worth a test rather than a
+// comment: it looks exactly like a bug in the groove geometry to whoever finds it next.
+func TestTheSmallestIconLeavesTheGrooveOut(t *testing.T) {
+	x, y := polar(0, (grooveInnerRadius+grooveOuterRadius)/2)
 
 	for _, tc := range []struct {
 		// size is the icon this checks.
 		size uint8
 
-		// wantHole is whether the pixel over a nail hole should be empty.
-		wantHole bool
+		// wantGroove is whether the pixel over the groove should be empty.
+		wantGroove bool
 	}{{16, false}, {48, true}} {
 		scale := float64(tc.size) / canvas
-		column, row := int(hole[0]*scale), int(hole[1]*scale)
+		column, row := int(x*scale), int(y*scale)
 		covered := coverage(column, row, tc.size)
-		if tc.wantHole && covered != 0 {
-			t.Errorf("at %d pixels the nail hole is %.2f covered, want a hole", tc.size, covered)
+		if tc.wantGroove && covered != 0 {
+			t.Errorf("at %d pixels the groove is %.2f covered, want a void", tc.size, covered)
 		}
-		if !tc.wantHole && covered != 1 {
-			t.Errorf("at %d pixels the pixel over a nail hole is %.2f covered, want solid metal",
+		if !tc.wantGroove && covered != 1 {
+			t.Errorf("at %d pixels the pixel over the groove is %.2f covered, want solid wax",
 				tc.size, covered)
 		}
+	}
+}
+
+// TestTheRimIsOneContinuousEdge fails if the scallops stop overlapping.
+//
+// The rim only reads as a pressed edge while neighbouring scallops cross each other; make
+// scallopRadius small enough and they separate into twelve circles sitting on a plain disc, which is a
+// different mark with a visible seam at every valley. The condition is one inequality, and it is the
+// only thing standing between a plausible-looking edit to the constants and a shape nobody meant.
+func TestTheRimIsOneContinuousEdge(t *testing.T) {
+	if scallopRadius <= scallopCentreRadius*math.Sin(halfStep) {
+		t.Fatalf("scallops of radius %g do not reach each other at %g units out: the rim would break "+
+			"into %d separate circles", scallopRadius, scallopCentreRadius, scallops)
+	}
+	if valleyRadius >= rimRadius {
+		t.Errorf("the rim dips to %g and peaks at %g, so there is nothing to see", valleyRadius,
+			rimRadius)
 	}
 }

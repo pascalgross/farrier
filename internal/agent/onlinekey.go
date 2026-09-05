@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // OnlineKeyFile is where the control plane's own public key is kept on the host.
 //
-// In the state directory and not in /etc/farrier, and the difference is the whole point. /etc/farrier
+// In the state directory and not in /etc/hostseal, and the difference is the whole point. /etc/hostseal
 // holds what the *operator* decided: policy.toml, and trusted-signers, which is the anchor for every
 // destructive operation and which the control plane can neither read nor write. This is a value the
 // control plane sent, cached so a host can act on a routine job while offline. Filing it beside the

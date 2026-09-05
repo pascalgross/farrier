@@ -9,7 +9,7 @@ import (
 
 // TestGuaranteeThePlatformCredentialReachesNoTenantsData is the separation the platform role exists for.
 //
-// Running Farrier for other people is a different job from reading what they run, and the difference
+// Running HostSeal for other people is a different job from reading what they run, and the difference
 // has to be routing rather than restraint. A credential that could do both would make "the hoster
 // cannot see your hosts" a promise about behaviour; this makes it a property of which handler answers.
 //

@@ -9,7 +9,7 @@
 // discipline into a property of the import graph. TestGuaranteeNoManagedHostBinaryLoadsASigningBackend
 // asserts it.
 //
-// The shape is database/sql's: a backend registers itself from init, `farrier` blank-imports the ones
+// The shape is database/sql's: a backend registers itself from init, `hostseal` blank-imports the ones
 // it ships, and the command that opens a key learns nothing about any of them. docs/EXTENDING.md's
 // governing rule is that extension means adding an implementation and never editing a switch, and this
 // is that rule for the one seam it applies to.
@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // PassphraseFunc supplies the secret that unlocks a key, when a backend needs one.
@@ -59,7 +59,7 @@ type Backend struct {
 
 	// Inspect returns the trusted-signers entry for a key without unlocking or signing.
 	//
-	// It exists so `farrier key show` can print the line for a key the operator cannot currently
+	// It exists so `hostseal key show` can print the line for a key the operator cannot currently
 	// unlock — which is the situation somebody is in while setting up a host with the token at the
 	// office. The file backend needs no secret for it and ignores the prompt; a token generally does,
 	// because a good few modules will not read even a public object without a login, and a key show

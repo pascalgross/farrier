@@ -8,14 +8,14 @@ import (
 	"path"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // UnitStateAbsent is the state a unit moves to when it stops being reported at all.
 //
 // Not a systemd state — systemd has no word for "this unit is no longer in the list" — so it is
-// Farrier's, and it is spelled out rather than left as an empty string so a history row reads as an
+// HostSeal's, and it is spelled out rather than left as an empty string so a history row reads as an
 // answer instead of a missing field.
 const UnitStateAbsent = "absent"
 

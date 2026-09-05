@@ -248,7 +248,7 @@ func TestDistributionFromOSReleaseClassifiesTheSupportedReleases(t *testing.T) {
 
 // TestDistributionFromOSReleaseRefusesOtherDistributions asserts an honest failure.
 //
-// Farrier is for Ubuntu and Debian. Guessing at Fedora would produce a host whose update numbers are
+// HostSeal is for Ubuntu and Debian. Guessing at Fedora would produce a host whose update numbers are
 // silently meaningless, which is worse than saying no.
 func TestDistributionFromOSReleaseRefusesOtherDistributions(t *testing.T) {
 	fields, err := ParseOSRelease(filepath.Join("testdata", "os-release-fedora"))

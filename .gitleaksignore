@@ -26,7 +26,7 @@
 
 # The next two are one password, in two files, in a commit that documents the first-start output.
 #
-# It was a real password: `farrier-server serve` generates one when the database holds no accounts, and
+# It was a real password: `hostseal-server serve` generates one when the database holds no accounts, and
 # the example block was pasted from an actual run rather than invented. It belonged to a throwaway
 # PostgreSQL database in a development container, which has since been dropped; it never reached a
 # machine anybody else can connect to, and there is no account left for it to open. gitleaks was right

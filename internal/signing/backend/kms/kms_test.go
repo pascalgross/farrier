@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // Every test here drives a provider against an httptest server rather than a cloud account. The
@@ -302,7 +302,7 @@ func TestAWSSendsTheWholePayloadForEd25519(t *testing.T) {
 // TestAWSRefusesAnEd25519PayloadOverTheRawLimit keeps a service-side 400 from being the first anybody
 // hears of a real limit.
 //
-// The parameter object Farrier signs is bounded at 8 KiB, so a payload over KMS's 4096-byte RAW limit
+// The parameter object HostSeal signs is bounded at 8 KiB, so a payload over KMS's 4096-byte RAW limit
 // is reachable rather than theoretical, and the useful answer names the limit and the alternative.
 func TestAWSRefusesAnEd25519PayloadOverTheRawLimit(t *testing.T) {
 	prov := newAWSAgainst(awsFake(t, newTestKey(t), nil))
@@ -316,8 +316,8 @@ func TestAWSRefusesAnEd25519PayloadOverTheRawLimit(t *testing.T) {
 	}
 }
 
-// TestAWSRefusesAKeyFarrierCannotCarry is the capability report issue #23 asks for.
-func TestAWSRefusesAKeyFarrierCannotCarry(t *testing.T) {
+// TestAWSRefusesAKeyHostSealCannotCarry is the capability report issue #23 asks for.
+func TestAWSRefusesAKeyHostSealCannotCarry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An RSA key, in the DER a real GetPublicKey would return for one.
 		rsaDER, err := base64.StdEncoding.DecodeString(rsaSPKIBase64)
@@ -497,7 +497,7 @@ func azureFake(t *testing.T, key testKey, kty string) *httptest.Server {
 // newAzureAgainst builds a Key Vault provider pointed at a fake.
 func newAzureAgainst(srv *httptest.Server) *azureProvider {
 	return &azureProvider{
-		keyURL: srv.URL + "/keys/farrier-signing/9885aa55",
+		keyURL: srv.URL + "/keys/hostseal-signing/9885aa55",
 		scope:  "https://vault.azure.net/.default",
 		token:  func(context.Context, string) (string, error) { return "test-token", nil },
 	}
@@ -505,7 +505,7 @@ func newAzureAgainst(srv *httptest.Server) *azureProvider {
 
 // TestGuaranteeAzureSignaturesAreReencodedToDER is the conversion this provider exists to get right.
 //
-// Key Vault defines ES256 as RFC 7518 does — the raw r‖s concatenation — and Farrier's verifier is
+// Key Vault defines ES256 as RFC 7518 does — the raw r‖s concatenation — and HostSeal's verifier is
 // crypto/ecdsa's VerifyASN1. Handing the raw pair over would produce a signature every host refuses as
 // coming from no trusted signer, which reads as a broken trust anchor days later. Both halves are
 // asserted: what the provider returns is DER, and it verifies.
@@ -676,8 +676,8 @@ func TestReferencesAreValidatedBeforeAnythingIsSent(t *testing.T) {
 	}{
 		{awsScheme, "arn:aws:kms:eu-central-1:123456789012:key/abcd-1234"},
 		{gcpScheme, "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1"},
-		{azureScheme, "ops.vault.azure.net/keys/farrier-signing/9885aa55"},
-		{azureScheme, "ops.managedhsm.azure.net/keys/farrier-signing/9885aa55"},
+		{azureScheme, "ops.vault.azure.net/keys/hostseal-signing/9885aa55"},
+		{azureScheme, "ops.managedhsm.azure.net/keys/hostseal-signing/9885aa55"},
 	} {
 		if _, err := newProvider(c.scheme, c.resource); err != nil {
 			t.Errorf("%s:%s was refused: %v", c.scheme, c.resource, err)
@@ -697,7 +697,7 @@ func TestDERFromJOSERefusesWhatItCannotConvert(t *testing.T) {
 // rsaSPKIBase64 is a 2048-bit RSA public key in DER SubjectPublicKeyInfo, base64.
 //
 // A public key, and a fixture: it exists so a test can ask what happens when a provider reports a key
-// type Farrier's wire format does not carry, which is a question about this code rather than about the
+// type HostSeal's wire format does not carry, which is a question about this code rather than about the
 // key. Nothing signs with it and its private half was never kept.
 const rsaSPKIBase64 = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3ZKN0hVJ6dLtiJ8sTUJ2" +
 	"cvNBBZH6WKTS0qBqBcbdyrBBqZYRIvSBFPqZKcuUB3IjLnQVOoNQpKMxpbEeRtQP" +

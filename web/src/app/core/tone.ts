@@ -21,15 +21,15 @@ export type Tone = 'bad' | 'warn' | 'info';
  *
  * A function rather than a class built in the template, because Tailwind's scanner needs to see each
  * class literally somewhere in the source — which the strings below satisfy — and a template
- * expression that concatenated `text-farrier-` with a variable would not.
+ * expression that concatenated `text-hostseal-` with a variable would not.
  */
 export function toneClass(tone: Tone): string {
   switch (tone) {
     case 'bad':
-      return 'text-farrier-bad';
+      return 'text-hostseal-bad';
     case 'warn':
-      return 'text-farrier-warn';
+      return 'text-hostseal-warn';
     default:
-      return 'text-farrier-quiet';
+      return 'text-hostseal-quiet';
   }
 }

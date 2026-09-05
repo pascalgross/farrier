@@ -69,9 +69,9 @@ func captureLogs(t *testing.T) *logCapture {
 // pemShape already do.
 //
 // Distinctive without being random: it has to be a string that cannot turn up in a log by accident,
-// which "farrier-test-…-not-a-real-credential" manages without looking like key material.
+// which "hostseal-test-…-not-a-real-credential" manages without looking like key material.
 func marker(what string) string {
-	return "farrier-test-" + what + "-not-a-real-credential"
+	return "hostseal-test-" + what + "-not-a-real-credential"
 }
 
 // secretBody is a template whose contents are recognisable anywhere they turn up.
@@ -81,7 +81,7 @@ func marker(what string) string {
 // from "the substituted value leaked", and those are different bugs with different fixes.
 var secretBody = "#cloud-config\nhostname: {{hostname}}\n" +
 	"write_files:\n  - path: /etc/secret\n    content: " + marker("stored-body") + "\n" +
-	"runcmd:\n  - farrier enroll --token {{enrollmentToken}}\n"
+	"runcmd:\n  - hostseal enroll --token {{enrollmentToken}}\n"
 
 // TestARenderedTemplateNeverReachesALogLine is issue #16's first consequence, and it was unasserted.
 //

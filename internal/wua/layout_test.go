@@ -63,7 +63,7 @@ func TestGuaranteeTheVariantLayoutMatchesWindows(t *testing.T) {
 // It matters at exactly one call site, and that call site is not a detail: put_Online decides whether
 // the update scan reaches the host's configured update source at all. A silently-false Online would make
 // every host report the results of whenever Windows last scanned on its own, with no indication that
-// Farrier had not asked.
+// HostSeal had not asked.
 func TestGuaranteeVariantBoolUsesCOMsTrue(t *testing.T) {
 	if variantTrue != -1 {
 		t.Errorf("variantTrue is %d; COM's VARIANT_BOOL true is -1", variantTrue)

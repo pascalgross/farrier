@@ -3,13 +3,13 @@ package collect
 import (
 	"context"
 
-	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/hostseal/internal/policy"
 )
 
 // Collector produces one named section of a host's fact report.
 //
 // It is the seam for adding a fact without touching the core. Collectors are read-only by construction
-// and run as the unprivileged farrier user with no capabilities; a collector that needs root is not a
+// and run as the unprivileged hostseal user with no capabilities; a collector that needs root is not a
 // collector, it is a request for a new intent, which is a different and much longer conversation.
 //
 // Registration is compile-time, in internal/collect/collector, and that is not a limitation the way it

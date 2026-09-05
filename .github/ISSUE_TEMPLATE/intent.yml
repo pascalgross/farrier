@@ -1,13 +1,13 @@
 name: Propose a new operation
-description: Ask for something Farrier cannot currently do on a host
+description: Ask for something HostSeal cannot currently do on a host
 labels: [intent-proposal]
 body:
   - type: markdown
     attributes:
       value: |
-        Farrier's catalogue is closed at compile time. There is no plugin loader, no scripting hook and
+        HostSeal's catalogue is closed at compile time. There is no plugin loader, no scripting hook and
         no escape hatch, and there never will be — that closure is what the guarantee in
-        `docs/SECURITY.md` §1 rests on. So "Farrier cannot do X" is a normal feature request, and the
+        `docs/SECURITY.md` §1 rests on. So "HostSeal cannot do X" is a normal feature request, and the
         answer is usually a new typed intent with validated parameters.
 
         What it is never is a general-purpose mechanism. `shell.exec`, `script.run`, arbitrary

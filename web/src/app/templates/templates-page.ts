@@ -25,7 +25,7 @@ const TOKEN_PLACEHOLDER = 'enrollmentToken';
  * The provisioning templates page: write one, version it, render it, paste it into a provisioner.
  *
  * Where the line sits is worth stating, because a page that stores and renders machine configuration
- * looks like it ought to grow a "push to host" button. It does not, ever. Farrier is not in the
+ * looks like it ought to grow a "push to host" button. It does not, ever. HostSeal is not in the
  * delivery path: a template is rendered here and handed to whatever creates the machine — Terraform,
  * a cloud console, a Proxmox form — and the control plane never reaches a host. Tier 3 is never
  * built, and this page deliberately offers no affordance implying otherwise.
@@ -39,7 +39,7 @@ const TOKEN_PLACEHOLDER = 'enrollmentToken';
  * the one control that should be read.
  */
 @Component({
-  selector: 'farrier-templates-page',
+  selector: 'hostseal-templates-page',
   imports: [
     FormsModule,
     MatButtonModule,
@@ -82,7 +82,7 @@ export class TemplatesPage {
    * than an interface that moves with the release.
    */
   protected readonly examplesUrl =
-    'https://github.com/pascalgross/farrier/tree/main/examples/cloud-init';
+    'https://github.com/pascalgross/hostseal/tree/main/examples/cloud-init';
 
   /** The reserved placeholder the control plane mints and refuses to accept from a caller. */
   protected readonly tokenSyntax = `{{${TOKEN_PLACEHOLDER}}}`;
@@ -295,7 +295,7 @@ export class TemplatesPage {
   /**
    * Stores the editor's contents as the next version.
    *
-   * Unsigned: a signature is made offline by `farrier sign-template`, with a key this control plane
+   * Unsigned: a signature is made offline by `hostseal sign-template`, with a key this control plane
    * does not hold, and a browser is the last place that key should ever be. An unsigned template can
    * be rendered and pasted into a provisioner, which is what this page is for; only a signed one may
    * be handed to an enrolling agent, because the agent verifies it against its own trusted-signers.

@@ -36,7 +36,7 @@ func (s *Server) handleCACertificate(w http.ResponseWriter, _ *http.Request) {
 	// that guessed text/plain would show it in a tab, and the operator would then be copying a document
 	// out of a viewport rather than saving the bytes.
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Header().Set("Content-Disposition", `attachment; filename="farrier-ca.crt"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="hostseal-ca.crt"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(pem); err != nil {
@@ -52,7 +52,7 @@ func (s *Server) handleCACertificate(w http.ResponseWriter, _ *http.Request) {
 // out of order, or with an agent URL from one control plane and a CA from another, is exactly the
 // failure the page exists to prevent.
 type enrolmentView struct {
-	// AgentURL is the base URL to pass to `farrier enroll --server`.
+	// AgentURL is the base URL to pass to `hostseal enroll --server`.
 	AgentURL string `json:"agentUrl"`
 
 	// AgentURLIsAGuess reports that nobody configured the address and this is the browser's own.
@@ -87,11 +87,11 @@ type enrolmentView struct {
 // APTRepositoryURL is where the agent package comes from.
 //
 // A constant rather than configuration: it is written into
-// /etc/apt/sources.list.d/farrier.sources on every host that ever installs the agent and can never be
+// /etc/apt/sources.list.d/hostseal.sources on every host that ever installs the agent and can never be
 // migrated afterwards, which is the same reason release.yml refuses to publish without it being set.
 // An installation serving its own mirror edits the commands it copies; nothing about this page is the
 // place to make that a setting.
-const APTRepositoryURL = "https://farrier.tools/apt"
+const APTRepositoryURL = "https://hostseal.io/apt"
 
 // handleEnrolmentInstructions returns what an operator needs to enrol a host.
 //

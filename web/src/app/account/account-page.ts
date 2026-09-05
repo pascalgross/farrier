@@ -67,7 +67,7 @@ const LIFETIMES: Lifetime[] = [
  * It exists because removing the shared bearer token left three things with nowhere to happen. A
  * password could only be changed by somebody with a shell on the control plane; a session could only
  * be ended by whoever was holding it, so a laptop left on a train was unanswerable; and a script had
- * no credential at all once `FARRIER_ADMIN_TOKEN` was gone. This page is where all three now are.
+ * no credential at all once `HOSTSEAL_ADMIN_TOKEN` was gone. This page is where all three now are.
  *
  * It is reachable by an operator and by a platform administrator alike, which no other page is. That
  * is not a convenience — everybody has an account and everybody has a password to change — and it is
@@ -80,7 +80,7 @@ const LIFETIMES: Lifetime[] = [
  * fine and is for something else.
  */
 @Component({
-  selector: 'farrier-account-page',
+  selector: 'hostseal-account-page',
   imports: [
     DatePipe,
     FormsModule,

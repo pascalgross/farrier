@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // testBootstrap is the template these tests apply.
@@ -36,11 +36,11 @@ var testBootstrap = protocol.Bootstrap{
 // it one directly. The tests that exercise verification build a real key and a real anchor below.
 var testKey = signing.PublicKey{Algorithm: signing.Ed25519, KeyID: "ops-laptop", Backend: "file"}
 
-// signTemplate signs a template the way `farrier sign-template` does and returns the matching anchor.
+// signTemplate signs a template the way `hostseal sign-template` does and returns the matching anchor.
 //
 // Offline, over the shared canonical payload, with a key this test generated and nothing of any
 // server's involved — which is the whole point of the thing being asserted. The returned SignerSet is
-// built through the same parser the agent uses on /etc/farrier/trusted-signers, so a test that passes
+// built through the same parser the agent uses on /etc/hostseal/trusted-signers, so a test that passes
 // here is a test about the file an administrator actually writes.
 func signTemplate(t *testing.T, b protocol.Bootstrap, keyID string) (protocol.Bootstrap, *signing.SignerSet) {
 	t.Helper()
@@ -160,7 +160,7 @@ func TestGuaranteeBootstrapReachesCloudInitAsAFileNotAnArgument(t *testing.T) {
 				t.Fatalf("the seed user-data is %q, %v", userData, err)
 			}
 			meta, err := os.ReadFile(filepath.Join(seedDir, "meta-data"))
-			if err != nil || !strings.Contains(string(meta), "farrier-bootstrap-01JHOST") {
+			if err != nil || !strings.Contains(string(meta), "hostseal-bootstrap-01JHOST") {
 				t.Fatalf("the seed meta-data is %q, %v", meta, err)
 			}
 			return nil
@@ -174,7 +174,7 @@ func TestGuaranteeBootstrapReachesCloudInitAsAFileNotAnArgument(t *testing.T) {
 	}
 
 	// And it does not stay behind. A NoCloud seed left in place outranks the machine's real datasource
-	// on every later boot, which would make "applied exactly once" true of Farrier's action and false
+	// on every later boot, which would make "applied exactly once" true of HostSeal's action and false
 	// of the machine it left behind.
 	for _, name := range []string{"user-data", "meta-data"} {
 		if _, err := os.Stat(filepath.Join(seedDir, name)); !errors.Is(err, os.ErrNotExist) {
@@ -423,7 +423,7 @@ func TestGuaranteeTheSeedCannotBeInjectedThroughTheHostID(t *testing.T) {
 //
 // checkBootstrapInterlock reads the record early — before the single-use token is spent, so an operator
 // gets a clear refusal rather than a phantom host — and applyBootstrap writes it late. On its own that
-// is check-then-act: two `farrier enroll --bootstrap X` processes sharing a state directory both read
+// is check-then-act: two `hostseal enroll --bootstrap X` processes sharing a state directory both read
 // "no record", both pass, and cloud-init runs twice on one machine. It is an unusual configuration and
 // it is reachable from an ordinary automation script.
 //

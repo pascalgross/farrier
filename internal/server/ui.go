@@ -75,7 +75,7 @@ const uiPlaceholder = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Farrier</title>
+<title>HostSeal</title>
 <style>
   :root { color-scheme: light dark; }
   body { font: 16px/1.6 system-ui, sans-serif; max-width: 46rem; margin: 4rem auto; padding: 0 1.5rem; }
@@ -85,13 +85,13 @@ const uiPlaceholder = `<!doctype html>
 </style>
 </head>
 <body>
-<h1>Farrier control plane</h1>
+<h1>HostSeal control plane</h1>
 <p>The API is running. The web application is not embedded in this build.</p>
 <pre>make web &amp;&amp; make build</pre>
 <p>
   <code>make web</code> builds the Angular application and copies it into
   <code>internal/server/assets</code>, where <code>embed.FS</code> picks it up, so that
-  <code>farrier-server</code> ships as a single binary with the interface inside it.
+  <code>hostseal-server</code> ships as a single binary with the interface inside it.
 </p>
 <p>
   In the meantime the API is usable directly. <code>GET /api/v1/hosts</code> returns the fleet and

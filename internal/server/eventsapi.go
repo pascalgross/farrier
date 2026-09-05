@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // eventView is one event as the API renders it, on the list and on the stream alike.

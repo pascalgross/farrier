@@ -15,7 +15,7 @@ import { describeError } from '../core/errors';
  *
  * It exists because `caCertificatePath` is server-absolute — `/api/v1/ca.crt` — and concatenating that
  * onto a base silently discards any path the control plane is published under. A deployment behind
- * `https://farrier.example.org/control` would be handed a command pointing at the bare origin, which
+ * `https://hostseal.example.org/control` would be handed a command pointing at the bare origin, which
  * is a 404 or, worse, somebody else's route on a shared hostname.
  *
  * The base's own path is kept and the certificate path appended to it, so the prefix survives. An
@@ -71,7 +71,7 @@ function sameOrigin(a: string, b: string): boolean {
  * to get one of them subtly wrong.
  */
 @Component({
-  selector: 'farrier-enrol-panel',
+  selector: 'hostseal-enrol-panel',
   imports: [
     DatePipe,
     MatButtonModule,
@@ -108,11 +108,11 @@ export class EnrolPanel {
   protected readonly installCommand = computed(() => {
     const apt = this.instructions()?.aptUrl ?? '';
     return [
-      `curl -fsSL ${apt}/farrier-archive-keyring.gpg \\`,
-      '  | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg > /dev/null',
-      `curl -fsSL ${apt}/farrier.sources \\`,
-      '  | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null',
-      'sudo apt-get update && sudo apt-get install farrier-agent',
+      `curl -fsSL ${apt}/hostseal-archive-keyring.gpg \\`,
+      '  | sudo tee /usr/share/keyrings/hostseal-archive-keyring.gpg > /dev/null',
+      `curl -fsSL ${apt}/hostseal.sources \\`,
+      '  | sudo tee /etc/apt/sources.list.d/hostseal.sources > /dev/null',
+      'sudo apt-get update && sudo apt-get install hostseal-agent',
     ].join('\n');
   });
 
@@ -146,7 +146,7 @@ export class EnrolPanel {
     }
     return [
       `curl -fsSL ${caUrl(this.pageBase(), details.caCertificatePath)} \\`,
-      '  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/farrier/server-ca.crt',
+      '  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/hostseal/server-ca.crt',
     ].join('\n');
   });
 
@@ -179,10 +179,10 @@ export class EnrolPanel {
       return '';
     }
     return [
-      `curl -fsSLk ${caUrl(details.agentUrl, details.caCertificatePath)} -o /tmp/farrier-ca.crt`,
-      'if [ "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \\',
+      `curl -fsSLk ${caUrl(details.agentUrl, details.caCertificatePath)} -o /tmp/hostseal-ca.crt`,
+      'if [ "$(openssl x509 -in /tmp/hostseal-ca.crt -noout -fingerprint -sha256)" \\',
       `     = "sha256 Fingerprint=${details.caFingerprint}" ]; then`,
-      '  sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt',
+      '  sudo install -D -o root -g root -m 0644 /tmp/hostseal-ca.crt /etc/hostseal/server-ca.crt',
       'else',
       '  echo "FINGERPRINT MISMATCH - do not install this certificate" >&2',
       '  false',
@@ -194,7 +194,7 @@ export class EnrolPanel {
    * The address this page is served from, including any path the control plane is published under.
    *
    * `document.baseURI` rather than `window.location.origin`, because a control plane behind a proxy
-   * path prefix is a supported deployment — the container entrypoint takes a whole FARRIER_AGENT_URL
+   * path prefix is a supported deployment — the container entrypoint takes a whole HOSTSEAL_AGENT_URL
    * for exactly that case — and an origin alone drops the prefix, producing a download URL that is a
    * 404 on the one deployment that most needs the command to work. Read through a getter so a test can
    * replace it; the document is otherwise a global the component would be pinned to.
@@ -207,7 +207,7 @@ export class EnrolPanel {
    * Whether the certificate has to be fetched from the same host it authenticates.
    *
    * True in the single-hostname deployment, where the interface and the agent API share an origin
-   * serving Farrier's own certificate. The plain command cannot verify that connection — nothing has
+   * serving HostSeal's own certificate. The plain command cannot verify that connection — nothing has
    * told the host to trust this authority yet, which is the reason for the step — so the panel prints
    * the fingerprint-checked fetch instead of a command that always fails.
    *
@@ -230,7 +230,7 @@ export class EnrolPanel {
       return '';
     }
     const token = this.minted()?.token ?? '<TOKEN>';
-    return `sudo farrier enroll --server ${details.agentUrl} --token ${token}`;
+    return `sudo hostseal enroll --server ${details.agentUrl} --token ${token}`;
   });
 
   /** Where the CA certificate can be downloaded, for an operator who would rather have the file. */

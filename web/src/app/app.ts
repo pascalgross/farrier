@@ -50,7 +50,7 @@ import { ToastStack } from './toasts/toast-stack';
  * operator who is on the fleet list rather than on the events page.
  */
 @Component({
-  selector: 'farrier-root',
+  selector: 'hostseal-root',
   imports: [
     FormsModule,
     MatBadgeModule,

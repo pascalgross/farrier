@@ -16,7 +16,7 @@ import { MatCardModule } from '@angular/material/card';
  * the application rendered the word "notifications" across its own toolbar.
  */
 @Component({
-  selector: 'farrier-material-styles-probe',
+  selector: 'hostseal-material-styles-probe',
   imports: [MatCardModule, MatFormFieldModule, MatIconModule, MatInputModule],
   template: `
     <mat-icon>notifications</mat-icon>

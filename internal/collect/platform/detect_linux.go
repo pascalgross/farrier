@@ -2,7 +2,7 @@
 
 package platform
 
-import "github.com/pascalgross/farrier/internal/collect"
+import "github.com/pascalgross/hostseal/internal/collect"
 
 // Detect identifies the host and returns the matching platform implementation.
 //

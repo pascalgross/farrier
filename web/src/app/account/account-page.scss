@@ -3,14 +3,14 @@
 // A column rather than a grid, and narrow. Everything here is read once and acted on once — a password
 // changed, a session ended, a token issued — so the layout that helps is the one that puts them in the
 // order somebody would do them, not the one that fits the most on a screen.
-.farrier-account {
+.hostseal-account {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
   max-width: 46rem;
 }
 
-.farrier-account__header {
+.hostseal-account__header {
   h1 {
     margin: 0 0 0.25rem;
     font-size: 1.375rem;
@@ -25,7 +25,7 @@
   }
 }
 
-.farrier-account__error {
+.hostseal-account__error {
   margin: 0;
   color: var(--mat-sys-error);
   font-size: 0.875rem;
@@ -36,7 +36,7 @@
 // colour, so three lines of it read as the card's first paragraph rather than as its caption. Scoped
 // to this page rather than set globally, because changing how every card in the application reads is
 // a different change from adding one page.
-.farrier-account mat-card-subtitle {
+.hostseal-account mat-card-subtitle {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
   font-weight: 400;
@@ -49,7 +49,7 @@
 // The gap is what keeps two outlined fields from stacking flush: with dynamic subscript sizing and no
 // hint, Material reserves nothing under a field, and two of them together read as one control with a
 // line through the middle.
-.farrier-account__form {
+.hostseal-account__form {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -58,7 +58,7 @@
 
 // A message about what just happened, in a box rather than as coloured text — see the sign-in screen
 // for why: coloured text under a field is what a validation error looks like, and these are answers.
-.farrier-account__note {
+.hostseal-account__note {
   margin: 0.25rem 0 0.5rem;
   padding: 0.625rem 0.75rem;
   border-radius: 0.5rem;
@@ -67,26 +67,26 @@
   line-height: 1.4;
 }
 
-.farrier-account__note--bad {
+.hostseal-account__note--bad {
   color: var(--mat-sys-on-error-container);
   background: var(--mat-sys-error-container);
   border-color: color-mix(in oklab, var(--mat-sys-error) 40%, transparent);
 }
 
-.farrier-account__note--good {
+.hostseal-account__note--good {
   color: var(--mat-sys-on-surface);
   background: color-mix(in oklab, var(--mat-sys-primary) 10%, transparent);
   border-color: color-mix(in oklab, var(--mat-sys-primary) 35%, transparent);
 }
 
-.farrier-account__empty {
+.hostseal-account__empty {
   margin: 0.5rem 0 0;
   font-size: 0.875rem;
   color: var(--mat-sys-on-surface-variant);
 }
 
 // The session and token lists.
-.farrier-account__list {
+.hostseal-account__list {
   list-style: none;
   margin: 0.5rem 0 0;
   padding: 0;
@@ -94,7 +94,7 @@
   flex-direction: column;
 }
 
-.farrier-account__row {
+.hostseal-account__row {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -108,16 +108,16 @@
 
 // A row for something that has run out. Dimmed rather than hidden: a session or a token that expired
 // is a fact about this account, and a list that silently drops them is one somebody counts wrongly.
-.farrier-account__row--muted {
+.hostseal-account__row--muted {
   opacity: 0.55;
 }
 
-.farrier-account__row-icon {
+.hostseal-account__row-icon {
   color: var(--mat-sys-on-surface-variant);
   flex: none;
 }
 
-.farrier-account__row-body {
+.hostseal-account__row-body {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
@@ -125,7 +125,7 @@
   flex: 1;
 }
 
-.farrier-account__row-title {
+.hostseal-account__row-title {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -135,12 +135,12 @@
   overflow-wrap: anywhere;
 }
 
-.farrier-account__row-meta {
+.hostseal-account__row-meta {
   font-size: 0.75rem;
   color: var(--mat-sys-on-surface-variant);
 }
 
-.farrier-account__badge {
+.hostseal-account__badge {
   flex: none;
   padding: 0.0625rem 0.4rem;
   border-radius: 0.75rem;
@@ -151,30 +151,30 @@
   color: var(--mat-sys-on-surface);
 }
 
-.farrier-account__badge--muted {
+.hostseal-account__badge--muted {
   background: color-mix(in oklab, var(--mat-sys-on-surface) 10%, transparent);
   color: var(--mat-sys-on-surface-variant);
 }
 
 // The form that issues a token: a label, a lifetime and a button, on one line where there is room.
-.farrier-account__mint {
+.hostseal-account__mint {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 0.75rem;
 }
 
-.farrier-account__mint-label {
+.hostseal-account__mint-label {
   flex: 1 1 16rem;
 }
 
-.farrier-account__mint-expiry {
+.hostseal-account__mint-expiry {
   flex: 0 1 10rem;
 }
 
 // Aligned with the fields rather than with their subscripts. Material's outlined field reserves space
 // under itself for a hint, so a button aligned to the bottom of the row sits a line low.
-.farrier-account__mint-button {
+.hostseal-account__mint-button {
   margin-top: 0.5rem;
 }
 
@@ -182,7 +182,7 @@
 //
 // Deliberately loud. It is the only moment the value exists outside whoever copies it, and a panel
 // that looked like the rest of the page is one people scroll past on the way to their terminal.
-.farrier-account__issued {
+.hostseal-account__issued {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -193,7 +193,7 @@
   background: color-mix(in oklab, var(--mat-sys-primary) 8%, transparent);
 }
 
-.farrier-account__issued-head {
+.hostseal-account__issued-head {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -202,7 +202,7 @@
 
 // The value itself, selectable and wrapping. It is 47 characters, which fits on one line at this
 // width and must not be truncated at any width: half a credential looks like a credential.
-.farrier-account__secret {
+.hostseal-account__secret {
   display: block;
   padding: 0.625rem 0.75rem;
   border-radius: 0.5rem;
@@ -214,14 +214,14 @@
   user-select: all;
 }
 
-.farrier-account__issued-note {
+.hostseal-account__issued-note {
   margin: 0;
   font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--mat-sys-on-surface-variant);
 }
 
-.farrier-account__issued-actions {
+.hostseal-account__issued-actions {
   display: flex;
   justify-content: flex-end;
 }

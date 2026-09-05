@@ -11,11 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/pascalgross/farrier/internal/auth"
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/auth"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // handleEnroll exchanges a bootstrap token and a CSR for a host-scoped client certificate.
@@ -200,7 +200,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 // leaked token is not the authority to choose what runs on the machine being enrolled.
 //
 // The signature is not this control plane's to make. The stored signature was produced offline by
-// `farrier sign-template`, with a key this process does not hold, and it is handed over verbatim. An
+// `hostseal sign-template`, with a key this process does not hold, and it is handed over verbatim. An
 // unsigned template is a refusal rather than an invitation to sign: a control plane that could sign a
 // bootstrap template could run operator-authored configuration on a host at enrolment, which is
 // precisely the hole the guarantee's second paragraph is scoped to keep narrow.
@@ -245,7 +245,7 @@ func (s *Server) resolveBootstrap(w http.ResponseWriter, r *http.Request, tenant
 			"the latest version of "+requested+" carries no offline signature, and this control plane "+
 				"cannot produce one: a bootstrap template is signed by a key in the host's own "+
 				"trusted-signers, which this control plane does not hold. Sign it with "+
-				"`farrier sign-template` and store the signed version.")
+				"`hostseal sign-template` and store the signed version.")
 		return nil, false
 	}
 

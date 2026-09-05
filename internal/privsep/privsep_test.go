@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/hostseal/internal/intent"
 )
 
 // TestGuaranteeEveryPrivilegedIntentHasExactlyOneEndpoint pins the successor to the sudoers file.
 //
 // The endpoints map is now the complete statement of what the agent can reach as root, which is the
-// role /etc/sudoers.d/farrier used to play. The failure this defends against is a privileged intent
+// role /etc/sudoers.d/hostseal used to play. The failure this defends against is a privileged intent
 // added to the catalogue without anyone deciding which helper serves it: the agent would refuse it at
 // run time, which looks like a bug on a host rather than an omission in a commit.
 func TestGuaranteeEveryPrivilegedIntentHasExactlyOneEndpoint(t *testing.T) {
@@ -390,7 +390,7 @@ func TestGuaranteeTheProbeIntentIsOnNoRouteAndInNoCatalogue(t *testing.T) {
 	}
 }
 
-// TestProbeReachesAHelperAndIsRefused is what `farrier-agent doctor` reports on.
+// TestProbeReachesAHelperAndIsRefused is what `hostseal-agent doctor` reports on.
 //
 // Success is a refusal. A helper that answered zero to a name nothing serves would be one acting on
 // requests it does not recognise, so the probe asserts the refusal rather than merely the reply.

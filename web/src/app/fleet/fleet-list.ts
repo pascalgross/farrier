@@ -32,7 +32,7 @@ type LoadState = 'loading' | 'loaded' | 'failed';
  * at during an incident.
  */
 @Component({
-  selector: 'farrier-fleet-list',
+  selector: 'hostseal-fleet-list',
   imports: [
     EnrolPanel,
     MatButtonModule,
@@ -140,7 +140,7 @@ export class FleetList {
   }
 
   /**
-   * Reports whether a host is on a release Farrier supports.
+   * Reports whether a host is on a release HostSeal supports.
    *
    * An unsupported release is flagged rather than hidden. A host nobody is patching is exactly the one
    * an operator needs to see.

@@ -17,14 +17,14 @@
 -- The resolve-key exemption is a read, and only a read.
 -- ---------------------------------------------------------------------------------------------------
 --
--- 0004 built farrier.resolve_key for the lookups that must happen *before* the tenant is known: an
+-- 0004 built hostseal.resolve_key for the lookups that must happen *before* the tenant is known: an
 -- agent presenting a certificate, and a machine presenting an enrolment token. The exemption is narrow
 -- by construction — it admits exactly the row whose key the caller already holds, and that key is a
 -- SHA-256 of something they have.
 --
 -- What makes it safe is that it is a read. A `WITH CHECK` carrying the same disjunct says something
 -- else entirely: that a writer inside such a transaction may create or move a row into *any* tenant, so
--- long as the row's key equals the one they named. `farrier.tenant` is unset in exactly those
+-- long as the row's key equals the one they named. `hostseal.tenant` is unset in exactly those
 -- transactions, so the tenant half of the predicate is NULL and the resolve-key half is the whole rule.
 --
 -- certificates got this right and enrollment_tokens did not, with nothing to say why the siblings
@@ -37,26 +37,26 @@
 
 DROP POLICY IF EXISTS enrollment_tokens_tenant_isolation ON enrollment_tokens;
 CREATE POLICY enrollment_tokens_tenant_isolation ON enrollment_tokens
-    USING      (tenant_id = current_setting('farrier.tenant', true)
-                OR hash = current_setting('farrier.resolve_key', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true)
+                OR hash = current_setting('hostseal.resolve_key', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 COMMENT ON TABLE enrollment_tokens IS
     'Single-use bootstrap tokens, by hash. The row-level security policy admits one row by '
-    'farrier.resolve_key for the pre-tenant lookup at enrolment; that exemption is read-only and must '
+    'hostseal.resolve_key for the pre-tenant lookup at enrolment; that exemption is read-only and must '
     'never appear in a WITH CHECK, or a writer in such a transaction could place a row in any tenant.';
 
 COMMENT ON TABLE certificates IS
     'Issued agent certificates, by fingerprint. The row-level security policy admits one row by '
-    'farrier.resolve_key for the pre-tenant lookup on every authenticated agent request; that '
+    'hostseal.resolve_key for the pre-tenant lookup on every authenticated agent request; that '
     'exemption is read-only and must never appear in a WITH CHECK.';
 
 -- ---------------------------------------------------------------------------------------------------
 -- A tenant id is never the empty string.
 -- ---------------------------------------------------------------------------------------------------
 --
--- This one is load-bearing in a way its size hides. A pooled connection that has set farrier.tenant and
--- let it lapse reports `''` from `current_setting('farrier.tenant', true)` for the rest of its life,
+-- This one is load-bearing in a way its size hides. A pooled connection that has set hostseal.tenant and
+-- let it lapse reports `''` from `current_setting('hostseal.tenant', true)` for the rest of its life,
 -- not NULL — so a tenant whose id were `''` would be the single fleet every statement that named no
 -- tenant could reach, including every resolve-key lookup. The failure is invisible: nothing errors, the
 -- wrong rows simply become readable.

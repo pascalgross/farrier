@@ -1,8 +1,8 @@
-// Package signing verifies detached signatures over Farrier job payloads, and produces them.
+// Package signing verifies detached signatures over HostSeal job payloads, and produces them.
 //
 // It is the third of the three mechanisms behind docs/SECURITY.md §1: every destructive operation
 // requires a signature from a key the control plane does not hold, listed in that host's own
-// /etc/farrier/trusted-signers.
+// /etc/hostseal/trusted-signers.
 //
 // The package is deliberately lopsided. Verification is small, fixed and shared by the agent and the
 // server; signing is an open-ended set of backends that runs only on an operator's machine. That shape
@@ -152,7 +152,7 @@ func ParsePublicKey(alg Algorithm, encoded string) (crypto.PublicKey, error) {
 //
 // The OpenSSH format is accepted because trusted-signers is deliberately close to authorized_keys, and
 // because operators already have tooling that emits it — ssh-keygen, ssh-add -L, every cloud console's
-// key page. Refusing it would make the first step of adopting Farrier a format conversion.
+// key page. Refusing it would make the first step of adopting HostSeal a format conversion.
 func parseSSHWireFormat(blob []byte) (crypto.PublicKey, error) {
 	pub, err := ssh.ParsePublicKey(blob)
 	if err != nil {

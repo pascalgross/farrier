@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // SpoolResult writes a job result to disk durably, before it is sent.
@@ -47,7 +47,7 @@ func SpoolResult(stateDir string, result protocol.ResultRequest) error {
 // shared with the control plane that issues the id, so the two cannot disagree about what an id is. Identifiers are Crockford base32 and contain
 // none of these characters, so anything that does is either a bug or a control plane trying to reach
 // outside the spool — and the delete path matters as much as the write path, because the agent can
-// write /var/lib/farrier and an unvalidated id there is a way to remove the host's certificate.
+// write /var/lib/hostseal and an unvalidated id there is a way to remove the host's certificate.
 func SpoolPath(stateDir, jobID string) (string, error) {
 	if jobID == "" {
 		return "", errors.New("agent: a result needs a job id; results are keyed by it")

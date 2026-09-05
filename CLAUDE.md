@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-Farrier is fleet management for Ubuntu and Debian servers whose distinguishing property is the
+HostSeal is fleet management for Ubuntu and Debian servers whose distinguishing property is the
 **absence** of a remote execution channel. Everything below follows from that. Before changing anything
 under `internal/intent`, `internal/run`, `internal/policy`, `internal/privsep`, `helpers/`,
 `internal/signing` or the socket units in `packaging/`, read [`docs/SECURITY.md`](docs/SECURITY.md) —
@@ -13,7 +13,7 @@ it is the specification, not a description of one.
 The guarantee, stated in `README.md` and `docs/SECURITY.md` §1, is enforced by tests rather than by
 convention:
 
-> An attacker who fully owns the Farrier control plane, its database, and an administrator account
+> An attacker who fully owns the HostSeal control plane, its database, and an administrator account
 > still cannot run arbitrary code on any **enrolled** host, cannot exceed any host's local policy, and
 > cannot reboot or stop services on hosts whose policy forbids it.
 
@@ -29,7 +29,7 @@ make lint        # vet + doccheck + golangci-lint
 make guarantee   # the tests that enforce docs/SECURITY.md §1, plus fuzzing
 make site        # render the documentation site into public/
 make deb         # build the .deb (needs nfpm)
-make web         # build the Angular app into where farrier-server embeds it
+make web         # build the Angular app into where hostseal-server embeds it
 ```
 
 The PKCS#11 backend needs a module to drive. `libsofthsm2` is enough — the tests build their own token
@@ -53,10 +53,10 @@ The store tests **skip silently** without a database, which hides real failures.
 give them an *ordinary* role, not a superuser:
 
 ```bash
-sudo -u postgres psql -c "CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';" \
-                     -c "CREATE DATABASE farrier_app OWNER farrier_app;"
+sudo -u postgres psql -c "CREATE ROLE hostseal_app LOGIN PASSWORD 'hostseal_app';" \
+                     -c "CREATE DATABASE hostseal_app OWNER hostseal_app;"
 
-FARRIER_TEST_DATABASE_URL='postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable' \
+HOSTSEAL_TEST_DATABASE_URL='postgres://hostseal_app:hostseal_app@127.0.0.1:5432/hostseal_app?sslmode=disable' \
   go test ./internal/store/ -count=1
 ```
 
@@ -95,9 +95,9 @@ conversation, not a commit.
   routing table in `internal/privsep` is the successor to the sudoers entry: it is the complete
   statement of which intent reaches root through which helper, and the guarantee suite checks it
   against the catalogue.
-- **The trust anchor is `/etc/farrier/trusted-signers`, not the package**, and it ships empty. A fresh
+- **The trust anchor is `/etc/hostseal/trusted-signers`, not the package**, and it ships empty. A fresh
   agent executes nothing destructive until an administrator puts a key there.
-- **A signing backend is linked by `cmd/farrier` and by nothing else.** That is what makes an
+- **A signing backend is linked by `cmd/hostseal` and by nothing else.** That is what makes an
   open-ended set of them safe — the verifier never changes and a host cannot tell which produced a
   signature — and it stopped being merely true when `pkcs11` began loading a shared library. Adding a
   backend means adding a package under `internal/signing/backend`, never an import in the agent.
@@ -105,14 +105,14 @@ conversation, not a commit.
   clock only. `serverTime` is used solely to compute an offset for display.
 - **Never `apt`; always `apt-get`**, and wrap `unattended-upgrade` with `--force-confdef`,
   `--force-confold` and `DPkg::Lock::Timeout`.
-- **Never add `farrier` to the `docker` group** — Docker socket access is root equivalence.
+- **Never add `hostseal` to the `docker` group** — Docker socket access is root equivalence.
 - **`store.Store` is not a portability seam.** JSONB + GIN, a partial index for the job claim,
   `LISTEN`/`NOTIFY`, `SELECT … FOR UPDATE SKIP LOCKED` and row-level security are load-bearing. Do not
   abstract for another database.
 - **Tenant isolation is enforced by PostgreSQL, not by remembering.** Every tenant-owned table has RLS
   `ENABLE`d *and* `FORCE`d; every scoped statement runs inside a transaction that `SET LOCAL`s
-  `farrier.tenant`. `Store.In(tenant)` is the only way to reach tenant data, and the short list of
-  operations left on `Store` itself is the complete statement of what is not scoped. `farrier-server`
+  `hostseal.tenant`. `Store.In(tenant)` is the only way to reach tenant data, and the short list of
+  operations left on `Store` itself is the complete statement of what is not scoped. `hostseal-server`
   refuses to start on a database role that bypasses RLS, because that removes the boundary with no
   symptom. See [`docs/SECURITY.md`](docs/SECURITY.md) §5.
 - **Approval is a per-tenant setting, and it is stamped on the job row at creation.** `none`, `self` or
@@ -135,14 +135,14 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   here.
 - `internal/intent` + `internal/run` — what may happen, and the only place it happens.
 - `internal/policy` + `internal/helper` + `helpers/` + `internal/privsep` — three root helpers, each
-  reached over one systemd-activated unix socket in `/run/farrier` and each re-reading the local policy
+  reached over one systemd-activated unix socket in `/run/hostseal` and each re-reading the local policy
   itself. There is no sudo and nothing setuid: `NoNewPrivileges` makes `execve` drop the setuid bit, and
   systemd implies that setting from eight directives the agent's unit sets, so `sudo` could not have
   worked without dismantling the sandbox.
 - `internal/signing` + `internal/canonical` — offline signature verification over canonical JSON
   (sorted keys, no HTML escaping, integers only). Every authorisation decision is downstream of these.
   The backends that *produce* signatures live one directory down, in `internal/signing/backend`, and
-  only `cmd/farrier` links them: `file`, `pkcs11` (via purego, so `CGO_ENABLED=0` still holds) and
+  only `cmd/hostseal` links them: `file`, `pkcs11` (via purego, so `CGO_ENABLED=0` still holds) and
   `kms` (AWS, GCP and Azure over their REST APIs, no vendor SDK).
   `TestGuaranteeNoManagedHostBinaryLoadsASigningBackend` asserts that the agent, the server and the
   helpers reach none of them, because one of them dlopens a library an operator names.
@@ -152,9 +152,9 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   no group, no helper — and is the one implementer of the optional `PolicyGated` half of the seam, so a
   host that has not written `[containers] report = true` sends no such section at all.
 - `internal/store` — PostgreSQL, plus an in-memory implementation for tests only.
-- `web/` — Angular 20 standalone, built into where `farrier-server` embeds it.
+- `web/` — Angular 20 standalone, built into where `hostseal-server` embeds it.
 - `deploy/` — the control plane in containers: the `Dockerfile` at the repository root builds
-  `farrier-server` alone (never the agent, never `farrier` — a signing backend on the control plane's
+  `hostseal-server` alone (never the agent, never `hostseal` — a signing backend on the control plane's
   own host is a key the control plane holds), and the Compose stack is the same two services the
   architecture claims. Traefik is an optional overlay and does **TLS passthrough**, because terminating
   it would end the connection that carries an agent's client certificate and leave the fingerprint

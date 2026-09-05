@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // DefaultTenant is the tenant a fresh store already contains.
 //
 // Migration 0004 inserts exactly this row, so a migrated database has it before anything else runs. The
 // in-memory store seeds the same one because the alternative diverges at the least visible moment: a
-// `farrier-server serve --store memory` process, and every server test, would begin with no tenant at
+// `hostseal-server serve --store memory` process, and every server test, would begin with no tenant at
 // all and fail on the first scoped write in a way the shipped store never does.
 const DefaultTenant TenantID = "default"
 
@@ -75,7 +75,7 @@ type tokenRow struct {
 
 // Memory is an in-memory Store.
 //
-// It exists so tests do not need a database, and so `farrier-server serve --store memory` can run a
+// It exists so tests do not need a database, and so `hostseal-server serve --store memory` can run a
 // demonstration or an integration harness without one. It is **not** a supported production backend and
 // the server logs loudly when it is used: everything is lost on restart, nothing is shared between
 // replicas, and none of the PostgreSQL properties the real store depends on — atomic claiming, GIN
@@ -223,7 +223,7 @@ func (m *Memory) Close() error { return nil }
 // In returns a handle on one tenant's data.
 //
 // It does not check that the tenant exists, and cannot usefully: it returns no error, and PostgreSQL's
-// equivalent — setting farrier.tenant on a transaction — does not check either. An unknown tenant is
+// equivalent — setting hostseal.tenant on a transaction — does not check either. An unknown tenant is
 // discovered at the first operation, and discovered the same way in both stores: reads return nothing,
 // and the writes the schema's foreign keys cover are refused.
 func (m *Memory) In(tenant TenantID) Scoped {

@@ -7,7 +7,7 @@
 -- one endpoint, and can do nothing else at all.
 --
 -- docs/SECURITY.md §4.5 removed a bearer token from this system, so putting one back deserves the
--- comparison rather than the silence. `FARRIER_ADMIN_TOKEN` was a *write* credential for a whole
+-- comparison rather than the silence. `HOSTSEAL_ADMIN_TOKEN` was a *write* credential for a whole
 -- installation, held in a flag, naming nobody in the audit trail, never expiring, and withdrawable only
 -- by restarting the control plane and telling everybody. Every one of those is inverted here: a share
 -- reads a summary and writes nothing, it records who published it, it expires on a date somebody chose,
@@ -17,10 +17,10 @@
 -- forwarded link to widen.
 --
 -- **Why the policy needs no resolve-key exemption, and must never acquire one.** The published key is
--- `frb_<tenant>.<secret>`, so the tenant travels inside the credential: the server splits it, opens the
+-- `hsb_<tenant>.<secret>`, so the tenant travels inside the credential: the server splits it, opens the
 -- handle for that tenant, and only then looks the secret up. That is the opposite of a certificate
 -- fingerprint or an enrolment token, where finding the row *is* how the tenant is discovered and the
--- narrow `farrier.resolve_key` disjunct exists to permit exactly that. Here the tenant is already known
+-- narrow `hostseal.resolve_key` disjunct exists to permit exactly that. Here the tenant is already known
 -- one statement earlier, so such a disjunct would buy nothing and widen the policy to "any row in any
 -- fleet whose key the caller can name". The digest below covers the whole key rather than its secret
 -- half, which is what makes the tenant segment load-bearing rather than decorative: a key edited to
@@ -107,11 +107,11 @@ ALTER TABLE wallboard_shares FORCE  ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS wallboard_shares_tenant_isolation ON wallboard_shares;
 CREATE POLICY wallboard_shares_tenant_isolation ON wallboard_shares
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 COMMENT ON TABLE wallboard_shares IS
     'Public read-only links to one fleet''s status screen, by hash of the whole key. The row-level '
-    'security policy has no farrier.resolve_key disjunct and must never acquire one: the tenant '
+    'security policy has no hostseal.resolve_key disjunct and must never acquire one: the tenant '
     'travels inside the key, so it is known before the lookup runs, and an exemption would admit a row '
     'from any fleet to a transaction that has named no tenant at all.';

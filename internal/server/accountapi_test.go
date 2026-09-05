@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/hostseal/internal/auth"
 )
 
 // signedIn returns a cookie-keeping client that has already signed in as the harness's account.
@@ -49,7 +49,7 @@ func mintToken(t *testing.T, h *harness, client *http.Client, label string) (str
 // It is what a script's setup now looks like: sign in as a person, issue a token that belongs to that
 // person, use it from somewhere with no browser, and take it away again. The assertion that matters
 // most is the last one — a revoked token stops working immediately, with no restart, which is the
-// property `FARRIER_ADMIN_TOKEN` could not have.
+// property `HOSTSEAL_ADMIN_TOKEN` could not have.
 func TestAnOperatorMintsATokenUsesItAndRevokesIt(t *testing.T) {
 	h := newHarness(t)
 	client := h.signedIn(t)

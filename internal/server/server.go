@@ -1,4 +1,4 @@
-// Package server is the Farrier control plane's HTTP surface.
+// Package server is the HostSeal control plane's HTTP surface.
 //
 // It serves three things from one listener and one binary: the agent protocol under /agent/v1, an
 // administrative API under /api/v1, and the Angular application embedded via embed.FS. One binary plus
@@ -32,14 +32,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/auth"
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/ca"
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/onlinekey"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/seal"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/auth"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/ca"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/onlinekey"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/seal"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // webAssets holds the built Angular application.
@@ -56,7 +56,7 @@ type Config struct {
 	//
 	// They are the *server's* identity, separate from the agent CA: agents verify the control plane
 	// like any HTTPS client, so this is usually a publicly trusted certificate while agent
-	// certificates come from Farrier's private CA.
+	// certificates come from HostSeal's private CA.
 	TLSCert string
 	TLSKey  string
 
@@ -90,7 +90,7 @@ type Config struct {
 	//
 	// Required rather than optional, unlike OnlineKey, because its absence would not disable a feature
 	// — it would ship the same feature storing plaintext, and docs/SECURITY.md §7 promises encrypted
-	// bodies unconditionally. `farrier-server serve` generates one beside the CA on first start, so
+	// bodies unconditionally. `hostseal-server serve` generates one beside the CA on first start, so
 	// requiring it costs an operator nothing.
 	TemplateKey *seal.Key
 
@@ -309,7 +309,7 @@ func New(cfg Config) (*Server, error) {
 // routes registers every handler.
 //
 // The complete surface is visible in one function on purpose. "What can this server be asked to do" is
-// a question an operator evaluating Farrier should be able to answer by reading one screen, in the same
+// a question an operator evaluating HostSeal should be able to answer by reading one screen, in the same
 // way the intent catalogue answers it for hosts.
 func (s *Server) routes() {
 	// The agent protocol. Five endpoints, no more.
@@ -471,7 +471,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 // enrolment impossible and the UI unreachable, so the requirement lives in the middleware that also
 // performs the revocation lookup.
 //
-// Client certificates are verified against Farrier's own CA only. Using the system roots would mean any
+// Client certificates are verified against HostSeal's own CA only. Using the system roots would mean any
 // publicly trusted certificate could authenticate as an agent.
 //
 // The floor and the 1.2 cipher list come from internal/protocol, which is also where the agent's client
@@ -528,7 +528,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 	}()
 
-	slog.Info("farrier control plane listening",
+	slog.Info("hostseal control plane listening",
 		"addr", s.cfg.Addr,
 		"version", buildinfo.String(),
 		"tls", len(tlsCfg.Certificates) > 0,
@@ -541,7 +541,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		// plain HTTP does not merely serve agent traffic insecurely — it cannot serve it at all, and
 		// every agent would get a 401 that no amount of debugging on the agent side would explain.
 		return errors.New("server: no TLS certificate. Pass --tls-cert and --tls-key, or let " +
-			"`farrier-server serve` issue one from the agent CA. The agent protocol authenticates hosts " +
+			"`hostseal-server serve` issue one from the agent CA. The agent protocol authenticates hosts " +
 			"with client certificates, which do not exist without TLS")
 	}
 	err := srv.ListenAndServeTLS("", "")
@@ -685,7 +685,7 @@ type caller struct {
 // requireAgent authenticates an agent by client certificate and revocation lookup.
 //
 // The revocation lookup is the point: verifying the chain proves the certificate was issued, and the
-// database lookup proves it has not been withdrawn since. Farrier uses neither CRL nor OCSP, so a
+// database lookup proves it has not been withdrawn since. HostSeal uses neither CRL nor OCSP, so a
 // handler that skipped this would accept a revoked host indefinitely — which is exactly the failure a
 // revocation mechanism exists to prevent.
 //
@@ -774,7 +774,7 @@ func refuseOrFail(w http.ResponseWriter, err error, refusal string) bool {
 	}
 	// One response for missing, malformed and wrong. Telling the caller which half of their guess was
 	// right is free reconnaissance.
-	w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
+	w.Header().Set("WWW-Authenticate", `Bearer realm="hostseal"`)
 	writeError(w, http.StatusUnauthorized, "unauthenticated", refusal)
 	return true
 }

@@ -9,7 +9,7 @@ import (
 
 // PeerOf reports that peer credentials are unavailable on this platform.
 //
-// Farrier manages Ubuntu and Debian hosts and its helpers only ever run on Linux, so this file exists
+// HostSeal manages Ubuntu and Debian hosts and its helpers only ever run on Linux, so this file exists
 // so that `go build ./...` and an editor's language server work on a maintainer's laptop — not so that
 // the helpers can run elsewhere. It fails closed rather than returning a permissive zero value: a build
 // that reached this would be one where nothing could be authorised, which is the correct outcome for a

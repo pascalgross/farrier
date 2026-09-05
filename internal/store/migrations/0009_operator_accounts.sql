@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS operator_accounts (
     -- Two columns rather than one because they answer different questions. `email` is what a person
     -- reads in an audit log and what they see on the sign-in form; `email_key` is the SHA-256 of the
     -- normalised address, and it is what the row is found by. Hashing the lookup key is not privacy
-    -- theatre — it is what lets the sign-in path name a single row through farrier.resolve_key, the
+    -- theatre — it is what lets the sign-in path name a single row through hostseal.resolve_key, the
     -- same mechanism 0004 built for certificates and enrolment tokens, without a second kind of
     -- session setting for a second shape of key.
     email         text        NOT NULL,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS operator_accounts (
 -- the address exists somewhere. That is an existence oracle of the kind 0004 removed from the machine-id
 -- index, and it is acceptable here for a reason that does not apply there: creating an account is not an
 -- operation any tenant's operator can perform. It happens on the machine, through
--- `farrier-server accounts`, by somebody who can already read the table.
+-- `hostseal-server accounts`, by somebody who can already read the table.
 CREATE UNIQUE INDEX IF NOT EXISTS operator_accounts_email ON operator_accounts (email_key);
 
 -- ---------------------------------------------------------------------------------------------------
@@ -108,7 +108,7 @@ CREATE INDEX IF NOT EXISTS operator_sessions_account
 -- Row-level security, enabled and FORCED, exactly as for every other tenant-owned table.
 --
 -- Both tables have to be readable before the tenant is known, because finding the row *is* how the
--- tenant becomes known — the third and fourth instance of what 0004 built farrier.resolve_key for, and
+-- tenant becomes known — the third and fourth instance of what 0004 built hostseal.resolve_key for, and
 -- deliberately the same mechanism rather than a second one.
 --
 -- One difference from certificates and enrolment tokens is worth writing down rather than leaving for
@@ -127,12 +127,12 @@ ALTER TABLE operator_sessions FORCE  ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS operator_accounts_tenant_isolation ON operator_accounts;
 CREATE POLICY operator_accounts_tenant_isolation ON operator_accounts
-    USING      (tenant_id = current_setting('farrier.tenant', true)
-                OR email_key = current_setting('farrier.resolve_key', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true)
+                OR email_key = current_setting('hostseal.resolve_key', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 DROP POLICY IF EXISTS operator_sessions_tenant_isolation ON operator_sessions;
 CREATE POLICY operator_sessions_tenant_isolation ON operator_sessions
-    USING      (tenant_id = current_setting('farrier.tenant', true)
-                OR token_hash = current_setting('farrier.resolve_key', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true)
+                OR token_hash = current_setting('hostseal.resolve_key', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));

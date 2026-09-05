@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/privsep"
 )
 
 // TestGuaranteeTheActionFlagNamesOnlyUnitIntents asserts --action cannot reach anything else.

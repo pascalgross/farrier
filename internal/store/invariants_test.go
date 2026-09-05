@@ -12,7 +12,7 @@ import (
 
 // TestGuaranteeATenantIDIsNeverEmpty pins the value the tenant boundary cannot survive.
 //
-// `current_setting('farrier.tenant', true)` returns NULL only until some transaction on that pooled
+// `current_setting('hostseal.tenant', true)` returns NULL only until some transaction on that pooled
 // connection has set it; afterwards, for the rest of the connection's life, an unset value reads as the
 // empty string. Every isolation policy compares a tenant column against that setting. Comparing against
 // NULL yields NULL, which admits nothing; comparing against the empty string is an ordinary comparison,
@@ -53,10 +53,10 @@ func TestGuaranteeTheEmptyTenantIsRefusedByTheDatabaseNotOnlyByGo(t *testing.T) 
 
 // TestGuaranteeTheResolveKeyExemptionIsReadOnly asserts the shape of every isolation policy at once.
 //
-// farrier.resolve_key exists for the lookups that must happen before the tenant is known, and what
+// hostseal.resolve_key exists for the lookups that must happen before the tenant is known, and what
 // makes it narrow is that it admits one row whose key the caller already holds. In a `USING` clause
 // that is a read of a row they could already name. In a `WITH CHECK` clause it is something else
-// entirely: `farrier.tenant` is unset in exactly those transactions, so the tenant half of the
+// entirely: `hostseal.tenant` is unset in exactly those transactions, so the tenant half of the
 // predicate is NULL and the resolve-key half becomes the whole rule — a writer could create or move a
 // row into any tenant, so long as its key matched the one they named.
 //
@@ -70,7 +70,7 @@ func TestGuaranteeTheResolveKeyExemptionIsReadOnly(t *testing.T) {
 		SELECT tablename, policyname, with_check
 		  FROM pg_policies
 		 WHERE schemaname = current_schema()
-		   AND with_check LIKE '%farrier.resolve_key%'`)
+		   AND with_check LIKE '%hostseal.resolve_key%'`)
 	if err != nil {
 		t.Fatalf("reading the policies: %v", err)
 	}
@@ -83,9 +83,9 @@ func TestGuaranteeTheResolveKeyExemptionIsReadOnly(t *testing.T) {
 			t.Fatalf("scanning a policy: %v", err)
 		}
 		found = true
-		t.Errorf("the WITH CHECK of %s on %s names farrier.resolve_key:\n  %s\n"+
+		t.Errorf("the WITH CHECK of %s on %s names hostseal.resolve_key:\n  %s\n"+
 			"The exemption is read-only. In a WITH CHECK it admits a write into any tenant whose row "+
-			"carries the key the caller named, because farrier.tenant is unset in exactly the "+
+			"carries the key the caller named, because hostseal.tenant is unset in exactly the "+
 			"transactions that set a resolve key.", policy, table, check)
 	}
 	if err := rows.Err(); err != nil {
@@ -101,11 +101,11 @@ func TestGuaranteeTheResolveKeyExemptionIsReadOnly(t *testing.T) {
 	if err := pg.pool.QueryRow(context.Background(), `
 		SELECT count(*) FROM pg_policies
 		 WHERE schemaname = current_schema()
-		   AND qual LIKE '%farrier.resolve_key%'`).Scan(&reads); err != nil {
+		   AND qual LIKE '%hostseal.resolve_key%'`).Scan(&reads); err != nil {
 		t.Fatalf("counting the read exemptions: %v", err)
 	}
 	if reads == 0 {
-		t.Error("no policy admits a row through farrier.resolve_key at all; the pre-tenant lookups " +
+		t.Error("no policy admits a row through hostseal.resolve_key at all; the pre-tenant lookups " +
 			"an agent request and a sign-in depend on cannot work, and the check above passed " +
 			"because there was nothing to check")
 	}

@@ -1,17 +1,17 @@
-# Farrier local policy.
+# HostSeal local policy.
 #
-# This file is the authority on this host. It is owned root:root, the farrier agent cannot write it,
-# and no operation in Farrier's intent catalogue can modify it. Effective permission for any job is
+# This file is the authority on this host. It is owned root:root, the hostseal agent cannot write it,
+# and no operation in HostSeal's intent catalogue can modify it. Effective permission for any job is
 # min(what the control plane asked for, what this file allows) — never the maximum. A host set to
 # allow = "none" cannot be made to apply updates by anyone in the control plane holding any role,
 # ever, including the person who installed it.
 #
 # It is shipped as a dpkg conffile, so your edits survive package upgrades. If you change it, run
-# `farrier-agent policy check` to validate before restarting the agent: a file that does not parse
+# `hostseal-agent policy check` to validate before restarting the agent: a file that does not parse
 # causes the host to refuse all privileged work rather than fall back to a default, which is deliberate
 # and is a miserable way to discover a typo.
 #
-# Full reference: /usr/share/doc/farrier-agent/SECURITY.md, or docs/SECURITY.md in the source tree.
+# Full reference: /usr/share/doc/hostseal-agent/SECURITY.md, or docs/SECURITY.md in the source tree.
 #
 # One file, two platforms. A Windows host reads the same keys, and several of them have nothing to act
 # on there: it applies no updates and reboots nothing, so `allow`, `auto_apply`, `reboot`, `window` and
@@ -35,7 +35,7 @@ allow = "security"
 # for, `auto_apply` decides whether the host also acts unprompted.
 #
 # NOT YET IMPLEMENTED. The timer that applies updates unprompted belongs to unattended-upgrades, which
-# the distribution configures and Farrier currently does not touch, so this setting is reported to the
+# the distribution configures and HostSeal currently does not touch, so this setting is reported to the
 # control plane and acted on by nothing. It is here from the first release because it belongs in this
 # file, and because adding a policy key later means every host in a fleet has a policy file older than
 # the software reading it.
@@ -59,9 +59,9 @@ auto_apply = true
 # has asked for it. What this key buys them is a way to say no on the hosts where the cost is not worth
 # it. A host that says no reports its updates as unmeasured, never as none.
 #
-# ORDERING WARNING, as for [containers] report: Farrier refuses a policy file containing a key it does
+# ORDERING WARNING, as for [containers] report: HostSeal refuses a policy file containing a key it does
 # not know, and a refused policy file means the host falls closed. Upgrade the agent first, then set the
-# key, and run `farrier-agent policy check` before restarting anything.
+# key, and run `hostseal-agent policy check` before restarting anything.
 scan = true
 
 # The maintenance window, in the timezone below. Empty means any time.
@@ -106,11 +106,11 @@ reboot = "never"
 
 # Units this host will start, stop or restart on request.
 #
-# Entries are matched with shell-style globbing, so "farrier-*.service" covers instances without
+# Entries are matched with shell-style globbing, so "hostseal-*.service" covers instances without
 # enumerating them. The shipped default is empty: nothing is restartable until you say what is.
 #
 # Example:
-#   restartable = ["nginx.service", "docker.service", "farrier-*.service"]
+#   restartable = ["nginx.service", "docker.service", "hostseal-*.service"]
 restartable = []
 
 # Units whose state changes this host considers worth reporting as an event.
@@ -132,7 +132,7 @@ watched = []
 
 # Whether this host reports the containers running on it.
 #
-# The agent reads /proc and /sys/fs/cgroup as the unprivileged farrier user. It is never added to the
+# The agent reads /proc and /sys/fs/cgroup as the unprivileged hostseal user. It is never added to the
 # docker group and never talks to /var/run/docker.sock: Docker socket access is root equivalence, and
 # a fleet agent that held it would undo the rest of this file. That also bounds the answer — no image
 # names, no exit codes, no restart counts, and a container that has exited is not visible at all.
@@ -150,11 +150,11 @@ watched = []
 # Turning it on also costs bandwidth: the memory and CPU figures change every time they are read, so
 # this host will send a full report on every heartbeat instead of a digest.
 #
-# ORDERING WARNING. Farrier refuses a policy file containing a key it does not know, and a refused
+# ORDERING WARNING. HostSeal refuses a policy file containing a key it does not know, and a refused
 # policy file means the host falls closed — allow = "none", nothing restartable, every privileged job
-# refused. Writing this key on a host whose farrier-agent predates it therefore switches that host's
+# refused. Writing this key on a host whose hostseal-agent predates it therefore switches that host's
 # updates off until the agent is upgraded or the key is removed. Upgrade the agent first, then set the
-# key, and run `farrier-agent policy check` before restarting anything.
+# key, and run `hostseal-agent policy check` before restarting anything.
 report = false
 
 [limits]

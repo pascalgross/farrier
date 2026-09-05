@@ -12,11 +12,11 @@ set -euo pipefail
 : "${INSTANCE:?}"
 
 property() {
-	run "$INSTANCE" systemctl show farrier-agent.service --property "$1" --value | tr -d '\r'
+	run "$INSTANCE" systemctl show hostseal-agent.service --property "$1" --value | tr -d '\r'
 }
 
-[ "$(property User)" = "farrier" ] || fail "the unit does not run as farrier"
-pass "runs as the unprivileged farrier user"
+[ "$(property User)" = "hostseal" ] || fail "the unit does not run as hostseal"
+pass "runs as the unprivileged hostseal user"
 
 [ "$(property NoNewPrivileges)" = "yes" ] || fail "NoNewPrivileges is not in force"
 [ "$(property MemoryDenyWriteExecute)" = "yes" ] || fail "MemoryDenyWriteExecute is not in force"
@@ -38,24 +38,24 @@ pass "the process holds no capabilities"
 # The agent must be able to write its state and nothing else.
 #
 # These run *inside* the unit's sandbox, with systemd-run --property=... reproducing it, rather than as
-# `sudo -u farrier` from outside. That distinction is the whole test: `sudo -u farrier touch` tests file
+# `sudo -u hostseal` from outside. That distinction is the whole test: `sudo -u hostseal touch` tests file
 # permissions, which is worth knowing but is not what ProtectSystem=strict does. Checking the ownership
 # separately below covers the case where systemd-run is unavailable.
-sandbox="--uid=farrier --property=ProtectSystem=strict --property=ProtectHome=yes \
-	--property=ReadWritePaths=/var/lib/farrier --property=NoNewPrivileges=yes"
+sandbox="--uid=hostseal --property=ProtectSystem=strict --property=ProtectHome=yes \
+	--property=ReadWritePaths=/var/lib/hostseal --property=NoNewPrivileges=yes"
 
 if run_sh "$INSTANCE" 'command -v systemd-run >/dev/null'; then
 	run_sh "$INSTANCE" "systemd-run --wait --quiet --collect $sandbox \
-		/usr/bin/touch /var/lib/farrier/probe" \
+		/usr/bin/touch /var/lib/hostseal/probe" \
 		|| fail "the agent cannot write its own state directory inside the sandbox"
-	run "$INSTANCE" rm -f /var/lib/farrier/probe
+	run "$INSTANCE" rm -f /var/lib/hostseal/probe
 
 	# ProtectSystem=strict makes everything outside ReadWritePaths read-only, so this must fail even
 	# though the file permissions alone would not stop it.
 	if run_sh "$INSTANCE" "systemd-run --wait --quiet --collect $sandbox \
-		/usr/bin/touch /etc/farrier/probe" 2>/dev/null; then
-		run "$INSTANCE" rm -f /etc/farrier/probe
-		fail "the sandbox permits writing /etc/farrier, which would defeat local policy sovereignty"
+		/usr/bin/touch /etc/hostseal/probe" 2>/dev/null; then
+		run "$INSTANCE" rm -f /etc/hostseal/probe
+		fail "the sandbox permits writing /etc/hostseal, which would defeat local policy sovereignty"
 	fi
 	pass "inside the sandbox the agent can write its state and cannot write its policy"
 else
@@ -63,15 +63,15 @@ else
 fi
 
 # File permissions as well, which hold whether or not the sandbox is in force.
-run_sh "$INSTANCE" '[ "$(stat -c %U /var/lib/farrier)" = "farrier" ]' \
+run_sh "$INSTANCE" '[ "$(stat -c %U /var/lib/hostseal)" = "hostseal" ]' \
 	|| fail "the state directory is not owned by the agent"
-run_sh "$INSTANCE" '! sudo -u farrier test -w /etc/farrier/policy.toml' \
+run_sh "$INSTANCE" '! sudo -u hostseal test -w /etc/hostseal/policy.toml' \
 	|| fail "the agent user can write policy.toml by file permissions alone"
 pass "the state directory is the agent's and the policy file is not"
 
 # The salt must exist and be private to the agent. Without it the machine-id hash would be correlatable
 # between fleets by anyone who saw both.
-run_sh "$INSTANCE" '[ -s /var/lib/farrier/machine-id-salt ]' || fail "no machine-id salt was generated"
-run_sh "$INSTANCE" '[ "$(stat -c %U:%a /var/lib/farrier/machine-id-salt)" = "farrier:600" ]' \
+run_sh "$INSTANCE" '[ -s /var/lib/hostseal/machine-id-salt ]' || fail "no machine-id salt was generated"
+run_sh "$INSTANCE" '[ "$(stat -c %U:%a /var/lib/hostseal/machine-id-salt)" = "hostseal:600" ]' \
 	|| fail "the machine-id salt is not private to the agent"
 pass "a private per-host machine-id salt exists"

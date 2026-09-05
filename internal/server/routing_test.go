@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // TestGuaranteeAMistypedAPICallIsNotAnsweredWithSuccess is the regression test for a fallback that

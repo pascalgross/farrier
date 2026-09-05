@@ -300,7 +300,7 @@ describe('Wallboard credentials', () => {
   it('asks for the passphrase when the share carries one', () => {
     const fake = answering();
     fake.failure = { status: 401, error: { error: 'passphrase_required', message: 'locked' } };
-    location.hash = 'frb_01JTENANT.abcdefghijklmnopqrstuvwxyz';
+    location.hash = 'hsb_01JTENANT.abcdefghijklmnopqrstuvwxyz';
     const fixture = render(fake, true);
 
     expect(fixture.nativeElement.querySelector('.wb')).toBeNull();
@@ -329,13 +329,13 @@ describe('Wallboard credentials', () => {
     const framed = render(answering()).nativeElement;
     const published = render(answering(), true).nativeElement;
 
-    expect(framed.querySelector('farrier-share-panel')).not.toBeNull();
-    expect(published.querySelector('farrier-share-panel')).toBeNull();
+    expect(framed.querySelector('hostseal-share-panel')).not.toBeNull();
+    expect(published.querySelector('hostseal-share-panel')).toBeNull();
 
     // The class the shell's copy of the board is sized by. Without it the operator's board is a full
     // viewport tall and the share panel underneath it starts below the fold — which for a panel
     // nobody knows exists is the same as it not being there.
-    expect(framed.classList.contains('farrier-wallboard--framed')).toBeTrue();
-    expect(published.classList.contains('farrier-wallboard--framed')).toBeFalse();
+    expect(framed.classList.contains('hostseal-wallboard--framed')).toBeTrue();
+    expect(published.classList.contains('hostseal-wallboard--framed')).toBeFalse();
   });
 });

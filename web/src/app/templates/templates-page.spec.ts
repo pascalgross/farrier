@@ -160,7 +160,7 @@ describe('TemplatesPage version history', () => {
     const fixture = render(version({ body: '#cloud-config\nhostname: fixed\n' }), 'fails');
 
     expect(text(fixture.nativeElement.querySelector('pre'))).toContain('hostname: fixed');
-    expect(fixture.nativeElement.querySelectorAll('.text-farrier-bad').length).toBe(0);
+    expect(fixture.nativeElement.querySelectorAll('.text-hostseal-bad').length).toBe(0);
   });
 
   /**
@@ -282,7 +282,7 @@ describe('TemplatesPage cloud-init examples', () => {
       .withContext('the Templates page no longer links to examples/cloud-init')
       .toBeDefined();
     expect(examples?.href).toBe(
-      'https://github.com/pascalgross/farrier/tree/main/examples/cloud-init',
+      'https://github.com/pascalgross/hostseal/tree/main/examples/cloud-init',
     );
     expect(examples?.rel).toContain('noopener');
   });

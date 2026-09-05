@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify that every commit in a range carries a Developer Certificate of Origin sign-off.
 #
-# Farrier uses the DCO and no CLA. That is not a formality: under the DCO, relicensing would require the
+# HostSeal uses the DCO and no CLA. That is not a formality: under the DCO, relicensing would require the
 # agreement of every contributor, which means no future owner of this repository can take it
 # proprietary — including Pascal Groß. For a security tool whose value is that its claims can be
 # verified, that permanence is worth more than the flexibility it costs, and this check is the mechanism

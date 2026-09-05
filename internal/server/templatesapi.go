@@ -9,14 +9,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/provision"
-	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/provision"
+	"github.com/pascalgross/hostseal/internal/signing"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // templateNamePattern is the only shape a template name may take.
 //
-// A name is typed by an operator on a command line — `farrier enroll --bootstrap standard-server` —
+// A name is typed by an operator on a command line — `hostseal enroll --bootstrap standard-server` —
 // and recorded in a host's permanent bootstrap record, so it is kept to the characters that survive
 // both without quoting. An allowlist rather than a denylist, for the same reason job ids are.
 var templateNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -48,7 +48,7 @@ type templateRequest struct {
 	Body string `json:"body"`
 
 	// Signature is a detached signature over the canonical {name, body} payload, base64, from
-	// `farrier sign-template`. Optional: an unsigned version can be rendered and never issued at
+	// `hostseal sign-template`. Optional: an unsigned version can be rendered and never issued at
 	// enrolment.
 	Signature string `json:"signature,omitempty"`
 
@@ -235,7 +235,7 @@ func validateTemplateSignature(req templateRequest) error {
 		return nil
 	default:
 		return errors.New("a signed template carries signature, signerKeyId and signerAlgorithm " +
-			"together; use `farrier sign-template`, which produces all three")
+			"together; use `hostseal sign-template`, which produces all three")
 	}
 }
 

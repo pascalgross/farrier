@@ -3,7 +3,7 @@
 Five real machines — Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 — running the real `.deb`, driven
 by LXD.
 
-It exists because the failures Farrier most needs to avoid do not reproduce against mocks. A conffile
+It exists because the failures HostSeal most needs to avoid do not reproduce against mocks. A conffile
 prompt that hangs, a reboot marker that is an Ubuntu convention rather than a standard, a package
 upgrade that quietly replaces a trust anchor, a job result lost because the machine went away before it
 was sent: every one of those is a property of a real machine running a real package manager, and a test
@@ -22,19 +22,19 @@ Needs LXD: `sudo snap install lxd && sudo lxd init --auto`.
 
 | Variable | |
 | --- | --- |
-| `FARRIER_RELEASES` | Which releases to cover, space-separated. Defaults to all five |
-| `FARRIER_VM=0` | Use system containers instead of virtual machines. Faster, and the reboot scenarios then test rather less than they claim to, so they skip |
+| `HOSTSEAL_RELEASES` | Which releases to cover, space-separated. Defaults to all five |
+| `HOSTSEAL_VM=0` | Use system containers instead of virtual machines. Faster, and the reboot scenarios then test rather less than they claim to, so they skip |
 
 ## The scenarios
 
 | | |
 | --- | --- |
-| `010-install` | The package installs, the account cannot log in and is not in the `docker` group, the conffiles are root-owned and unwritable by the agent, `trusted-signers` ships empty, the three helper sockets are listening as `root:farrier 0660` with no sudoers entry beside them, and the helper refuses a restart the local policy does not permit |
+| `010-install` | The package installs, the account cannot log in and is not in the `docker` group, the conffiles are root-owned and unwritable by the agent, `trusted-signers` ships empty, the three helper sockets are listening as `root:hostseal 0660` with no sudoers entry beside them, and the helper refuses a restart the local policy does not permit |
 | `020-hardening` | The hardening the unit file claims is actually in force, read back from systemd — which silently ignores directives it does not understand — and the agent can write its state and cannot write its policy |
 | `030-facts` | The security/regular split, the reboot marker and Ubuntu Pro give the right answer *for this family*. All four of these differences fail quietly rather than loudly, so the answers are checked rather than the absence of an error |
 | `040-upgrade` | A locally edited `policy.toml` and `trusted-signers` survive a package upgrade untouched. The second half is a **security** test: an upgrade that reset the trust anchor would re-open every destructive operation an administrator had closed |
 | `050-conffile-prompt` | An update run with a changed conffile completes rather than hanging. `DEBIAN_FRONTEND=noninteractive` alone is not enough, and the run that hangs holds the apt lock until somebody notices days later |
-| `060-kill-switch` | `/etc/farrier/paused` and `systemctl stop` both stop the host acting, the agent cannot remove the marker itself, and nothing flips it back on |
+| `060-kill-switch` | `/etc/hostseal/paused` and `systemctl stop` both stop the host acting, the agent cannot remove the marker itself, and nothing flips it back on |
 | `070-reboot-result` | A job result fsynced to the spool survives a **hard** reset and is still there afterwards. A result that only survives an orderly shutdown is not surviving anything |
 | `080-write-capability` | The write capability exists and is bounded by the policy file. The shipped policy refuses every privileged operation; a permissive one permits exactly what it names, and a unit it names is actually restarted; a unit it does not name is still refused; the pause marker outranks both. There are exactly three root helpers, none accepts a program to run, and there is no sudoers entry |
 

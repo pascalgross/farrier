@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/run"
+	"github.com/pascalgross/hostseal/internal/run"
 )
 
 // UbuntuRebootMarker is update-notifier's reboot-required file.
@@ -73,7 +73,7 @@ type NeedrestartReport struct {
 
 	// ScanComplete reports whether the scan could see every process.
 	//
-	// needrestart can only inspect processes the calling user owns, and the Farrier agent is
+	// needrestart can only inspect processes the calling user owns, and the HostSeal agent is
 	// deliberately unprivileged. An incomplete scan must be reported as incomplete rather than
 	// presented as a clean bill of health: "no services need restarting" and "I could not see the
 	// services that do" must never look the same in a dashboard.
@@ -91,7 +91,7 @@ func RunNeedrestart(ctx context.Context) (NeedrestartReport, error) {
 		return NeedrestartReport{}, nil
 	}
 
-	// -b is batch mode; -r l lists rather than prompting or restarting. Farrier never lets needrestart
+	// -b is batch mode; -r l lists rather than prompting or restarting. HostSeal never lets needrestart
 	// restart anything: that decision belongs to the intent catalogue and the local policy, not to a
 	// helper program's default.
 	res, err := run.Command(ctx, run.Needrestart, "-b", "-r", "l")

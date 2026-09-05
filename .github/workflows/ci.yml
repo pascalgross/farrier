@@ -60,18 +60,18 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: farrier_test
-          POSTGRES_PASSWORD: farrier_test
-          POSTGRES_DB: farrier_test
+          POSTGRES_USER: hostseal_test
+          POSTGRES_PASSWORD: hostseal_test
+          POSTGRES_DB: hostseal_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U farrier_test"
+          --health-cmd "pg_isready -U hostseal_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      FARRIER_TEST_DATABASE_URL: postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable
+      HOSTSEAL_TEST_DATABASE_URL: postgres://hostseal_app:hostseal_app@127.0.0.1:5432/hostseal_app?sslmode=disable
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -93,13 +93,13 @@ jobs:
         # operator to do, which means CI now runs against the documented production arrangement rather
         # than a more privileged one.
         env:
-          PGPASSWORD: farrier_test
+          PGPASSWORD: hostseal_test
         run: |
-          psql -h 127.0.0.1 -U farrier_test -d farrier_test -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';
-          CREATE DATABASE farrier_app OWNER farrier_app;
+          psql -h 127.0.0.1 -U hostseal_test -d hostseal_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE hostseal_app LOGIN PASSWORD 'hostseal_app';
+          CREATE DATABASE hostseal_app OWNER hostseal_app;
           SQL
-          PGPASSWORD=farrier_app psql -h 127.0.0.1 -U farrier_app -d farrier_app -tAc \
+          PGPASSWORD=hostseal_app psql -h 127.0.0.1 -U hostseal_app -d hostseal_app -tAc \
             'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
             | grep -qx f
 
@@ -122,13 +122,13 @@ jobs:
         # The mail sink chooses its transport on an exact port comparison, and the only way to observe
         # the implicit-TLS half is a listener on 465 itself — which is privileged, so on a runner it
         # skips, and a skipped test reads exactly like a passing one. Lowering the threshold for the
-        # job is cheaper than a seam in the production code, and FARRIER_TEST_PRIVILEGED_PORTS turns
+        # job is cheaper than a seam in the production code, and HOSTSEAL_TEST_PRIVILEGED_PORTS turns
         # the test's skip into a failure so that a runner where this step stops working says so.
         run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=465
 
       - name: Tests, including the store against a real PostgreSQL
         env:
-          FARRIER_TEST_PRIVILEGED_PORTS: "1"
+          HOSTSEAL_TEST_PRIVILEGED_PORTS: "1"
         run: make test
 
       - name: The store tests actually ran rather than skipping
@@ -233,9 +233,9 @@ jobs:
         # the agent, and the sockets are now the privilege boundary: a socket unit that does not parse
         # is a host that cannot be patched.
         run: |
-          sudo install -Dm755 /bin/true /usr/bin/farrier-agent
+          sudo install -Dm755 /bin/true /usr/bin/hostseal-agent
           for helper in apply-updates restart-unit reboot-host; do
-            sudo install -Dm755 /bin/true "/usr/libexec/farrier/$helper"
+            sudo install -Dm755 /bin/true "/usr/libexec/hostseal/$helper"
           done
           make units
 
@@ -252,21 +252,21 @@ jobs:
           # `make deb-path` rather than a literal: Debian has no notion of a prerelease, so nfpm's
           # semver schema writes 0.0.0-ci as 0.0.0~ci, and a hand-written path silently matches nothing.
           sudo dpkg -i "$(make -s deb-path VERSION=0.0.0-ci)"
-          farrier-agent version
-          farrier version
-          farrier-agent policy check
+          hostseal-agent version
+          hostseal version
+          hostseal-agent policy check
 
           # The privilege boundary, from the agent's own account. This connects to each of the three
           # helper sockets and is refused by each, which proves the sockets exist, that this account may
           # reach them, that systemd started the helper as root, and that the helper refuses what it
           # does not serve. It changes nothing: the intent it sends is in no catalogue.
-          sudo -u farrier farrier-agent doctor
+          sudo -u hostseal hostseal-agent doctor
 
           # And the whole product in one command: an operation the local policy does not permit, going
           # through the only privileged path that exists, being told no by a file the control plane
           # cannot touch.
           set +e
-          sudo /usr/libexec/farrier/restart-unit --action restart --unit nginx.service
+          sudo /usr/libexec/hostseal/restart-unit --action restart --unit nginx.service
           status=$?
           set -e
           if [ "$status" -ne 3 ]; then
@@ -279,36 +279,36 @@ jobs:
         # the trust anchor would re-open every destructive operation an administrator had closed.
         run: |
           printf '\ned25519 AAAAC3NzaC1lZDI1NTE5AAAAILOCALEDITXXXXXXXXXXXXXXXXXXXXXXXXXXXX local\n' \
-            | sudo tee -a /etc/farrier/trusted-signers > /dev/null
-          sudo sed -i 's/^allow = "security"/allow = "all"/' /etc/farrier/policy.toml
-          before_policy=$(md5sum /etc/farrier/policy.toml | cut -d' ' -f1)
-          before_signers=$(md5sum /etc/farrier/trusted-signers | cut -d' ' -f1)
+            | sudo tee -a /etc/hostseal/trusted-signers > /dev/null
+          sudo sed -i 's/^allow = "security"/allow = "all"/' /etc/hostseal/policy.toml
+          before_policy=$(md5sum /etc/hostseal/policy.toml | cut -d' ' -f1)
+          before_signers=$(md5sum /etc/hostseal/trusted-signers | cut -d' ' -f1)
 
           make deb VERSION=0.0.1-ci
           sudo dpkg -i "$(make -s deb-path VERSION=0.0.1-ci)"
 
-          after_policy=$(md5sum /etc/farrier/policy.toml | cut -d' ' -f1)
-          after_signers=$(md5sum /etc/farrier/trusted-signers | cut -d' ' -f1)
+          after_policy=$(md5sum /etc/hostseal/policy.toml | cut -d' ' -f1)
+          after_signers=$(md5sum /etc/hostseal/trusted-signers | cut -d' ' -f1)
           [ "$before_policy" = "$after_policy" ] || { echo "policy.toml was replaced" >&2; exit 1; }
           [ "$before_signers" = "$after_signers" ] || { echo "trusted-signers was replaced" >&2; exit 1; }
           echo "conffiles survived the upgrade"
 
       - name: Purge leaves nothing behind
         run: |
-          sudo dpkg --purge farrier-agent
-          for path in /etc/farrier /var/lib/farrier /usr/libexec/farrier /usr/bin/farrier \
-                      /usr/share/farrier /usr/lib/systemd/system/farrier-apply-updates.socket \
-                      /usr/lib/tmpfiles.d/farrier.conf; do
+          sudo dpkg --purge hostseal-agent
+          for path in /etc/hostseal /var/lib/hostseal /usr/libexec/hostseal /usr/bin/hostseal \
+                      /usr/share/hostseal /usr/lib/systemd/system/hostseal-apply-updates.socket \
+                      /usr/lib/tmpfiles.d/hostseal.conf; do
             [ ! -e "$path" ] || { echo "$path survived a purge" >&2; exit 1; }
           done
           # An enabled socket unit left behind would activate a binary that no longer exists, turning
-          # every connection into a failed unit start on a machine where Farrier is not installed.
-          for socket in farrier-apply-updates farrier-restart-unit farrier-reboot-host; do
+          # every connection into a failed unit start on a machine where HostSeal is not installed.
+          for socket in hostseal-apply-updates hostseal-restart-unit hostseal-reboot-host; do
             if systemctl is-enabled "$socket.socket" >/dev/null 2>&1; then
               echo "$socket.socket is still enabled after a purge" >&2; exit 1
             fi
           done
-          ! getent passwd farrier
+          ! getent passwd hostseal
 
   apt-repository:
     name: APT repository
@@ -334,20 +334,20 @@ jobs:
           export GNUPGHOME=$(mktemp -d)
           chmod 700 "$GNUPGHOME"
           gpg --batch --quick-generate-key --passphrase '' \
-            "Farrier CI <ci@example.invalid>" default default never
+            "HostSeal CI <ci@example.invalid>" default default never
           KEY=$(gpg --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
-          GPG_KEY_ID="$KEY" FARRIER_APT_URL="https://apt.example.invalid" \
+          GPG_KEY_ID="$KEY" HOSTSEAL_APT_URL="https://apt.example.invalid" \
             ./packaging/apt/mkapt.sh dist/packages ./public
 
       - name: apt verifies the repository and installs from it
         run: |
-          sudo install -m0644 ./public/farrier-archive-keyring.gpg \
-            /usr/share/keyrings/farrier-archive-keyring.gpg
+          sudo install -m0644 ./public/hostseal-archive-keyring.gpg \
+            /usr/share/keyrings/hostseal-archive-keyring.gpg
           sudo sed "s|https://apt.example.invalid|file://$PWD/public|" \
-            ./public/farrier.sources | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
+            ./public/hostseal.sources | sudo tee /etc/apt/sources.list.d/hostseal.sources > /dev/null
           sudo apt-get -o APT::Sandbox::User=root update
-          sudo apt-get -o APT::Sandbox::User=root install -y --no-install-recommends farrier-agent
-          farrier-agent version
+          sudo apt-get -o APT::Sandbox::User=root install -y --no-install-recommends hostseal-agent
+          hostseal-agent version
 
       - name: The repository root is a page rather than a 404
         # The index exists so that pasting the repository URL into a browser does not look like an
@@ -357,7 +357,7 @@ jobs:
         # in a <pre> block went unnoticed.
         run: |
           test -f ./public/index.html
-          grep -q 'https://apt.example.invalid/farrier.sources' ./public/index.html
+          grep -q 'https://apt.example.invalid/hostseal.sources' ./public/index.html
           missing=0
           hrefs=$(grep -o 'href="[^"]*"' ./public/index.html | sed 's/href="//; s/"$//')
           urls=$(grep -o 'https://apt\.example\.invalid/[A-Za-z0-9._/-]*' ./public/index.html \
@@ -377,9 +377,9 @@ jobs:
           # Into RUNNER_TEMP, not the checkout: ./public is the signed tree the previous steps built
           # and still hold the apt source for, and only /public is gitignored.
           out="$RUNNER_TEMP/public-unsigned"
-          FARRIER_APT_URL="https://apt.example.invalid" \
+          HOSTSEAL_APT_URL="https://apt.example.invalid" \
             ./packaging/apt/mkapt.sh dist/packages "$out"
-          if grep -q 'farrier-archive-keyring' "$out/index.html"; then
+          if grep -q 'hostseal-archive-keyring' "$out/index.html"; then
             echo "the unsigned tree's index.html names a keyring it does not contain" >&2
             exit 1
           fi
@@ -410,10 +410,10 @@ jobs:
           cd deploy
           cat > .env <<ENV
           POSTGRES_SUPERUSER_PASSWORD=$(openssl rand -hex 16)
-          FARRIER_DB_PASSWORD=$(openssl rand -hex 16)
-          FARRIER_REPLICATION_PASSWORD=$(openssl rand -hex 16)
-          FARRIER_BOOTSTRAP_PASSWORD=$(openssl rand -hex 32)
-          FARRIER_IMAGE=farrier-server:0.0.0-ci
+          HOSTSEAL_DB_PASSWORD=$(openssl rand -hex 16)
+          HOSTSEAL_REPLICATION_PASSWORD=$(openssl rand -hex 16)
+          HOSTSEAL_BOOTSTRAP_PASSWORD=$(openssl rand -hex 32)
+          HOSTSEAL_IMAGE=hostseal-server:0.0.0-ci
           ENV
           docker compose -f compose.yaml -f compose.standby.yaml up -d --wait --wait-timeout 600
 
@@ -424,7 +424,7 @@ jobs:
           # quietly wrong if somebody simplified it into POSTGRES_USER.
           docker compose -f compose.yaml -f compose.standby.yaml exec -T postgres \
             psql -U postgres -tAc \
-            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = 'farrier';" | grep -qx f
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = 'hostseal';" | grep -qx f
 
           # The standby has a walsender on the primary and is caught up.
           docker compose -f compose.yaml -f compose.standby.yaml exec -T postgres \

@@ -2,11 +2,11 @@
 
 [`wheel-and-unattended-upgrades.yaml`](wheel-and-unattended-upgrades.yaml) is one worked template body:
 unattended security updates left on, a `wheel` group, `su` restricted to that group, and one
-administrator in it. It is an example and not a default. Farrier ships no template — what a machine
+administrator in it. It is an example and not a default. HostSeal ships no template — what a machine
 should look like on its first boot is a decision about a fleet, and a project that shipped one would be
 making it for you.
 
-It is here because a template body is the one document in Farrier that an operator writes from scratch,
+It is here because a template body is the one document in HostSeal that an operator writes from scratch,
 and because two of its details are easy to get wrong in ways that produce a host which reports itself
 patched and is not.
 
@@ -17,12 +17,12 @@ patched and is not.
 because apt reads that directory in lexical order and a lower number is overridden by the file it means
 to amend. It sets `--force-confdef`, `--force-confold` and `DPkg::Lock::Timeout`, which is what an
 unattended run needs to not stop at a dpkg prompt no one will ever see, and it turns automatic reboots
-off: whether this host may reboot is `/etc/farrier/policy.toml`'s answer, not the update mechanism's.
+off: whether this host may reboot is `/etc/hostseal/policy.toml`'s answer, not the update mechanism's.
 
 It deliberately does **not** set `Unattended-Upgrade::Origins-Pattern`. Debian and Ubuntu name their
 security origins differently, each distribution's own file already has the right one, and a pattern
 copied from the other distribution is exactly how a host stops applying security updates while still
-reporting that unattended-upgrades is enabled. Farrier keeps a `Platform` seam in `internal/collect` for
+reporting that unattended-upgrades is enabled. HostSeal keeps a `Platform` seam in `internal/collect` for
 the same four differences, for the same reason.
 
 **`wheel` restricts `su`; it grants nothing.** The line added to `/etc/pam.d/su` is
@@ -48,17 +48,17 @@ the one value the template does not choose itself.
 
 ## Using it as a Tier 1 template
 
-Farrier stores and renders this and never delivers it. The rendered `user-data` goes to whatever creates
+HostSeal stores and renders this and never delivers it. The rendered `user-data` goes to whatever creates
 the machine.
 
 ```bash
-curl -sX POST https://farrier.example.org/api/v1/templates \
-  -H "Authorization: Bearer $FARRIER_TOKEN" -H 'Content-Type: application/json' \
+curl -sX POST https://hostseal.example.org/api/v1/templates \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg body "$(cat wheel-and-unattended-upgrades.yaml)" \
         '{name: "baseline", body: $body}')"
 
-curl -sX POST https://farrier.example.org/api/v1/templates/baseline/render \
-  -H "Authorization: Bearer $FARRIER_TOKEN" -H 'Content-Type: application/json' \
+curl -sX POST https://hostseal.example.org/api/v1/templates/baseline/render \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN" -H 'Content-Type: application/json' \
   -d '{"params":{"admin_user":"ubuntu"}}'
 ```
 
@@ -72,12 +72,12 @@ which it stops being a baseline anybody can copy:
 
 ```yaml
 runcmd:
-  - [ farrier, enroll, --server, 'https://farrier.example.org', --token, '{{enrollmentToken}}' ]
+  - [ hostseal, enroll, --server, 'https://hostseal.example.org', --token, '{{enrollmentToken}}' ]
 ```
 
 ## Using it as a Tier 2 bootstrap
 
-`farrier enroll --bootstrap NAME` applies a named template once, on a host being enrolled by hand,
+`hostseal enroll --bootstrap NAME` applies a named template once, on a host being enrolled by hand,
 against a signature the control plane stores but cannot mint. Two things change:
 
 1. **Replace `{{admin_user}}` with a literal name first.** A bootstrap body is applied as exactly the
@@ -86,10 +86,10 @@ against a signature the control plane stores but cannot mint. Two things change:
    empty `trusted-signers` rather than falling back to trusting the server.
 
 ```bash
-farrier sign-template --key ~/.config/farrier/ops.key --name baseline \
+hostseal sign-template --key ~/.config/hostseal/ops.key --name baseline \
   --body ./baseline.yaml            # prints the whole body and asks before signing
 
-sudo farrier enroll --server https://farrier.example.org --token frr_… \
+sudo hostseal enroll --server https://hostseal.example.org --token hsl_… \
      --signers ./trusted-signers --bootstrap baseline
 ```
 

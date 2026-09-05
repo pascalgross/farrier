@@ -3,7 +3,7 @@
 } @else if (error()) {
   <mat-card class="max-w-xl mx-auto mt-12">
     <mat-card-content class="!pt-6 flex items-start gap-3">
-      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
       <p class="m-0">{{ error() }}</p>
     </mat-card-content>
   </mat-card>
@@ -15,7 +15,7 @@
   <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
     <div>
       <h1 class="text-2xl font-medium m-0">{{ host.hostname || host.id }}</h1>
-      <p class="m-0 text-sm opacity-70 farrier-numeric">{{ host.id }}</p>
+      <p class="m-0 text-sm opacity-70 hostseal-numeric">{{ host.id }}</p>
     </div>
     @if (!host.revoked) {
       <button mat-stroked-button type="button" (click)="toggleRevoke()">
@@ -40,7 +40,7 @@
           its history stay.
         </p>
         @if (revokeError()) {
-          <p class="m-0 text-sm text-farrier-bad">{{ revokeError() }}</p>
+          <p class="m-0 text-sm text-hostseal-bad">{{ revokeError() }}</p>
         }
         <div class="flex gap-2">
           <button mat-flat-button type="button" [disabled]="revoking()" (click)="revoke()">
@@ -55,7 +55,7 @@
   @if (host.revoked) {
     <mat-card class="mb-6">
       <mat-card-content class="!pt-6 flex items-start gap-3">
-        <mat-icon class="text-farrier-warn">gpp_bad</mat-icon>
+        <mat-icon class="text-hostseal-warn">gpp_bad</mat-icon>
         <p class="m-0 text-sm">
           This host is revoked. Its certificate is gone, so it can no longer report, and this machine
           can enrol again. It keeps patching from its own local policy.
@@ -71,10 +71,10 @@
         <mat-list>
           <mat-list-item><span matListItemTitle>Group</span><span matListItemLine>{{ host.group || '—' }}</span></mat-list-item>
           <mat-list-item><span matListItemTitle>Agent</span><span matListItemLine>{{ host.agentVersion || '—' }}</span></mat-list-item>
-          <mat-list-item><span matListItemTitle>Uptime</span><span matListItemLine class="farrier-numeric">{{ uptime(host) }}</span></mat-list-item>
+          <mat-list-item><span matListItemTitle>Uptime</span><span matListItemLine class="hostseal-numeric">{{ uptime(host) }}</span></mat-list-item>
           <mat-list-item>
             <span matListItemTitle>Clock</span>
-            <span matListItemLine class="farrier-numeric" [class.text-farrier-warn]="host.clockSkewed">
+            <span matListItemLine class="hostseal-numeric" [class.text-hostseal-warn]="host.clockSkewed">
               {{ offset(host) }}
               @if (host.clockSkewed) { — privileged operations fail closed }
             </span>
@@ -111,7 +111,7 @@
               <span matListItemTitle>Watched units</span>
               <span matListItemLine>{{ watchedSummary(host) }}</span>
             </mat-list-item>
-            <mat-list-item><span matListItemTitle>Job age limit</span><span matListItemLine class="farrier-numeric">{{ policy.limits.maxJobAgeSeconds }}s</span></mat-list-item>
+            <mat-list-item><span matListItemTitle>Job age limit</span><span matListItemLine class="hostseal-numeric">{{ policy.limits.maxJobAgeSeconds }}s</span></mat-list-item>
           </mat-list>
 
           <p class="text-sm opacity-70 mt-2 mb-0">
@@ -141,7 +141,7 @@
           </mat-list>
         }
         <p class="text-sm opacity-70 mt-2 mb-0">
-          These keys live on the host, in <code>/etc/farrier/trusted-signers</code>. This control plane
+          These keys live on the host, in <code>/etc/hostseal/trusted-signers</code>. This control plane
           holds none of them and cannot add one.
         </p>
       </mat-card-content>
@@ -153,10 +153,10 @@
         @if (host.facts; as facts) {
           <mat-list>
             <mat-list-item><span matListItemTitle>Release</span><span matListItemLine>{{ release(host) }}</span></mat-list-item>
-            <mat-list-item><span matListItemTitle>Kernel</span><span matListItemLine class="farrier-numeric">{{ facts.kernel || '—' }}</span></mat-list-item>
+            <mat-list-item><span matListItemTitle>Kernel</span><span matListItemLine class="hostseal-numeric">{{ facts.kernel || '—' }}</span></mat-list-item>
             <mat-list-item>
               <span matListItemTitle>Updates</span>
-              <span matListItemLine class="farrier-numeric">
+              <span matListItemLine class="hostseal-numeric">
                 {{ facts.packages?.upgradableSecurity ?? 0 }} security of
                 {{ facts.packages?.upgradableTotal ?? 0 }} total
               </span>
@@ -200,10 +200,10 @@
       <mat-card-header><mat-card-title>Units</mat-card-title></mat-card-header>
       <mat-card-content class="!pt-4">
         @if (failedUnits().length) {
-          <p class="m-0 mb-3 text-farrier-bad">
+          <p class="m-0 mb-3 text-hostseal-bad">
             Failed now:
             @for (unit of failedUnits(); track unit.name) {
-              <span class="farrier-numeric">{{ unit.name }} ({{ unit.subState }})</span>
+              <span class="hostseal-numeric">{{ unit.name }} ({{ unit.subState }})</span>
               @if (!$last) { <span>, </span> }
             }
           </p>
@@ -218,10 +218,10 @@
           off on purpose.
         -->
         @if (unloadableUnits().length) {
-          <p class="m-0 mb-3 text-sm text-farrier-warn">
+          <p class="m-0 mb-3 text-sm text-hostseal-warn">
             Not loaded:
             @for (unit of unloadableUnits(); track unit.name) {
-              <span class="farrier-numeric">{{ unit.name }} ({{ unitLabel(unit) }})</span>
+              <span class="hostseal-numeric">{{ unit.name }} ({{ unitLabel(unit) }})</span>
               @if (!$last) { <span>, </span> }
             }
           </p>
@@ -232,7 +232,7 @@
         }
 
         @if (host.facts?.servicesTruncated) {
-          <p class="m-0 mb-3 text-sm text-farrier-warn">
+          <p class="m-0 mb-3 text-sm text-hostseal-warn">
             This host's unit list was cut at the protocol's cap, in sorted order, so a failed unit
             after the cut is not above. That is an unknown rather than a clean answer.
           </p>
@@ -244,7 +244,7 @@
           @if (history.transitions.length) {
             <ol class="list-none m-0 p-0 flex flex-col gap-1">
               @for (change of history.transitions; track change.unit + change.at) {
-                <li class="text-sm farrier-numeric flex flex-wrap gap-x-2">
+                <li class="text-sm hostseal-numeric flex flex-wrap gap-x-2">
                   <span class="font-medium">{{ change.unit }}</span>
                   <span class="opacity-80">{{ change.from }} → {{ change.to }}</span>
                   <span class="opacity-60">{{ transitionAge(change) }}</span>
@@ -261,7 +261,7 @@
             reporting on the heartbeat rather than a gap somebody should hunt for during an incident.
           </p>
         } @else if (historyError()) {
-          <p class="m-0 text-sm text-farrier-warn">{{ historyError() }}</p>
+          <p class="m-0 text-sm text-hostseal-warn">{{ historyError() }}</p>
         } @else {
           <p class="m-0 text-sm opacity-60">Reading the unit history…</p>
         }

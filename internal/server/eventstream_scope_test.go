@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/server"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/server"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // issueTokenIn mints an enrolment token in a named fleet.

@@ -1,7 +1,7 @@
 // Command reboot-host is the root helper that reboots the machine, subject to local policy.
 //
-// It is installed as /usr/libexec/farrier/reboot-host and is reachable from the agent only through the
-// socket its unit is activated on, /run/farrier/reboot-host.sock, which is owned root:farrier and mode
+// It is installed as /usr/libexec/hostseal/reboot-host and is reachable from the agent only through the
+// socket its unit is activated on, /run/hostseal/reboot-host.sock, which is owned root:hostseal and mode
 // 0660. See internal/privsep for why that replaced sudo.
 //
 // Two policy settings must both hold: updates.reboot must be "window", and the current local time must
@@ -9,7 +9,7 @@
 // on this invocation — not from anything the agent passed in.
 //
 // The agent is responsible for the other half of a reboot working at all: the job's result must be
-// fsynced to /var/lib/farrier/pending-results before this helper is invoked, because the job completes
+// fsynced to /var/lib/hostseal/pending-results before this helper is invoked, because the job completes
 // by the host disappearing and the naive ordering reports nothing at all. See docs/PROTOCOL.md §6.2.
 package main
 
@@ -20,11 +20,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/helper"
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/run"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/helper"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/run"
 )
 
 // main parses the fixed command line and either answers the socket or performs one reboot.
@@ -41,7 +41,7 @@ func main() {
 	flag.Parse()
 
 	if *version {
-		fmt.Println("farrier reboot-host " + buildinfo.String())
+		fmt.Println("hostseal reboot-host " + buildinfo.String())
 		return
 	}
 	if flag.NArg() > 0 {

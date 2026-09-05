@@ -1,7 +1,7 @@
 // Command restart-unit is the root helper that starts, stops or restarts a systemd unit.
 //
-// It is installed as /usr/libexec/farrier/restart-unit and is reachable from the agent only through the
-// socket its unit is activated on, /run/farrier/restart-unit.sock, which is owned root:farrier and mode
+// It is installed as /usr/libexec/hostseal/restart-unit and is reachable from the agent only through the
+// socket its unit is activated on, /run/hostseal/restart-unit.sock, which is owned root:hostseal and mode
 // 0660. The agent's own sandbox is what makes that necessary rather than sudo: with NoNewPrivileges in
 // force, execve drops the setuid bit and sudo cannot become root at all. See internal/privsep.
 //
@@ -25,10 +25,10 @@ import (
 
 	"github.com/coreos/go-systemd/v22/dbus"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/helper"
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/helper"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/privsep"
 )
 
 // actions maps the helper's --action flag to the catalogue member it corresponds to.
@@ -71,7 +71,7 @@ func main() {
 	flag.Parse()
 
 	if *version {
-		fmt.Println("farrier restart-unit " + buildinfo.String())
+		fmt.Println("hostseal restart-unit " + buildinfo.String())
 		return
 	}
 	if flag.NArg() > 0 {

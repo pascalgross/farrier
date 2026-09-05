@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/hostseal/internal/intent"
 )
 
 // mustDecode builds validated intent parameters or fails the test.
@@ -37,7 +37,7 @@ timezone = "UTC"
 reboot = "window"
 
 [services]
-restartable = ["nginx.service", "farrier-*.service"]
+restartable = ["nginx.service", "hostseal-*.service"]
 
 [limits]
 max_job_age_seconds = 900
@@ -55,7 +55,7 @@ var nowUTC = time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC)
 
 // TestDecideAllowsReadIntentsUnconditionally covers the unprivileged tier.
 //
-// Read intents run as the farrier user with no capabilities and read nothing an unprivileged local
+// Read intents run as the hostseal user with no capabilities and read nothing an unprivileged local
 // user could not read. Gating them on policy would blind an operator to the state of a host without
 // protecting anything, so the only interesting assertion is that even a fully closed policy permits
 // them.
@@ -75,7 +75,7 @@ func TestDecideAllowsReadIntentsUnconditionally(t *testing.T) {
 
 // TestDecideRefusesEverythingWhenPaused covers the local kill switch.
 //
-// systemctl stop and /etc/farrier/paused are a stop the control plane cannot override, which is why
+// systemctl stop and /etc/hostseal/paused are a stop the control plane cannot override, which is why
 // there is deliberately no agent.resume intent. The read intents are included because pausing a host
 // means pausing it, not "pausing the interesting half".
 func TestDecideRefusesEverythingWhenPaused(t *testing.T) {
@@ -173,7 +173,7 @@ func TestDecideRefusesUnitsNotOnTheRestartableList(t *testing.T) {
 		allowed bool
 	}{
 		{"nginx.service", true},
-		{"farrier-agent.service", true},
+		{"hostseal-agent.service", true},
 		{"sshd.service", false},
 		{"postgresql.service", false},
 	} {
@@ -309,7 +309,7 @@ max_job_age_seconds = 900
 		// authorised by the control plane's own online key is what docs/SECURITY.md §3 forbids.
 		intent.PackagesApplySecurity: {`{}`, ``},
 		intent.PackagesApplyAll:      {`{}`, `{"rebootIfRequired":true}`, `{"rebootIfRequired":false}`},
-		intent.ServiceStart:          {`{"unit":"nginx.service"}`, `{"unit":"farrier-agent.service"}`},
+		intent.ServiceStart:          {`{"unit":"nginx.service"}`, `{"unit":"hostseal-agent.service"}`},
 		intent.ServiceStop:           {`{"unit":"sshd.service"}`, `{"unit":"docker.service"}`},
 		intent.ServiceRestart:        {`{"unit":"nginx.service"}`},
 		intent.HostReboot:            {`{}`, `{"delaySeconds":0}`, `{"delaySeconds":3600,"message":"now"}`},

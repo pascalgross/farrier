@@ -18,7 +18,7 @@ import (
 
 // TestGuaranteeEnrolmentStateIsReadableByTheServiceAccount is the bug this file exists for.
 //
-// `sudo farrier enroll` writes the credential as root; the unit runs it as an unprivileged account. The
+// `sudo hostseal enroll` writes the credential as root; the unit runs it as an unprivileged account. The
 // files therefore landed root-owned at mode 0600, the service could not open agent.json, and it logged
 // "not enrolled" on a host the control plane was already listing — an enrolled host that reports
 // nothing, with every visible signal saying the installation is fine.
@@ -40,7 +40,7 @@ func TestGuaranteeEnrolmentStateIsReadableByTheServiceAccount(t *testing.T) {
 	if err := os.Chmod(dir, 0o750); err != nil {
 		t.Fatalf("setting the directory mode: %v", err)
 	}
-	// The files as `sudo farrier enroll` writes them: root-owned, and 0600 for the two that matter.
+	// The files as `sudo hostseal enroll` writes them: root-owned, and 0600 for the two that matter.
 	for name, perm := range map[string]os.FileMode{
 		StateFile:      0o600,
 		CABundleFile:   0o644,
@@ -103,7 +103,7 @@ func TestAdoptingAMissingDirectoryIsAnError(t *testing.T) {
 // falls back to nobody where the package has not been installed — which is every developer's machine.
 func unprivilegedIDs(t *testing.T) (uid, gid int) {
 	t.Helper()
-	for _, name := range []string{"farrier", "nobody", "daemon"} {
+	for _, name := range []string{"hostseal", "nobody", "daemon"} {
 		u, err := user.Lookup(name)
 		if err != nil {
 			continue

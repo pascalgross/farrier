@@ -1,4 +1,4 @@
-# Installing Farrier
+# Installing HostSeal
 
 What you get from this is a fleet that reports: inventory, systemd unit state, pending updates with
 security separated from the rest, and which services still hold replaced libraries.
@@ -8,7 +8,7 @@ rebooting — and each is bounded by a root-owned file the control plane cannot 
 can ask for them: `POST /api/v1/jobs` queues one, and whether it then waits for somebody to release it
 is a setting on your fleet — see [`SECURITY.md` §3](SECURITY.md#3-the-intent-catalogue).
 
-A destructive job carries a signature made offline by a key the control plane does not hold. `farrier
+A destructive job carries a signature made offline by a key the control plane does not hold. `hostseal
 sign` is what produces one, and it never contacts the server — it renders what you are about to
 authorise from the same payload it then signs.
 
@@ -18,22 +18,22 @@ You need PostgreSQL 14 or newer, and one binary.
 
 ```bash
 # 1. The certificate authority that issues agent certificates.
-sudo farrier-server ca init --ca-dir /var/lib/farrier-server/ca
+sudo hostseal-server ca init --ca-dir /var/lib/hostseal-server/ca
 
 # 2. A database. An ordinary role that owns the schema — not the postgres superuser.
-sudo -u postgres createuser farrier --pwprompt
-sudo -u postgres createdb --owner farrier farrier
+sudo -u postgres createuser hostseal --pwprompt
+sudo -u postgres createdb --owner hostseal hostseal
 
 # 3. Run it. The schema is created on first start, and so is the first account —
 #    whose password is printed once, on this terminal, and nowhere else.
-export FARRIER_DATABASE_URL='postgres://farrier:...@localhost/farrier?sslmode=disable'
-farrier-server serve --addr :8443 --ca-dir /var/lib/farrier-server/ca
+export HOSTSEAL_DATABASE_URL='postgres://hostseal:...@localhost/hostseal?sslmode=disable'
+hostseal-server serve --addr :8443 --ca-dir /var/lib/hostseal-server/ca
 ```
 
 **Connect as an ordinary role, not as `postgres`.** Fleets are isolated from one another by PostgreSQL
 row-level security, and a superuser — or any role with `BYPASSRLS` — is exempt from every policy in the
 schema. The exemption has no symptom whatsoever: the policies are still there, the queries still carry
-their predicates, and every query returns every fleet's rows. `farrier-server` checks its own role at
+their predicates, and every query returns every fleet's rows. `hostseal-server` checks its own role at
 startup and refuses to run on either, so you will be told rather than left to find out. See
 [`SECURITY.md` §5](SECURITY.md#5-tenants).
 
@@ -41,7 +41,7 @@ Two things about TLS are worth knowing before you reach them.
 
 The agent protocol authenticates hosts with **client certificates**, which do not exist without TLS —
 so a control plane with no certificate does not serve agents insecurely, it cannot serve them at all.
-`farrier-server serve` therefore refuses to start without one, and issues one from its own CA if you do
+`hostseal-server serve` therefore refuses to start without one, and issues one from its own CA if you do
 not supply one. An enrolled agent trusts that automatically, because it is handed the CA bundle at
 enrolment. A browser will not, so pass `--tls-cert` and `--tls-key` from whatever issues your public
 certificates before operators use the interface in earnest.
@@ -69,8 +69,8 @@ it refuses one. What bounds a routine job instead is the host's own policy — s
 ### Operators, and how they sign in
 
 Everybody gets an account: an address, a password, and a session in an `HttpOnly` cookie. There is no
-shared credential and deliberately no way to configure one. `FARRIER_ADMIN_TOKEN` and
-`FARRIER_PLATFORM_TOKEN` used to be here, and they are gone rather than deprecated — one string for a
+shared credential and deliberately no way to configure one. `HOSTSEAL_ADMIN_TOKEN` and
+`HOSTSEAL_PLATFORM_TOKEN` used to be here, and they are gone rather than deprecated — one string for a
 whole fleet names nobody in the audit trail, cannot be taken away from one person who has left, never
 expires, and made the two-person approval rule unsatisfiable by construction, because it compares the
 approver against the job's creator and under one token those were always the same string.
@@ -85,13 +85,13 @@ This control plane had no accounts, so one has been created.
   password: <24 characters, printed here and nowhere else>
 ```
 
-Set `FARRIER_BOOTSTRAP_EMAIL`, and `FARRIER_BOOTSTRAP_PASSWORD` or `--bootstrap-password-file`, to
+Set `HOSTSEAL_BOOTSTRAP_EMAIL`, and `HOSTSEAL_BOOTSTRAP_PASSWORD` or `--bootstrap-password-file`, to
 choose them yourself. Either way the accounts table is the truth afterwards: neither is read again.
 
 Then give each person their own:
 
 ```bash
-sudo -u farrier farrier-server accounts add --email ops@example.org --name "Ops"
+sudo -u hostseal hostseal-server accounts add --email ops@example.org --name "Ops"
 # Password: (typed, twice, never a flag: argv is world-readable in ps)
 ```
 
@@ -112,9 +112,9 @@ web interface: it belongs to that account, acts as that account in the audit tra
 revoked from the same page in a second.
 
 ```bash
-export FARRIER_TOKEN=frr_...                      # shown once, when it is issued
-curl -s https://farrier.example.org/api/v1/hosts \
-  -H "Authorization: Bearer $FARRIER_TOKEN"
+export HOSTSEAL_TOKEN=hsl_...                      # shown once, when it is issued
+curl -s https://hostseal.example.org/api/v1/hosts \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN"
 ```
 
 It is a bearer token and that is not a contradiction with the paragraph above. What was wrong with the
@@ -165,17 +165,17 @@ Optional, and off until you configure it. Alerting rules are per fleet and edita
 which relay this installation may speak to is yours:
 
 ```bash
-farrier-server serve \
+hostseal-server serve \
   --smtp-host smtp.example.com --smtp-port 587 \
-  --smtp-from farrier@example.com --smtp-username farrier \
-  --smtp-password-file /etc/farrier-server/smtp.password \
+  --smtp-from hostseal@example.com --smtp-username hostseal \
+  --smtp-password-file /etc/hostseal-server/smtp.password \
   ...
 ```
 
 Port 465 speaks TLS from the first byte and anything else — 587 in practice — upgrades with STARTTLS.
 Plaintext SMTP is not offered: an alert legitimately carries hostnames and failure text, and a relay
 that does not offer STARTTLS is refused rather than downgraded to. The password comes from a file, or
-from `FARRIER_SMTP_PASSWORD`, and never from a flag, because `argv` is world-readable in `ps`.
+from `HOSTSEAL_SMTP_PASSWORD`, and never from a flag, because `argv` is world-readable in `ps`.
 
 Without a relay, every other route still works — the event inbox, the live feed in the interface, and
 each fleet's webhook — and a rule that names recipients says on the rule that its mail did not go out.
@@ -189,8 +189,8 @@ have. A television in a corridor cannot sign in, so it gets a **published link**
 
 ```bash
 # The label is the heading the screen shows, so name the fleet rather than the link.
-curl -sX POST https://farrier.example.org/api/v1/wallboard/shares \
-  -H "Authorization: Bearer $FARRIER_TOKEN" \
+curl -sX POST https://hostseal.example.org/api/v1/wallboard/shares \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"label":"Production — Frankfurt","days":90,"passphrase":"the one on the sticker"}'
 ```
@@ -207,7 +207,7 @@ curl -sX POST https://farrier.example.org/api/v1/wallboard/shares \
     "passphrase": true,
     "expired": false
   },
-  "link": "https://farrier.example.org/board#frb_01JAV0….k7q2…"
+  "link": "https://hostseal.example.org/board#hsb_01JAV0….k7q2…"
 }
 ```
 
@@ -228,12 +228,12 @@ the old one.
 Listing and withdrawing are the other two:
 
 ```bash
-curl -s https://farrier.example.org/api/v1/wallboard/shares \
-  -H "Authorization: Bearer $FARRIER_TOKEN"
+curl -s https://hostseal.example.org/api/v1/wallboard/shares \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN"
 
 # Withdrawing is a delete, and takes effect at the next poll — within fifteen seconds.
-curl -sX DELETE https://farrier.example.org/api/v1/wallboard/shares/01JAV0Q7X4M2R6P9T3K5N8W1YB \
-  -H "Authorization: Bearer $FARRIER_TOKEN"
+curl -sX DELETE https://hostseal.example.org/api/v1/wallboard/shares/01JAV0Q7X4M2R6P9T3K5N8W1YB \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN"
 ```
 
 The listing includes expired links as well as live ones, because a screen that has gone dark is the
@@ -263,7 +263,7 @@ Provisioning one is a separate account's job. A **platform administrator** carri
 that is the whole of what makes them one:
 
 ```bash
-sudo -u farrier farrier-server accounts add --platform --email you@example.org --name "You"
+sudo -u hostseal hostseal-server accounts add --platform --email you@example.org --name "You"
 ```
 
 They sign in exactly like anybody else, and get a fleets screen — create, rename, retire, and set each
@@ -272,22 +272,22 @@ route that reaches a fleet's hosts or jobs. The same thing from a terminal, with
 account issued for itself:
 
 ```bash
-# $FARRIER_TOKEN is an API token that account issued for itself, from its own account page.
+# $HOSTSEAL_TOKEN is an API token that account issued for itself, from its own account page.
 curl -sX POST https://control.example.org/api/v1/tenants \
-  -H "Authorization: Bearer $FARRIER_TOKEN" \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"slug":"acme","displayName":"Acme Ltd","approvalMode":"second_person"}'
 ```
 
 A platform administrator administers fleets and **reaches no fleet's hosts or jobs** — every operator
 route refuses them, and every fleet route refuses an operator. That separation is the point of having
-two kinds of account rather than one: running Farrier for other people should not require being able to
+two kinds of account rather than one: running HostSeal for other people should not require being able to
 read what they run.
 
 They also cannot create a fleet's operator. That happens on the machine, like every other account:
 
 ```bash
-farrier-server accounts add --tenant acme --email ops@acme.example --name "Acme Ops"
+hostseal-server accounts add --tenant acme --email ops@acme.example --name "Acme Ops"
 ```
 
 Which is not an inconvenience to be routed around — [`SECURITY.md`
@@ -306,8 +306,8 @@ for a script, and the same thing to read when you want to know what those comman
 
 ```bash
 # On the control plane, or through the web interface:
-curl -sX POST https://farrier.example.org/api/v1/tokens \
-  -H "Authorization: Bearer $FARRIER_TOKEN" \
+curl -sX POST https://hostseal.example.org/api/v1/tokens \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"label":"web tier","group":"web-prod"}'
 ```
@@ -317,11 +317,11 @@ let its holder enrol hosts. It is single-use and expires in a day by default.
 
 ```bash
 # On the host:
-curl -fsSL https://farrier.tools/apt/farrier-archive-keyring.gpg \
-  | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg > /dev/null
-curl -fsSL https://farrier.tools/apt/farrier.sources \
-  | sudo tee /etc/apt/sources.list.d/farrier.sources > /dev/null
-sudo apt-get update && sudo apt-get install farrier-agent
+curl -fsSL https://hostseal.io/apt/hostseal-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/hostseal-archive-keyring.gpg > /dev/null
+curl -fsSL https://hostseal.io/apt/hostseal.sources \
+  | sudo tee /etc/apt/sources.list.d/hostseal.sources > /dev/null
+sudo apt-get update && sudo apt-get install hostseal-agent
 
 # Trust this control plane's authority, before enrolling rather than after: an agent that starts
 # without it fails to verify the server and retries, so you get a running service and a host that
@@ -330,14 +330,14 @@ sudo apt-get update && sudo apt-get install farrier-agent
 #
 # Fetch it over a connection you can already verify — see below, because on the agent hostname you
 # cannot, and that is not a fault either.
-curl -fsSL https://farrier.example.org/api/v1/ca.crt \
-  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/farrier/server-ca.crt
+curl -fsSL https://hostseal.example.org/api/v1/ca.crt \
+  | sudo install -D -o root -g root -m 0644 /dev/stdin /etc/hostseal/server-ca.crt
 
-sudo farrier enroll --server https://farrier.example.org --token frr_…
-sudo systemctl restart farrier-agent
+sudo hostseal enroll --server https://hostseal.example.org --token hsl_…
+sudo systemctl restart hostseal-agent
 ```
 
-`farrier enroll` reads that path without being told, so the two commands are the ordering they look
+`hostseal enroll` reads that path without being told, so the two commands are the ordering they look
 like: install the authority, then enrol against it. `--ca` overrides it, and a `--ca` naming a file that
 is not there fails rather than quietly falling back to the system roots — which would verify a chain
 you did not ask for at the one moment you were being specific about which to trust.
@@ -351,7 +351,7 @@ verify against the CA they were handed, so they need no public certificate and g
 That `curl` verifies the control plane like any other client, so it works from a hostname whose
 certificate the host already trusts and not from one whose certificate is the thing being fetched. On a
 control plane serving its own certificate — the default, and the agent hostname in the Traefik
-deployment, where TLS passes through to `farrier-server` untouched — it fails with `unable to get local
+deployment, where TLS passes through to `hostseal-server` untouched — it fails with `unable to get local
 issuer certificate`. That is the tool being right: nothing has told this host to trust that authority
 yet, which is the entire reason for the step.
 
@@ -364,7 +364,7 @@ so the command above works unchanged with that name in it.
 **By copying the file**, which needs no TLS at all. On the control plane:
 
 ```bash
-docker compose cp farrier-server:/var/lib/farrier-server/ca/ca.crt ./farrier-ca.crt
+docker compose cp hostseal-server:/var/lib/hostseal-server/ca/ca.crt ./hostseal-ca.crt
 ```
 
 Then move it to each host and `install` it at the same path. It is a public document, so it needs no
@@ -375,10 +375,10 @@ what **Fleet → Add a host** prints for you when it detects that case, with the
 in — it knows its own, and your session is the channel that carries it. Written out:
 
 ```bash
-curl -fsSLk https://agents.farrier.example.org/api/v1/ca.crt -o /tmp/farrier-ca.crt
-if [ "$(openssl x509 -in /tmp/farrier-ca.crt -noout -fingerprint -sha256)" \
+curl -fsSLk https://agents.hostseal.example.org/api/v1/ca.crt -o /tmp/hostseal-ca.crt
+if [ "$(openssl x509 -in /tmp/hostseal-ca.crt -noout -fingerprint -sha256)" \
      = "sha256 Fingerprint=<the digest the panel shows>" ]; then
-  sudo install -D -o root -g root -m 0644 /tmp/farrier-ca.crt /etc/farrier/server-ca.crt
+  sudo install -D -o root -g root -m 0644 /tmp/hostseal-ca.crt /etc/hostseal/server-ca.crt
 else
   echo "FINGERPRINT MISMATCH - do not install this certificate" >&2
   false
@@ -393,8 +393,8 @@ exits 0, leaving a script free to enrol against a certificate it never installed
 to read the digest from, take it from the control plane itself:
 
 ```bash
-docker compose exec farrier-server \
-  openssl x509 -in /var/lib/farrier-server/ca/ca.crt -noout -fingerprint -sha256
+docker compose exec hostseal-server \
+  openssl x509 -in /var/lib/hostseal-server/ca/ca.crt -noout -fingerprint -sha256
 ```
 
 `-k` with no comparison is not a shortcut, it is the enrolment trusting whoever answered the name. The
@@ -404,7 +404,7 @@ host's idea of the control plane permanently.
 
 ### When the agent says "not enrolled" on a host that enrolled
 
-`farrier enroll` is run with `sudo` and the service runs as the unprivileged `farrier` account, so
+`hostseal enroll` is run with `sudo` and the service runs as the unprivileged `hostseal` account, so
 everything enrolment writes is handed to that account before it returns. On an agent built before that
 was true, the credential stayed root-owned at mode 0600 and the service could not open it — which looks
 like nothing at all: the control plane lists the host, because the enrolment did succeed, and the unit
@@ -412,25 +412,25 @@ is active, because an unenrolled agent idles rather than exiting. Only the absen
 anything is wrong. If you have a host in that state, it needs no second enrolment and no second token:
 
 ```bash
-sudo chown -R farrier:farrier /var/lib/farrier
-sudo systemctl restart farrier-agent
+sudo chown -R hostseal:hostseal /var/lib/hostseal
+sudo systemctl restart hostseal-agent
 ```
 
-The `.sources` file uses deb822 with `Signed-By:` naming an explicit keyring, so the Farrier key is
-trusted for the Farrier repository only. `apt-key` is never used: it installs a key that is trusted for
+The `.sources` file uses deb822 with `Signed-By:` naming an explicit keyring, so the HostSeal key is
+trusted for the HostSeal repository only. `apt-key` is never used: it installs a key that is trusted for
 every repository on the system, which turns one compromised project into root on the machine.
 
 ## Asking a host to do something
 
 ```bash
 # Read-only work needs nothing but an operator credential.
-curl -sX POST https://farrier.example.org/api/v1/jobs \
-  -H "Authorization: Bearer $FARRIER_TOKEN" \
+curl -sX POST https://hostseal.example.org/api/v1/jobs \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"hostId":"01J…","intent":"facts.collect","params":{}}'
 
-curl -s "https://farrier.example.org/api/v1/jobs?host=01J…" \
-  -H "Authorization: Bearer $FARRIER_TOKEN"
+curl -s "https://hostseal.example.org/api/v1/jobs?host=01J…" \
+  -H "Authorization: Bearer $HOSTSEAL_TOKEN"
 ```
 
 A job comes back with a `state`: `queued`, `awaiting_approval`, `running`, or whatever status the host
@@ -441,15 +441,15 @@ A **destructive** job — applying every update, starting, stopping or restartin
 needs two more things, and neither of them is the control plane's to give.
 
 1. A signature over the job, made offline with a key listed in that host's own
-   `/etc/farrier/trusted-signers`. It is sent with the request, along with the `id`, `nonce`,
+   `/etc/hostseal/trusted-signers`. It is sent with the request, along with the `id`, `nonce`,
    `notBefore` and `notAfter` it covers; every one of those comes from the signer, because a value
    chosen by the control plane would invalidate the signature.
 
    ```bash
-   farrier sign --key ~/.farrier/ops.key --host 01J9ABC… \
+   hostseal sign --key ~/.hostseal/ops.key --host 01J9ABC… \
      --intent service.restart --params '{"unit":"nginx.service"}' \
-   | curl -sX POST "$FARRIER_URL/api/v1/jobs" \
-       -H "Authorization: Bearer $FARRIER_TOKEN" \
+   | curl -sX POST "$HOSTSEAL_URL/api/v1/jobs" \
+       -H "Authorization: Bearer $HOSTSEAL_TOKEN" \
        -H 'Content-Type: application/json' -d @-
    ```
 
@@ -482,10 +482,10 @@ Straight after installation, before you change anything:
 
 The two files are the whole of it:
 
-**`/etc/farrier/policy.toml`** — root-owned, a dpkg conffile, and the control plane cannot modify it.
+**`/etc/hostseal/policy.toml`** — root-owned, a dpkg conffile, and the control plane cannot modify it.
 It ships permitting security updates, no reboots, and no restartable units. Effective permission for
 any job is `min(what the control plane asked for, what this file allows)` — never the maximum. Check an
-edit with `farrier-agent policy check` before restarting anything: a file that does not parse makes the
+edit with `hostseal-agent policy check` before restarting anything: a file that does not parse makes the
 host refuse all privileged work rather than fall back to a default, which is deliberate and is a
 miserable way to discover a typo.
 
@@ -505,7 +505,7 @@ process's *name* — never its command line, which is where credentials end up �
 resource use, and four things `docker ps` will not tell you: whether it is privileged, whether its
 seccomp filter is off, whether it runs as root, and whether the Docker socket is bind-mounted into it.
 It cannot report image names, exit codes, restart counts or health, because those live behind the
-socket that `farrier` is deliberately not in the group for.
+socket that `hostseal` is deliberately not in the group for.
 
 Two practical notes. The resource figures change on every collection, so a host that opts in sends a
 full report on every heartbeat rather than the digest it would otherwise send. And **upgrade the agent
@@ -513,32 +513,32 @@ before you add the key**: the policy parser refuses a file it does not understan
 writing `[containers]` into a host still running an older agent turns that host's update permission off
 until the agent catches up.
 
-**`/etc/farrier/trusted-signers`** — root-owned, a dpkg conffile, and **empty**. Every destructive
+**`/etc/hostseal/trusted-signers`** — root-owned, a dpkg conffile, and **empty**. Every destructive
 operation needs a signature from a key listed here, and the control plane holds none of them. Generate
 one on your own machine:
 
 ```bash
-farrier key generate --out ~/.config/farrier/signing.key --id ops-laptop
-# prints the line to paste into /etc/farrier/trusted-signers on the hosts that key may act on
+hostseal key generate --out ~/.config/hostseal/signing.key --id ops-laptop
+# prints the line to paste into /etc/hostseal/trusted-signers on the hosts that key may act on
 ```
 
 ### Keys that are not files
 
 A key file on a laptop is a real improvement over a shared credential and it is still a file: it can be
 copied, and nobody would know. `--key` takes a reference rather than a path, so the same command signs
-with a hardware token or a cloud key store, and `farrier key show --in <reference>` prints the
+with a hardware token or a cloud key store, and `hostseal key show --in <reference>` prints the
 `trusted-signers` line for any of them.
 
 ```bash
 # A PKCS#11 token — YubiKey PIV, Nitrokey, SoftHSM. The URI is RFC 7512, which is what
 # OpenSSL, GnuTLS and p11-kit already speak, so an existing one can be pasted.
-farrier key show --in "pkcs11:token=ops;object=ops-yubikey-1?module-path=/usr/lib/opensc-pkcs11.so"
+hostseal key show --in "pkcs11:token=ops;object=ops-yubikey-1?module-path=/usr/lib/opensc-pkcs11.so"
 
 # A cloud key store. The #fragment is the identity the audit log records and every host lists —
 # a resource name is not one, and it is required rather than derived.
-farrier key show --in "awskms:arn:aws:kms:eu-central-1:123456789012:key/abcd-1234#ops-kms-1"
-farrier key show --in "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1#ops-kms-1"
-farrier key show --in "azurekms:ops.vault.azure.net/keys/farrier-signing/9885aa55#ops-kms-1"
+hostseal key show --in "awskms:arn:aws:kms:eu-central-1:123456789012:key/abcd-1234#ops-kms-1"
+hostseal key show --in "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1#ops-kms-1"
+hostseal key show --in "azurekms:ops.vault.azure.net/keys/hostseal-signing/9885aa55#ops-kms-1"
 ```
 
 A PIN is prompted for, or read from a file with `pin-source=/path`. It is never a URI attribute and
@@ -547,14 +547,14 @@ never a flag: a secret on a command line is readable from the process list by ev
 A token label does not have to be unique, and two identically provisioned tokens — an operator with a
 spare — carry the same one. `serial=` names one physical token, so `token=ops;serial=d276000124010200`
 means "the token labelled `ops` whose serial is that" and finds nothing rather than falling back to the
-other `ops`. Where the reference has not narrowed and two tokens answer to the label, `farrier` refuses
+other `ops`. Where the reference has not narrowed and two tokens answer to the label, `hostseal` refuses
 and prints the serials it found, rather than signing with whichever the module enumerated first. The
 other token attributes an RFC 7512 URL carries — `model=`, `manufacturer=`, `library-version` and the
 rest of that set — are accepted and ignored, because `p11tool --list-tokens` prints them for every
 token and they name a product line rather than a token. `pin-value` and `module-name` are the two the
 reference refuses outright, for the reasons the error messages give.
 
-**A YubiKey, from empty to a `trusted-signers` line.** Farrier does not generate a key on a token —
+**A YubiKey, from empty to a `trusted-signers` line.** HostSeal does not generate a key on a token —
 `ykman` does, and the key has no way out of the device afterwards.
 
 ```bash
@@ -567,7 +567,7 @@ ykman piv keys generate --algorithm ECCP256 --touch-policy always 9c signing.pub
 # holds one, so a key without a certificate is a key nothing can find.
 ykman piv certificates generate --subject "CN=ops-yubikey-1" 9c signing.pub
 
-farrier key show --in "pkcs11:id=%02?module-path=/usr/lib/x86_64-linux-gnu/libykcs11.so"
+hostseal key show --in "pkcs11:id=%02?module-path=/usr/lib/x86_64-linux-gnu/libykcs11.so"
 ```
 
 Slot 9c is `CKA_ID` 02, and the reference names that rather than a label, because a PIV token's labels
@@ -579,7 +579,7 @@ identity recorded in `trusted-signers` and in the audit log is then `pkcs11:02`,
 not.
 
 With `--touch-policy always`, a signature needs the finger as well as the PIN, which is the property
-worth having on a key that authorises reboots. `farrier sign` waits thirty seconds for it and then gives
+worth having on a key that authorises reboots. `hostseal sign` waits thirty seconds for it and then gives
 up, rather than blocking on a token nobody is standing at.
 
 Cloud credentials come from the environment, then the provider's own well-known file, then the instance
@@ -589,13 +589,13 @@ most of what a vendor SDK weighs, have one escape hatch each:
 
 ```bash
 eval "$(aws configure export-credentials --profile ops --format env)"                    # SSO, assume-role, federation
-export FARRIER_KMS_BEARER_TOKEN="$(gcloud auth print-access-token)"                       # workload identity
-export FARRIER_KMS_BEARER_TOKEN="$(az account get-access-token   --resource https://vault.azure.net --query accessToken -o tsv)"                         # certificate auth, federation
+export HOSTSEAL_KMS_BEARER_TOKEN="$(gcloud auth print-access-token)"                       # workload identity
+export HOSTSEAL_KMS_BEARER_TOKEN="$(az account get-access-token   --resource https://vault.azure.net --query accessToken -o tsv)"                         # certificate auth, federation
 ```
 
 **Where a cloud key lives matters more than which cloud it is in.** A KMS key the control plane's own
 identity can call `Sign` on is a key the control plane holds, whatever the console says about custody —
-see [`SECURITY.md` §9](SECURITY.md#9-what-farrier-does-not-defend-against). Put it in an account the
+see [`SECURITY.md` §9](SECURITY.md#9-what-hostseal-does-not-defend-against). Put it in an account the
 control plane has no role in, and check it the way that catches the mistake: assume the control plane's
 identity and confirm that signing is denied.
 
@@ -608,8 +608,8 @@ A package upgrade never replaces either file. There is a test in `testfleet/` th
 ## Stopping a host
 
 ```bash
-sudo touch /etc/farrier/paused      # refuse everything, immediately
-sudo systemctl stop farrier-agent   # or just stop it
+sudo touch /etc/hostseal/paused      # refuse everything, immediately
+sudo systemctl stop hostseal-agent   # or just stop it
 ```
 
 Neither can be undone by the control plane. There is deliberately no `agent.resume` operation: an off
@@ -626,8 +626,8 @@ every other rule.
 
 ```bash
 make build    # all binaries into ./dist
-make web      # the Angular application, embedded into farrier-server
-make deb      # the farrier-agent package
+make web      # the Angular application, embedded into hostseal-server
+make deb      # the hostseal-agent package
 make test lint guarantee
 ```
 
@@ -637,9 +637,9 @@ and pnpm.
 ## Where to look when something is wrong
 
 ```bash
-journalctl -u farrier-agent -n 200     # the agent logs JSON; paste it whole rather than summarising
-farrier-agent policy check             # most "it refused" reports are the policy working correctly
-farrier-server catalogue               # everything the control plane can ask a host to do
+journalctl -u hostseal-agent -n 200     # the agent logs JSON; paste it whole rather than summarising
+hostseal-agent policy check             # most "it refused" reports are the policy working correctly
+hostseal-server catalogue               # everything the control plane can ask a host to do
 ```
 
 The last one is worth running once even when nothing is wrong. It prints the complete, closed set of

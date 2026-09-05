@@ -20,10 +20,10 @@
 /internal/privsep/              @pascalgross
 /helpers/                       @pascalgross
 /packaging/policy.toml          @pascalgross
-/packaging/farrier-agent.service @pascalgross
-/packaging/farrier-apply-updates.socket @pascalgross
-/packaging/farrier-restart-unit.socket @pascalgross
-/packaging/farrier-reboot-host.socket @pascalgross
+/packaging/hostseal-agent.service @pascalgross
+/packaging/hostseal-apply-updates.socket @pascalgross
+/packaging/hostseal-restart-unit.socket @pascalgross
+/packaging/hostseal-reboot-host.socket @pascalgross
 
 # Signature verification and canonical encoding. Every authorisation decision on a host is downstream of
 # these two, and a subtle change here is not visible in the behaviour of anything else.

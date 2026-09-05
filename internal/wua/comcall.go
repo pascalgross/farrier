@@ -1,4 +1,4 @@
-// Package wua reads pending Windows updates, and is the only package in Farrier that calls COM.
+// Package wua reads pending Windows updates, and is the only package in HostSeal that calls COM.
 //
 // It exists because there is no other way to ask the question. The registry does not hold the answer,
 // DISM reports what is installed rather than what is pending, UsoClient.exe has no documented interface
@@ -7,8 +7,8 @@
 // it, or not answering the question.
 //
 // docs/SECURITY.md §3 refuses a runtime code loader **in the agent**, and that refusal is kept
-// literally: nothing here is reachable from farrier-agent. This package is linked only by
-// cmd/farrier-update-scan, a short-lived unprivileged process that holds no credential, opens no
+// literally: nothing here is reachable from hostseal-agent. This package is linked only by
+// cmd/hostseal-update-scan, a short-lived unprivileged process that holds no credential, opens no
 // socket, and writes one JSON document to its standard output before exiting.
 // TestGuaranteeOnlyTheScanBinaryReachesCOM asserts the import graph, using the machinery that already
 // keeps the signing backends away from managed-host binaries. The agent starts it through internal/run
@@ -218,7 +218,7 @@ func permit(m Method, argc int) (member, error) {
 
 // Methods returns every permitted member, so that the guarantee suite can walk the table.
 //
-// It exists for the same reason internal/run exports its allowlist: an operator auditing what a Farrier
+// It exists for the same reason internal/run exports its allowlist: an operator auditing what a HostSeal
 // binary can reach on their host should be able to ask the binary rather than read the source, and a
 // test should assert against the real table rather than a copy of it.
 func Methods() map[Method]string {

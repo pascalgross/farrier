@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // writePolicy writes a policy file into a temporary directory and returns its path.
@@ -425,7 +425,7 @@ func TestPerformTruncatesOutputToWhatTheProtocolCarries(t *testing.T) {
 // TestGuaranteeAnUnsignedRequestIsBoundedByPolicyRatherThanRefused pins where the two controls divide.
 //
 // Nothing crossing the socket carries a signature, and no helper checks for one. An attacker holding
-// the agent's account is in the farrier group, can therefore reach these sockets, and can invoke any
+// the agent's account is in the hostseal group, can therefore reach these sockets, and can invoke any
 // routed intent with no signature at all — which is the scenario this asserts, in both directions.
 //
 // The point is that it changes nothing about what happens. A request the policy permits is performed,

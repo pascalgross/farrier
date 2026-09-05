@@ -3,7 +3,7 @@
 // It exists as a backend separate from the hardware ones because most operators start with a key file
 // and only move to a token once the fleet justifies the ceremony. Refusing that path would not make
 // anyone buy a YubiKey; it would push them to keep the key on the control plane instead, which is
-// strictly worse than a passphrase-protected file on a laptop. What Farrier does instead is make the
+// strictly worse than a passphrase-protected file on a laptop. What HostSeal does instead is make the
 // difference visible: the audit log records "ops-laptop (file)" differently from "ops-yubikey-1
 // (PKCS#11)", and an operator reviewing a destructive job can see which one authorised it.
 //
@@ -31,8 +31,8 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/scrypt"
 
-	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/signing/backend"
+	"github.com/pascalgross/hostseal/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing/backend"
 )
 
 // envelopeVersion is the format version written into every key file.
@@ -66,7 +66,7 @@ type envelope struct {
 
 	// PublicKey is the base64 DER SubjectPublicKeyInfo, stored in the clear.
 	//
-	// Keeping the public half readable without the passphrase means `farrier key show` can print the
+	// Keeping the public half readable without the passphrase means `hostseal key show` can print the
 	// trusted-signers line for a key the operator cannot currently unlock, which is exactly the
 	// situation somebody is in when they are setting up a host and the token is at the office.
 	PublicKey string `json:"publicKey"`
@@ -163,7 +163,7 @@ func Open(path string, passphrase []byte) (*Signer, error) {
 	}
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("file: %s is not a Farrier key file: %w", path, err)
+		return nil, fmt.Errorf("file: %s is not a HostSeal key file: %w", path, err)
 	}
 	if env.Version != envelopeVersion {
 		return nil, fmt.Errorf("file: %s is version %d, this build understands %d",
@@ -200,7 +200,7 @@ func Open(path string, passphrase []byte) (*Signer, error) {
 
 // Inspect reads a key file's public half without needing the passphrase.
 //
-// It exists so that `farrier key show` can print a trusted-signers line for a key the operator cannot
+// It exists so that `hostseal key show` can print a trusted-signers line for a key the operator cannot
 // currently unlock, which is the situation somebody is in while setting up a host with the token
 // somewhere else.
 func Inspect(path string) (signing.PublicKey, error) {
@@ -210,7 +210,7 @@ func Inspect(path string) (signing.PublicKey, error) {
 	}
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return signing.PublicKey{}, fmt.Errorf("file: %s is not a Farrier key file: %w", path, err)
+		return signing.PublicKey{}, fmt.Errorf("file: %s is not a HostSeal key file: %w", path, err)
 	}
 	key, err := signing.ParsePublicKey(env.Algorithm, env.PublicKey)
 	if err != nil {
@@ -336,7 +336,7 @@ func writeAtomic(path string, env *envelope) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("file: creating %s: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(dir, ".farrier-key-*")
+	tmp, err := os.CreateTemp(dir, ".hostseal-key-*")
 	if err != nil {
 		return fmt.Errorf("file: creating a temporary file in %s: %w", dir, err)
 	}
@@ -363,7 +363,7 @@ func writeAtomic(path string, env *envelope) error {
 
 // init registers this backend under the "file" scheme.
 //
-// A path with no scheme resolves here too, which is what keeps every `--key ~/.config/farrier/ops.key`
+// A path with no scheme resolves here too, which is what keeps every `--key ~/.config/hostseal/ops.key`
 // in the documentation and in operators' shell history working unchanged. The explicit spelling exists
 // for the one case a bare path cannot express: a relative path whose first segment happens to look
 // like another backend's scheme.

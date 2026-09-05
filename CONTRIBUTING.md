@@ -1,4 +1,4 @@
-# Contributing to Farrier
+# Contributing to HostSeal
 
 Thank you for considering it. This document is short, and every rule in it has a reason attached,
 because rules without reasons get argued with.
@@ -13,7 +13,7 @@ writing a pull request that has to be declined on principle.
 
 ### 1. Sign off every commit (DCO)
 
-Farrier uses the [Developer Certificate of Origin](https://developercertificate.org/). There is **no
+HostSeal uses the [Developer Certificate of Origin](https://developercertificate.org/). There is **no
 CLA**. Pascal Groß holds no rights over your contribution that you do not also hold: the DCO does not
 transfer your copyright, and you stay one of the contributors the project's `NOTICE` names.
 
@@ -26,7 +26,7 @@ Signed-off-by: Jane Doe <jane@example.com>
 `git commit -s` does it for you. The name and email must be real and must match the commit author.
 
 This is checked in CI and the check is not overridable. Not because we enjoy blocking pull requests,
-but because it is the mechanism that makes the licence permanent: under DCO, relicensing Farrier would
+but because it is the mechanism that makes the licence permanent: under DCO, relicensing HostSeal would
 require the agreement of every contributor, which means **no future owner of this repository can take
 it proprietary** — including us. For a security tool whose whole value is that you can verify its
 claims yourself, that permanence is worth more than the flexibility it costs.
@@ -43,7 +43,7 @@ git rebase --signoff origin/main         # a whole branch
 Identifiers, comments, documentation, commit messages, issue titles, pull request descriptions, UI
 strings, log messages, error text. All of it.
 
-Pascal Groß, trading as Pegasus Networks, is based in Germany, and this rule costs us something. We
+Pascal Groß is based in Germany, and this rule costs us something. We
 keep it because a project that asks strangers to audit its security claims cannot also ask them to
 read German first. If the argument for a mechanism is only comprehensible to people who speak the
 maintainers' language, it is not really an open claim.
@@ -109,13 +109,13 @@ None of these are a judgement about you or your use case. They are structural, a
 
 - **A `shell.exec` intent**, or any of its spellings: `script.run`, arbitrary `file.write`,
   `apt.addRepository`, `user.create`, `ssh.authorizedKeys.add`, `agent.updateFromURL`. This is the one
-  thing Farrier exists not to have.
+  thing HostSeal exists not to have.
 - **Making the intent catalogue a registry**, loadable from config or a plugin.
 - **A runtime plugin loader in the agent.** Any mechanism that loads code into the agent at run time
   is remote code execution wearing a plugin API.
 - **A fourth root helper**, especially one that runs a configured command.
 - **A database backend other than PostgreSQL.** `store.Store` exists so tests need no database, not as
-  a portability layer. Farrier depends on `JSONB`, GIN, partial indexes, `LISTEN`/`NOTIFY` and
+  a portability layer. HostSeal depends on `JSONB`, GIN, partial indexes, `LISTEN`/`NOTIFY` and
   `SELECT … FOR UPDATE SKIP LOCKED` on purpose.
 - **A server→agent push channel**, in any transport.
 - **Weakening the signature requirement for "small" destructive operations.** There is no graded tier

@@ -70,11 +70,11 @@ const APPROVAL_MODES: ApprovalOption[] = [
  * and is wondering what happens next, exactly which command to run on the control plane.
  *
  * There is also nothing here that reaches a fleet's hosts, jobs, results or tokens, and that is not a
- * shortage of screen space: this credential is refused by every one of those routes. Running Farrier
+ * shortage of screen space: this credential is refused by every one of those routes. Running HostSeal
  * for other people should not require being able to read what they run.
  */
 @Component({
-  selector: 'farrier-fleets-page',
+  selector: 'hostseal-fleets-page',
   imports: [
     FormsModule,
     MatButtonModule,
@@ -256,7 +256,7 @@ export class FleetsPage {
 
   /** The command that gives a fleet its first operator, which is the step this page cannot take. */
   protected accountCommand(slug: string): string {
-    return `farrier-server accounts add --tenant ${slug} --email ops@example.org`;
+    return `hostseal-server accounts add --tenant ${slug} --email ops@example.org`;
   }
 
   /** Opens or closes the retirement confirmation for one fleet, clearing whatever was typed. */

@@ -61,7 +61,7 @@ const FILTERED_EVENT_LIMIT = 500;
  * somebody open the right tab.
  */
 @Component({
-  selector: 'farrier-events-page',
+  selector: 'hostseal-events-page',
   imports: [
     FormsModule,
     MatButtonModule,
