@@ -71,7 +71,8 @@ out — the tests need a role of their own.
 `make golangci-install`. A different local version reports different findings; if CI disagrees with
 you, check the version first.
 
-Go 1.26 or newer. Web: pnpm 10, Node 22, run from `web/`.
+Go 1.26 or newer. Web: pnpm 10, Node 22 — but **22.22.3 or newer**, which is the floor the
+Angular 22 CLI enforces itself and refuses to start below — run from `web/`.
 
 ## The invariants
 
@@ -152,7 +153,7 @@ Agent → server only, over HTTPS with mTLS, five endpoints. There is no path fr
   no group, no helper — and is the one implementer of the optional `PolicyGated` half of the seam, so a
   host that has not written `[containers] report = true` sends no such section at all.
 - `internal/store` — PostgreSQL, plus an in-memory implementation for tests only.
-- `web/` — Angular 20 standalone, built into where `hostseal-server` embeds it.
+- `web/` — Angular 22 standalone, built into where `hostseal-server` embeds it.
 - `deploy/` — the control plane in containers: the `Dockerfile` at the repository root builds
   `hostseal-server` alone (never the agent, never `hostseal` — a signing backend on the control plane's
   own host is a key the control plane holds), and the Compose stack is the same two services the

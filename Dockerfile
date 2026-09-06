@@ -13,6 +13,10 @@
 # The web application first, so that a change to Go source does not rebuild node_modules and a change to
 # the front end does not rebuild the world. It is copied into internal/server/assets in the next stage,
 # which is the directory embed.FS reads — the same arrangement `make web` produces locally.
+#
+# The tag stays on the 22 line rather than an exact patch, because the Angular CLI refuses to start
+# below Node 22.22.3 and checks it at run time: an exact pin here is one that silently expires the day
+# somebody bumps the framework again. If you do pin a patch for reproducibility, pin one above that.
 FROM node:22-alpine AS web
 WORKDIR /src/web
 # pnpm 10, the major CI uses, from npm rather than through corepack: there is no packageManager field in
