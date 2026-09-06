@@ -460,6 +460,12 @@ var decoyHash = sync.OnceValue(func() string {
 		// A hash of a constant is worse than a hash of a random string and much better than skipping
 		// the verification, which is the whole point of this value. crypto/rand failing at all is a
 		// broken machine.
+		//
+		//nolint:gosec // G101: not a credential, and not comparable to one. Nothing authenticates
+		// against this string: the only caller discards what VerifyPassword returns and keeps the time
+		// it took. gosec matches the identifier, and knowing the value would buy an attacker a `true`
+		// that is thrown away. The rule fired on the rename rather than on anything about the
+		// mechanism — the old name sat under its entropy threshold and this one does not.
 		token = "hostseal-decoy-password"
 	}
 	hashed, err := HashPassword(token)
