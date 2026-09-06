@@ -58,5 +58,10 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.0",
     "typescript-eslint": "^8.69.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "^3.1.6"
+    }
   }
 }
