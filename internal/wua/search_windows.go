@@ -5,13 +5,13 @@ package wua
 import (
 	"fmt"
 
-	"github.com/pascalgross/farrier/internal/updatescan"
+	"github.com/pascalgross/hostseal/internal/updatescan"
 )
 
-// searchCriteria is what Farrier asks Windows Update for, and every clause of it is deliberate.
+// searchCriteria is what HostSeal asks Windows Update for, and every clause of it is deliberate.
 //
 // "IsInstalled=0" is the question: what is pending. "IsHidden=0" respects an administrator who has
-// hidden an update on this host — Farrier reports what the machine's own owner has not already
+// hidden an update on this host — HostSeal reports what the machine's own owner has not already
 // declined, and listing a hidden update would be arguing with them through a dashboard.
 // "Type='Software'" excludes drivers, which are a different decision with a different risk and which
 // no reasonable fleet tool reports as an outstanding patch.
@@ -19,7 +19,7 @@ import (
 // There is deliberately no severity clause. MsrcSeverity is a property of a returned update and not a
 // criterion the search language accepts, so "security updates only" cannot be asked for here — it can
 // only be decided afterwards, by classify, from what came back. That asymmetry is the honest reason
-// Farrier reports a security *count* on Windows and refuses to *apply* a security-only subset.
+// HostSeal reports a security *count* on Windows and refuses to *apply* a security-only subset.
 const searchCriteria = "IsInstalled=0 and IsHidden=0 and Type='Software'"
 
 // serverSelectionDefault is ssDefault: consult whatever update source this host is configured to use.
@@ -27,8 +27,8 @@ const searchCriteria = "IsInstalled=0 and IsHidden=0 and Type='Software'"
 // This is the one setting in this package with a security consequence, and the alternative is the
 // mistake. ssWindowsUpdate (2) reaches Microsoft's servers directly and would bypass a WSUS server the
 // host's administrator chose — so a fleet governed by WSUS would be scanned against a different set of
-// updates from the one it is actually offered, and Farrier would report numbers that contradict the
-// organisation's own patching authority. Farrier follows the host; it does not overrule it.
+// updates from the one it is actually offered, and HostSeal would report numbers that contradict the
+// organisation's own patching authority. HostSeal follows the host; it does not overrule it.
 const serverSelectionDefault = 0
 
 // searchResultSucceeded and searchResultSucceededWithErrors are the two ISearchResult codes that carry

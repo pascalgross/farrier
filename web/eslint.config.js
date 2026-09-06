@@ -1,8 +1,8 @@
 // @ts-check
 //
-// ESLint configuration for the Farrier control plane's web application.
+// ESLint configuration for the HostSeal control plane's web application.
 //
-// The rule that matters here is jsdoc/require-jsdoc with publicOnly disabled. Farrier requires a doc
+// The rule that matters here is jsdoc/require-jsdoc with publicOnly disabled. HostSeal requires a doc
 // comment on every type and every function, exported or not, and for TypeScript that has to include
 // private class members: a private field holding an injected service is exactly the kind of declaration
 // whose reason for existing is invisible from its signature. `tools/doccheck` enforces the same rule on
@@ -30,11 +30,11 @@ module.exports = tseslint.config(
     rules: {
       '@angular-eslint/directive-selector': [
         'error',
-        { type: 'attribute', prefix: 'farrier', style: 'camelCase' },
+        { type: 'attribute', prefix: 'hostseal', style: 'camelCase' },
       ],
       '@angular-eslint/component-selector': [
         'error',
-        { type: 'element', prefix: 'farrier', style: 'kebab-case' },
+        { type: 'element', prefix: 'hostseal', style: 'kebab-case' },
       ],
 
       // Presence and shape only. Private members are included deliberately; see the note above.

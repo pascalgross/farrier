@@ -1,6 +1,6 @@
 // Package helper is the shared spine of the three root helpers in helpers/.
 //
-// It exists so that /usr/libexec/farrier/apply-updates, restart-unit and reboot-host are each small
+// It exists so that /usr/libexec/hostseal/apply-updates, restart-unit and reboot-host are each small
 // enough to review line by line — which is a stated requirement for code that runs as root on every
 // managed host — while the part that must be identical in all three lives in one place.
 //
@@ -20,13 +20,13 @@
 // The reason is that the two controls answer two different adversaries. The signature is what stands
 // between a taken-over *control plane* and a destructive operation, and it is verified in the agent,
 // which is the process that receives the job. Local policy is what stands between a taken-over *agent*
-// and one, and it is enforced here. An attacker holding the agent's account is in the farrier group and
+// and one, and it is enforced here. An attacker holding the agent's account is in the hostseal group and
 // can therefore reach these sockets and invoke any routed intent with no signature at all — and still
 // cannot exceed the root-owned policy file, which is exactly what docs/SECURITY.md §2.2 claims and all
 // it claims.
 //
 // Verifying the signature here would not add to that. The signed payload binds a host id, and the host
-// id lives in /var/lib/farrier, which the agent can write; a helper checking a signature would be
+// id lives in /var/lib/hostseal, which the agent can write; a helper checking a signature would be
 // checking it against an identity its attacker chose. It would also require privsep.Request to carry a
 // signature, a nonce and a window — giving up the property that a caller names an intent and never
 // anything else, which TestGuaranteeARequestCannotNameAProgram exists to hold.
@@ -44,11 +44,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // Exit codes, re-exported from the boundary package that defines them.
@@ -156,7 +156,7 @@ func RequireRoot() {
 // output — it uses the exit code — but a human reading the journal after an incident reads exactly
 // this, and three slightly different formats is three times the work at the worst moment.
 func Fatalf(code int, format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "farrier-helper: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "hostseal-helper: "+format+"\n", args...)
 	os.Exit(code)
 }
 
@@ -256,7 +256,7 @@ type Helper struct {
 //
 // **The policy path is not a parameter.** It is the packaged constant, always. A helper that accepted a
 // path from its caller would be one a compromised agent could point at a file it had just written: the
-// agent can write /var/lib/farrier, and local policy sovereignty would end there. performWith takes a
+// agent can write /var/lib/hostseal, and local policy sovereignty would end there. performWith takes a
 // path because this package's tests need one; nothing reachable over the socket does.
 func (h Helper) Perform(ctx context.Context, req Request) privsep.Response {
 	return h.performWith(ctx, req, policy.Path)
@@ -385,7 +385,7 @@ func (h Helper) Main(req Request, dryRun bool) {
 		fmt.Println(out)
 	}
 	if resp.Error != "" {
-		fmt.Fprintf(os.Stderr, "farrier-helper: %s\n", resp.Error)
+		fmt.Fprintf(os.Stderr, "hostseal-helper: %s\n", resp.Error)
 	}
 	stop()
 	os.Exit(resp.ExitCode)

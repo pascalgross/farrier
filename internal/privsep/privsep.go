@@ -9,7 +9,7 @@
 // would have meant dropping most of the sandbox.
 //
 // So the privilege boundary is a socket instead. Each root helper is socket-activated by systemd:
-// /run/farrier/<helper>.sock is owned root:farrier and mode 0660, and a connection to it starts a fresh
+// /run/hostseal/<helper>.sock is owned root:hostseal and mode 0660, and a connection to it starts a fresh
 // root instance of that one helper with the connection as its standard input. Nothing is setuid,
 // nothing about the agent's sandbox is relaxed, and no long-running root process is added — the helper
 // exists only for as long as the operation does.
@@ -22,7 +22,7 @@
 //     command or a shell fragment, and the helper on the other side re-decodes the parameters through
 //     the catalogue and re-evaluates the root-owned policy file before acting.
 //   - Authorisation is by identity rather than by anything the caller says about itself. sudoers named
-//     the farrier user; the socket's mode names the farrier group, and the helper additionally reads
+//     the hostseal user; the socket's mode names the hostseal group, and the helper additionally reads
 //     the peer's credentials from the kernel, which is the one claim about a caller that a caller
 //     cannot forge.
 package privsep
@@ -31,7 +31,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/hostseal/internal/intent"
 )
 
 // SocketDir is the runtime directory holding the helper sockets.
@@ -39,7 +39,7 @@ import (
 // It is under /run rather than /var/run because /var/run is a compatibility symlink, and because the
 // directory must be recreated empty on every boot: a stale socket file surviving a crash would be a
 // path the agent connects to and nothing answers on.
-const SocketDir = "/run/farrier"
+const SocketDir = "/run/hostseal"
 
 // The three helper sockets, one per root helper.
 //
@@ -48,19 +48,19 @@ const SocketDir = "/run/farrier"
 // dispatcher process deciding at run time. There is deliberately no fourth socket, and no socket that
 // serves more than the one helper named in its unit.
 const (
-	// ApplyUpdatesSocket reaches /usr/libexec/farrier/apply-updates.
+	// ApplyUpdatesSocket reaches /usr/libexec/hostseal/apply-updates.
 	ApplyUpdatesSocket = SocketDir + "/apply-updates.sock"
 
-	// RestartUnitSocket reaches /usr/libexec/farrier/restart-unit.
+	// RestartUnitSocket reaches /usr/libexec/hostseal/restart-unit.
 	RestartUnitSocket = SocketDir + "/restart-unit.sock"
 
-	// RebootHostSocket reaches /usr/libexec/farrier/reboot-host.
+	// RebootHostSocket reaches /usr/libexec/hostseal/reboot-host.
 	RebootHostSocket = SocketDir + "/reboot-host.sock"
 )
 
 // endpoints is the complete set of privileged operations the agent can reach, and the only one.
 //
-// This map is the successor to /etc/sudoers.d/farrier and carries the same weight: an intent that is
+// This map is the successor to /etc/sudoers.d/hostseal and carries the same weight: an intent that is
 // not in it has no route from the agent to root at all, whatever the policy file says and however well
 // the job was signed. It is a compile-time map with no mutating accessor for the same reason the intent
 // catalogue is — a registry would make the set of privileged operations a property of what was linked

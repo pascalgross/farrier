@@ -113,7 +113,7 @@ describe('ToastStack', () => {
   it('paints itself from tokens that resolve, rather than from a name nothing defines', () => {
     const fixture = render([event({ id: 'e-1' })]);
 
-    const toast = fixture.nativeElement.querySelector('.farrier-toast') as HTMLElement;
+    const toast = fixture.nativeElement.querySelector('.hostseal-toast') as HTMLElement;
     const painted = getComputedStyle(toast);
 
     expect(painted.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');

@@ -37,8 +37,8 @@
  * same thing on every page. A dashboard whose colours drift is a dashboard people stop reading.
  */
 @theme {
-  --color-farrier-ok: oklch(0.68 0.15 155);
-  --color-farrier-warn: oklch(0.75 0.15 75);
-  --color-farrier-bad: oklch(0.62 0.2 25);
-  --color-farrier-quiet: oklch(0.6 0.02 250);
+  --color-hostseal-ok: oklch(0.68 0.15 155);
+  --color-hostseal-warn: oklch(0.75 0.15 75);
+  --color-hostseal-bad: oklch(0.62 0.2 25);
+  --color-hostseal-quiet: oklch(0.6 0.02 250);
 }

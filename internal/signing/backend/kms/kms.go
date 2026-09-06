@@ -32,8 +32,8 @@ import (
 	"crypto"
 	"fmt"
 
-	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/signing/backend"
+	"github.com/pascalgross/hostseal/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing/backend"
 )
 
 // BearerTokenEnv supplies a bearer token directly, bypassing credential discovery.
@@ -50,7 +50,7 @@ import (
 // the *name of an environment variable*; the credential is whatever an operator puts in it.
 //
 //nolint:gosec // G101 sees a constant whose name ends in "TOKEN" and assumes a credential. This is
-const BearerTokenEnv = "FARRIER_KMS_BEARER_TOKEN"
+const BearerTokenEnv = "HOSTSEAL_KMS_BEARER_TOKEN"
 
 // provider is one cloud's key store, reduced to the two questions a signer asks.
 //
@@ -206,7 +206,7 @@ func (s *Signer) Reference() string { return s.prov.name() + " " + s.prov.refere
 // Sign produces a detached signature over the canonical payload.
 //
 // The context is honoured for a reason that is not hypothetical here: this is a network call, and a
-// key store having a bad afternoon must not leave `farrier sign` hanging with no way out.
+// key store having a bad afternoon must not leave `hostseal sign` hanging with no way out.
 //
 // The result is verified against this signer's own public key before it is returned, and that check
 // earns its place three times over in this package. Azure returns ECDSA as a raw r‖s pair where the
@@ -240,7 +240,7 @@ func (s *Signer) Close() error { return nil }
 // One function so every provider refuses in the same words. Issue #23 asks for exactly this: fail with
 // a message naming the mismatch rather than producing something that will not verify on a host.
 func unsupportedAlgorithm(provider, what string) error {
-	return fmt.Errorf("kms: %s reports this key as %s, and Farrier's wire format carries ed25519 and "+
+	return fmt.Errorf("kms: %s reports this key as %s, and HostSeal's wire format carries ed25519 and "+
 		"ecdsa-p256 only. Create a key of one of those types; docs/EXTENDING.md explains why ecdsa-p256 "+
 		"exists, and it is the one every provider here can do", provider, what)
 }

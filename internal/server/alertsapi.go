@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // alertRuleView is one rule as the API renders it.

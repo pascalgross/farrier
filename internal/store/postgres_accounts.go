@@ -98,8 +98,8 @@ func (p *Postgres) Platform() AccountScope { return &scopedPostgres{p: p} }
 // withScope runs fn inside a transaction that has said which side of the tenant boundary it is on.
 //
 // One helper for both sides, because the difference is one set_config and two almost-identical helpers
-// are how they eventually stop being identical. A handle with a tenant sets farrier.tenant and matches
-// that fleet's rows; a handle without one sets farrier.platform and matches the rows that have no
+// are how they eventually stop being identical. A handle with a tenant sets hostseal.tenant and matches
+// that fleet's rows; a handle without one sets hostseal.platform and matches the rows that have no
 // tenant. Neither can reach the other's: `NULL = 'anything'` is NULL rather than true, and a platform
 // transaction names no tenant to compare against.
 //
@@ -116,7 +116,7 @@ func (s *scopedPostgres) withScope(ctx context.Context, what string, fn func(pgx
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `SELECT set_config('farrier.platform', 'on', true)`); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('hostseal.platform', 'on', true)`); err != nil {
 		return wrap(err, "naming the platform side while "+what)
 	}
 	if err := fn(tx); err != nil {
@@ -205,7 +205,7 @@ func (p *Postgres) SessionByToken(ctx context.Context, tokenHash string) (Sessio
 // APITokenByHash returns a token and the account it belongs to, or ErrNotFound.
 //
 // The same shape as SessionByToken and for the same reason. Usability is not checked here: the caller
-// checks it against its own clock, matching every other validity window in Farrier.
+// checks it against its own clock, matching every other validity window in HostSeal.
 func (p *Postgres) APITokenByHash(ctx context.Context, hash string) (APIToken, Account, error) {
 	var token APIToken
 	var account Account
@@ -227,12 +227,12 @@ func (p *Postgres) APITokenByHash(ctx context.Context, hash string) (APIToken, A
 
 // resolveAccount reads the account a credential named, inside the transaction that resolved it.
 //
-// It re-points farrier.resolve_key at the account id, which the policy admits for the same reason it
+// It re-points hostseal.resolve_key at the account id, which the policy admits for the same reason it
 // admits a certificate fingerprint: 128 bits generated here, holdable only by whoever already got past
 // the credential that produced it.
 func resolveAccount(ctx context.Context, tx pgx.Tx, accountID string) (Account, error) {
 	if _, err := tx.Exec(ctx,
-		`SELECT set_config('farrier.resolve_key', $1, true)`, accountID,
+		`SELECT set_config('hostseal.resolve_key', $1, true)`, accountID,
 	); err != nil {
 		return Account{}, wrap(err, "naming the account behind a credential")
 	}

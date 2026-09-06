@@ -1,0 +1,29 @@
+# Traefik dynamic configuration for the HostSeal interface router.
+#
+# This file belongs to *your* Traefik, not to the Compose stack in this directory: copy it into the
+# directory Traefik watches (providers.file.directory) or name it with providers.file.filename. It is
+# here because compose.traefik-ui.yaml references it — `hostseal@file` — and a label cannot define a
+# ServersTransport.
+#
+# What it is for: on the interface hostname Traefik terminates TLS with a publicly trusted certificate
+# and opens a second connection to hostseal-server, which speaks HTTPS and nothing else. That second
+# connection has to be verified against something. The alternative that everybody reaches for first is
+# insecureSkipVerify, which turns the leg between the proxy and the control plane into a connection
+# that anything on the Docker network could impersonate — including the interface's session tokens.
+http:
+  serversTransports:
+    hostseal:
+      # The name to verify, rather than the one in the URL. Traefik dials the container, whose
+      # certificate is issued by HostSeal's own CA and carries localhost, 127.0.0.1 and ::1 — the public
+      # hostname is on Traefik's certificate, not on the server's. Overriding the expected name is what
+      # makes this a real verification rather than a skipped one.
+      serverName: localhost
+
+      # HostSeal's CA certificate, so this transport trusts exactly one issuer for this one service. It
+      # is a *certificate*, not the CA directory: `docker compose cp` it out as deploy/README.md
+      # describes, and do not mount the hostseal-state volume into Traefik. That volume also holds
+      # ca.key, the key that signs routine jobs and the key that seals template bodies; a proxy that
+      # could read ca.key could mint client certificates and impersonate any host to this control
+      # plane. ca.crt is a public document and this is the whole of what Traefik needs.
+      rootCAs:
+        - /etc/traefik/hostseal-ca.crt

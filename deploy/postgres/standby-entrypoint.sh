@@ -8,11 +8,11 @@
 # fleet's job results to throw away. Promotion is `pg_ctl promote`, run by a person who has decided.
 set -euo pipefail
 
-: "${FARRIER_PRIMARY_HOST:?FARRIER_PRIMARY_HOST must be set}"
-: "${FARRIER_REPLICATION_USER:?FARRIER_REPLICATION_USER must be set}"
-: "${FARRIER_REPLICATION_PASSWORD:?FARRIER_REPLICATION_PASSWORD must be set}"
-primary_port="${FARRIER_PRIMARY_PORT:-5432}"
-slot="${FARRIER_STANDBY_SLOT:-standby1}"
+: "${HOSTSEAL_PRIMARY_HOST:?HOSTSEAL_PRIMARY_HOST must be set}"
+: "${HOSTSEAL_REPLICATION_USER:?HOSTSEAL_REPLICATION_USER must be set}"
+: "${HOSTSEAL_REPLICATION_PASSWORD:?HOSTSEAL_REPLICATION_PASSWORD must be set}"
+primary_port="${HOSTSEAL_PRIMARY_PORT:-5432}"
+slot="${HOSTSEAL_STANDBY_SLOT:-standby1}"
 data="${PGDATA:?}"
 
 # The password goes in a password file rather than into primary_conninfo, because pg_basebackup --write
@@ -24,19 +24,19 @@ export PGPASSFILE="${PGPASSFILE:-/var/lib/postgresql/.pgpass}"
 (
 	umask 077
 	printf '%s:%s:*:%s:%s\n' \
-		"$FARRIER_PRIMARY_HOST" "$primary_port" "$FARRIER_REPLICATION_USER" \
-		"$FARRIER_REPLICATION_PASSWORD" > "$PGPASSFILE"
+		"$HOSTSEAL_PRIMARY_HOST" "$primary_port" "$HOSTSEAL_REPLICATION_USER" \
+		"$HOSTSEAL_REPLICATION_PASSWORD" > "$PGPASSFILE"
 )
 
 if [ ! -s "$data/PG_VERSION" ]; then
-	echo "farrier: no data directory yet; taking a base backup from $FARRIER_PRIMARY_HOST" >&2
+	echo "hostseal: no data directory yet; taking a base backup from $HOSTSEAL_PRIMARY_HOST" >&2
 
 	# The primary may still be initialising — on a first `compose up` the two containers start together,
 	# and the primary runs its initdb scripts before it accepts connections. Waiting here rather than
 	# relying on a restart loop keeps the reason legible in the logs.
 	for _ in $(seq 1 60); do
-		if pg_isready --host "$FARRIER_PRIMARY_HOST" --port "$primary_port" \
-			--username "$FARRIER_REPLICATION_USER" --quiet; then
+		if pg_isready --host "$HOSTSEAL_PRIMARY_HOST" --port "$primary_port" \
+			--username "$HOSTSEAL_REPLICATION_USER" --quiet; then
 			break
 		fi
 		sleep 2
@@ -50,15 +50,15 @@ if [ ! -s "$data/PG_VERSION" ]; then
 	# makes the result self-contained; --checkpoint=fast asks the primary to checkpoint now rather than
 	# at its own pace, which is the difference between a backup starting in seconds and in minutes.
 	if ! pg_basebackup \
-		--host "$FARRIER_PRIMARY_HOST" --port "$primary_port" \
-		--username "$FARRIER_REPLICATION_USER" --no-password \
+		--host "$HOSTSEAL_PRIMARY_HOST" --port "$primary_port" \
+		--username "$HOSTSEAL_REPLICATION_USER" --no-password \
 		--pgdata "$data" --wal-method=stream --checkpoint=fast \
 		--write-recovery-conf --create-slot --slot "$slot" --progress --verbose; then
-		echo "farrier: the base backup failed." >&2
+		echo "hostseal: the base backup failed." >&2
 		echo "  If the primary says the replication slot \"$slot\" already exists, this standby is" >&2
 		echo "  being rebuilt: drop it there with" >&2
 		echo "    SELECT pg_drop_replication_slot('$slot');" >&2
-		echo "  or give this one a name of its own with FARRIER_STANDBY_SLOT." >&2
+		echo "  or give this one a name of its own with HOSTSEAL_STANDBY_SLOT." >&2
 		# Whatever the failed backup wrote is removed, so the next start begins from an empty directory
 		# rather than from a data directory PostgreSQL would refuse and a base backup would not replace.
 		# Only ever reached on a start that found the directory empty, so this can delete nothing that
@@ -70,7 +70,7 @@ if [ ! -s "$data/PG_VERSION" ]; then
 	# pg_basebackup reproduces the primary's permissions, but a directory that came from an older
 	# primary or a restored archive may not; PostgreSQL refuses to start on anything wider.
 	chmod 0700 "$data"
-	echo "farrier: base backup complete; starting as a hot standby on slot $slot" >&2
+	echo "hostseal: base backup complete; starting as a hot standby on slot $slot" >&2
 fi
 
 # The image's own entry point from here: it finds a populated data directory, skips initialisation and

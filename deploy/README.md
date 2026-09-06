@@ -1,12 +1,12 @@
 # Running the control plane in containers
 
 The control plane is one binary and PostgreSQL, and that is exactly what is in here: a `Dockerfile`
-that builds `farrier-server` with the interface embedded, and a Compose stack of two services. Traefik
+that builds `hostseal-server` with the interface embedded, and a Compose stack of two services. Traefik
 is optional and in its own file. A streaming replica is optional and in its own file too.
 
 ```
 deploy/
-├─ compose.yaml               postgres + farrier-server; works on its own
+├─ compose.yaml               postgres + hostseal-server; works on its own
 ├─ compose.traefik.yaml       optional overlay: TCP router, TLS passthrough, for agents
 ├─ compose.traefik-ui.yaml    optional overlay: the interface on a second hostname, with ACME
 ├─ compose.standby.yaml       optional overlay: a streaming replica of the database
@@ -14,7 +14,7 @@ deploy/
 ├─ docker-entrypoint.sh       creates the CA on a first start, then serves
 ├─ traefik/dynamic/           the ServersTransport the interface overlay needs, for your Traefik
 └─ postgres/
-   ├─ farrier.conf            the settings that make replication possible without a restart later
+   ├─ hostseal.conf            the settings that make replication possible without a restart later
    ├─ initdb/                 the ordinary role, the replication role, the pg_hba line
    └─ standby-entrypoint.sh   pg_basebackup on a first start, then an ordinary PostgreSQL
 ```
@@ -23,10 +23,10 @@ The agent is **not** here, and there is no image for it. It manages a host; a ho
 inside a container on the control plane would be the control plane. It installs from APT — see
 [`../docs/INSTALL.md`](../docs/INSTALL.md).
 
-`farrier`, the command that signs a destructive job, is not in the image either. That is the same
+`hostseal`, the command that signs a destructive job, is not in the image either. That is the same
 decision seen from the other side: a signing key the control plane's own host can reach is a key the
 control plane holds, whatever the console says about custody. See
-[`../docs/SECURITY.md`](../docs/SECURITY.md#9-what-farrier-does-not-defend-against).
+[`../docs/SECURITY.md`](../docs/SECURITY.md#9-what-hostseal-does-not-defend-against).
 
 ## Starting it
 
@@ -34,7 +34,7 @@ control plane holds, whatever the console says about custody. See
 cd deploy
 cp .env.example .env      # fill in four passwords; `openssl rand -hex 32` for each
 docker compose up -d      # builds the image from this checkout on the first run
-docker compose logs -f farrier-server
+docker compose logs -f hostseal-server
 ```
 
 The first start builds the image, initialises the cluster — the ordinary role, the database it owns,
@@ -42,7 +42,7 @@ the replication role and its `pg_hba.conf` line — then creates the certificate
 schema, creates the first account, and serves on `https://localhost:8443`. Nothing below is needed to
 get that far.
 
-Open it and sign in. If you left `FARRIER_BOOTSTRAP_PASSWORD` empty, the password was generated and
+Open it and sign in. If you left `HOSTSEAL_BOOTSTRAP_PASSWORD` empty, the password was generated and
 printed once — it is in the log you are already tailing:
 
 ```
@@ -55,8 +55,8 @@ This control plane had no accounts, so one has been created.
 A script uses an API token instead, issued from the account page in the interface:
 
 ```bash
-# The certificate is Farrier's own until you supply one, hence --insecure.
-curl -sk https://localhost:8443/api/v1/hosts -H "Authorization: Bearer $FARRIER_TOKEN"
+# The certificate is HostSeal's own until you supply one, hence --insecure.
+curl -sk https://localhost:8443/api/v1/hosts -H "Authorization: Bearer $HOSTSEAL_TOKEN"
 ```
 
 Requires Docker Compose v2.24 or newer, for the `!override` in the Traefik overlay.
@@ -67,8 +67,8 @@ Requires Docker Compose v2.24 or newer, for the `!override` in the Traefik overl
 superuser, and PostgreSQL exempts a superuser — and any role with `BYPASSRLS` — from every row-level
 security policy in the schema. Fleets are isolated from one another by exactly those policies, so a
 control plane connected as that role does not have a weakened boundary, it has none, and every query
-returns every fleet's rows with nothing looking wrong. `postgres/initdb/10-farrier-role.sh` creates an
-ordinary role that owns its own database; `farrier-server` checks its own privileges at startup and
+returns every fleet's rows with nothing looking wrong. `postgres/initdb/10-hostseal-role.sh` creates an
+ordinary role that owns its own database; `hostseal-server` checks its own privileges at startup and
 refuses to serve on either kind. See [`../docs/SECURITY.md`](../docs/SECURITY.md#5-tenants).
 
 **The database password is not in the connection URL.** It is passed as `PGPASSWORD`, which libpq and
@@ -76,9 +76,9 @@ pgx read, because a URL is a parser and a password is arbitrary text: `/`, `#` a
 to parse, and `%` parses as an escape and silently means something else. The init script sets the
 password through psql variables, where every character is legal — so without this the two halves
 disagree, and the symptom is a control plane that cannot connect using the password the database
-accepted. A password inside an explicit `FARRIER_DATABASE_URL` still wins, as libpq specifies.
+accepted. A password inside an explicit `HOSTSEAL_DATABASE_URL` still wins, as libpq specifies.
 
-**The CA directory is a volume, and it is not the database.** `farrier-state` holds three things: the
+**The CA directory is a volume, and it is not the database.** `hostseal-state` holds three things: the
 CA that issues agent certificates, the key that signs routine jobs, and the key that encrypts
 provisioning template bodies at rest. None of them is in PostgreSQL, which is what makes a database dump
 neither a way to impersonate a host nor a set of provisioning scripts. Back it up separately from the
@@ -93,7 +93,7 @@ that drifted between image releases would leave a running installation unable to
 start once it is past sixty (`internal/ca/ca.go`). A container left running for more than ninety days
 therefore serves an expired certificate, and every agent stops trusting it at once. Either give the
 interface its own hostname and certificate as above, or restart the control plane every couple of
-months — `docker compose restart farrier-server` is enough, and agents ride it out on their backoff.
+months — `docker compose restart hostseal-server` is enough, and agents ride it out on their backoff.
 
 **`archive_mode` is on and archives nothing.** It cannot be turned on without restarting the cluster,
 while the command it runs is a reload — so this is what makes point-in-time recovery a configuration
@@ -110,7 +110,7 @@ docker compose -f compose.yaml -f compose.traefik.yaml up -d
 
 The overlay adds a **TCP** router with `tls.passthrough=true`, not an HTTP one, and removes the
 published port. Traefik matches SNI and forwards bytes; the TLS session runs end to end between the
-agent and `farrier-server`. The overlay passes `FARRIER_AGENT_HOSTNAME` into the container, and the
+agent and `hostseal-server`. The overlay passes `HOSTSEAL_AGENT_HOSTNAME` into the container, and the
 entrypoint adds it to the private server certificate's DNS names. If the name changes, a restart issues
 a replacement server certificate from the existing CA.
 
@@ -118,7 +118,7 @@ The same name also becomes `--agent-url`, which is a second and unrelated settin
 interface's enrolment instructions tell an operator to type. It is configured rather than derived from
 the request, because the UI overlay below serves that interface on a hostname where the agent API is
 deliberately refused — so instructions built from the browser's own address would name the one hostname
-an agent must not be pointed at. Set `FARRIER_AGENT_URL` instead when agents reach the control plane on
+an agent must not be pointed at. Set `HOSTSEAL_AGENT_URL` instead when agents reach the control plane on
 another port. Unset, the panel shows the browser's address and says it may be wrong, which is an honest
 answer rather than a confident one.
 
@@ -133,7 +133,7 @@ end can claim to be any enrolled host, which is the guarantee in
 Three consequences worth knowing before you deploy it:
 
 - **The certificate a browser sees is the server's, not Traefik's.** On a default installation it is
-  issued by Farrier's own CA and the browser will say so. Mount a real certificate and pass
+  issued by HostSeal's own CA and the browser will say so. Mount a real certificate and pass
   `--tls-cert`/`--tls-key` — the commented block in the overlay — or live with the warning on an
   installation only you use. Agents are unaffected either way: an agent verifies against the CA bundle
   it was handed at enrolment.
@@ -160,14 +160,14 @@ The way to a browser-trusted certificate is therefore not to bring one to that r
 interface a hostname of its own where Traefik does terminate:
 
 ```
-agents.example.org   TCP router, passthrough   → agents, mTLS end to end, Farrier's own certificate
-farrier.example.org  HTTP router, ACME         → operators, in a browser, Let's Encrypt
+agents.example.org   TCP router, passthrough   → agents, mTLS end to end, HostSeal's own certificate
+hostseal.example.org  HTTP router, ACME         → operators, in a browser, Let's Encrypt
 ```
 
 What makes this the cheap answer rather than a compromise is that **agents do not need a publicly
 trusted certificate at all.** They verify the control plane against the CA bundle handed to them at
 enrolment, so Let's Encrypt lands on exactly the audience it helps and on nothing else. No certificate
-reaches the container either: Traefik renews on its own, while `farrier-server` reads `--tls-cert` once
+reaches the container either: Traefik renews on its own, while `hostseal-server` reads `--tls-cert` once
 at startup, so a certificate fed to it would need a restart on every renewal.
 
 The two names must be different. One hostname cannot be both, because a TCP router whose `HostSNI`
@@ -176,24 +176,24 @@ matches wins the connection before any HTTP router sees it — the interface wou
 Three things in your Traefik, once:
 
 ```bash
-# 1. Farrier's CA certificate, so the leg from Traefik to the container is verified rather than skipped.
-docker compose cp farrier-server:/var/lib/farrier-server/ca/ca.crt ./farrier-ca.crt
+# 1. HostSeal's CA certificate, so the leg from Traefik to the container is verified rather than skipped.
+docker compose cp hostseal-server:/var/lib/hostseal-server/ca/ca.crt ./hostseal-ca.crt
 
-# 2. Mount it at /etc/traefik/farrier-ca.crt, and traefik/dynamic/farrier.yml into the directory
+# 2. Mount it at /etc/traefik/hostseal-ca.crt, and traefik/dynamic/hostseal.yml into the directory
 #    Traefik watches (providers.file.directory). A label cannot declare a ServersTransport.
 
 # 3. Bring the stack up with both overlays.
 docker compose -f compose.yaml -f compose.traefik.yaml -f compose.traefik-ui.yaml up -d
 ```
 
-**Copy `ca.crt`; do not mount the `farrier-state` volume into Traefik.** That volume also holds
+**Copy `ca.crt`; do not mount the `hostseal-state` volume into Traefik.** That volume also holds
 `ca.key`, the key that signs routine jobs and the key that seals template bodies. A proxy that could
 read `ca.key` could issue client certificates and impersonate any host to this control plane —
 [`../docs/SECURITY.md`](../docs/SECURITY.md) names the CA key and the database as exactly the pair that
 buys that. `ca.crt` is a public document and is the whole of what Traefik needs.
 
 The `serverName: localhost` in that snippet is not a workaround. The container's certificate is issued
-by Farrier's own CA and names `localhost`, `127.0.0.1` and `::1`; the public name is on Traefik's
+by HostSeal's own CA and names `localhost`, `127.0.0.1` and `::1`; the public name is on Traefik's
 certificate, not on the server's. Overriding the name Traefik expects is what turns that leg into a real
 verification instead of an `insecureSkipVerify`.
 
@@ -203,11 +203,11 @@ path to the agent API is one where no later middleware or header can become one.
 passthrough name.
 
 And it rate limits this router — twenty in a burst, ten a minute sustained — which is the sign-in limit
-that the control plane cannot apply for itself here. `farrier-server` keys its own limiter on the peer
+that the control plane cannot apply for itself here. `hostseal-server` keys its own limiter on the peer
 address, which on this leg is Traefik, so every operator would share one bucket; the middleware keys on
 the address Traefik sees, which is the client's.
 
-**It is deliberately not solved by teaching `farrier-server` to trust `X-Forwarded-For`**, and the reason
+**It is deliberately not solved by teaching `hostseal-server` to trust `X-Forwarded-For`**, and the reason
 is specific enough to be worth writing down, because trusting it here would be worse than leaving the
 shared bucket. This overlay stacks on the passthrough one, so the server serves both legs at once and
 both dial the container from the same Traefik address — `RemoteAddr` cannot tell them apart. On the
@@ -248,7 +248,7 @@ Promotion is a decision somebody makes:
 
 ```bash
 docker compose exec postgres-standby pg_ctl promote -D /var/lib/postgresql/data
-# then point FARRIER_DATABASE_URL at it and restart farrier-server
+# then point HOSTSEAL_DATABASE_URL at it and restart hostseal-server
 ```
 
 The old primary is then a cluster that diverged. `wal_log_hints` is on so that `pg_rewind` can bring it
@@ -270,7 +270,7 @@ docker compose exec postgres psql -U postgres -c "SELECT pg_drop_replication_slo
 ### Turning archiving on
 
 Give the primary somewhere to write that survives it — a mounted volume, an object store through a tool
-like WAL-G or pgBackRest — then set `archive_command` in `postgres/farrier.conf` and reload:
+like WAL-G or pgBackRest — then set `archive_command` in `postgres/hostseal.conf` and reload:
 
 ```bash
 docker compose exec postgres psql -U postgres -c "SELECT pg_reload_conf();"
@@ -290,17 +290,17 @@ image — an `archive_command` that cannot write is the failure above, arriving 
 
 ```bash
 docker compose up -d --build             # rebuild the image and restart the server
-docker compose restart postgres          # after editing postgres/farrier.conf
+docker compose restart postgres          # after editing postgres/hostseal.conf
 docker compose exec postgres psql -U postgres -c "SELECT pg_reload_conf();"   # for settings that reload
 ```
 
-`postgres/farrier.conf` is read on every start because `initdb` appended an `include_if_exists` line to
+`postgres/hostseal.conf` is read on every start because `initdb` appended an `include_if_exists` line to
 the generated `postgresql.conf` on the very first start. An existing cluster that predates this file
 needs that line added once, by hand:
 
 ```bash
 docker compose exec postgres bash -c \
-  "echo \"include_if_exists = '/etc/postgresql/farrier.conf'\" >> \$PGDATA/postgresql.conf"
+  "echo \"include_if_exists = '/etc/postgresql/hostseal.conf'\" >> \$PGDATA/postgresql.conf"
 docker compose restart postgres
 ```
 
@@ -319,7 +319,7 @@ order. This is the reason both files pin a major version rather than tracking `p
 ```bash
 make compose-check    # every Compose file, and both overlays, parse
 make image            # build the image the stack runs
-docker compose exec farrier-server farrier-server catalogue
+docker compose exec hostseal-server hostseal-server catalogue
 ```
 
 The last one is worth running once against a running container. It prints the complete, closed set of

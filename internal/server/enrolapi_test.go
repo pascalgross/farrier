@@ -35,7 +35,7 @@ func TestTheCACertificateIsServedWithoutACredential(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("the CA certificate returned %d without a credential", res.StatusCode)
 	}
-	if disposition := res.Header.Get("Content-Disposition"); !strings.Contains(disposition, "farrier-ca.crt") {
+	if disposition := res.Header.Get("Content-Disposition"); !strings.Contains(disposition, "hostseal-ca.crt") {
 		t.Errorf("Content-Disposition is %q; a browser will render it rather than save it", disposition)
 	}
 

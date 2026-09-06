@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // tokenFixture is one account holding one API token, and the provider that authenticates it.
@@ -101,7 +101,7 @@ func TestAnAPITokenActsAsTheAccountThatIssuedIt(t *testing.T) {
 // TestAnExpiredOrUnknownAPITokenAuthenticatesNobody is the refusal path, and it is one answer.
 //
 // Expiry is checked against this process's clock rather than the database's, matching every other
-// validity window in Farrier — docs/SECURITY.md treats clock skew as a boundary.
+// validity window in HostSeal — docs/SECURITY.md treats clock skew as a boundary.
 func TestAnExpiredOrUnknownAPITokenAuthenticatesNobody(t *testing.T) {
 	past := time.Now().UTC().Add(-time.Minute)
 	f := newTokenFixture(t, past)

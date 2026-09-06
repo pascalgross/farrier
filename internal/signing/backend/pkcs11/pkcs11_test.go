@@ -18,8 +18,8 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/signing/backend"
+	"github.com/pascalgross/hostseal/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing/backend"
 )
 
 // The fixture builds its own token out of the module under test, with no vendor tooling at all:
@@ -30,7 +30,7 @@ import (
 // Fixture identities, used by every test below.
 const (
 	// testTokenLabel is what the fixture calls its token.
-	testTokenLabel = "farrier-test"
+	testTokenLabel = "hostseal-test"
 
 	// testSOPIN and testUserPIN are the token's two PINs. A fixture PIN, on a token that lives in a
 	// temporary directory for the length of one test binary.
@@ -94,13 +94,13 @@ var fixture struct {
 //
 // A named-but-unusable module is a fatal error rather than a skip. That is the same stance the store
 // tests take about a database: a skipped test is indistinguishable from a passing one in a summary,
-// and FARRIER_TEST_PKCS11_MODULE exists precisely to make a CI misconfiguration visible.
+// and HOSTSEAL_TEST_PKCS11_MODULE exists precisely to make a CI misconfiguration visible.
 func tokenFixture(t *testing.T) string {
 	t.Helper()
 	fixture.once.Do(func() { buildFixture() })
 
 	if fixture.skip {
-		t.Skip("no PKCS#11 module found; install libsofthsm2, or set FARRIER_TEST_PKCS11_MODULE")
+		t.Skip("no PKCS#11 module found; install libsofthsm2, or set HOSTSEAL_TEST_PKCS11_MODULE")
 	}
 	if fixture.err != nil {
 		t.Fatalf("building the token fixture: %v", fixture.err)
@@ -120,7 +120,7 @@ func buildFixture() {
 	// A directory that outlives every test in the binary, which is what one shared token needs. It is
 	// under the OS temporary directory rather than a t.TempDir, because t.TempDir belongs to the test
 	// that asked for it and this token belongs to all of them.
-	dir, err := os.MkdirTemp("", "farrier-pkcs11-")
+	dir, err := os.MkdirTemp("", "hostseal-pkcs11-")
 	if err != nil {
 		fixture.err = err
 		return
@@ -146,7 +146,7 @@ func buildFixture() {
 // The path is not a constant because the point of this backend is that no vendor is hard-coded, and
 // the module sits in a different place on every distribution and for every token.
 func locateModule() (string, bool) {
-	if named := os.Getenv("FARRIER_TEST_PKCS11_MODULE"); named != "" {
+	if named := os.Getenv("HOSTSEAL_TEST_PKCS11_MODULE"); named != "" {
 		return named, true
 	}
 	for _, candidate := range []string{
@@ -542,7 +542,7 @@ func TestCloseDropsTheSession(t *testing.T) {
 	}
 }
 
-// TestInspectRendersTheTrustedSignersEntry covers `farrier key show` against a token.
+// TestInspectRendersTheTrustedSignersEntry covers `hostseal key show` against a token.
 func TestInspectRendersTheTrustedSignersEntry(t *testing.T) {
 	modulePath := tokenFixture(t)
 

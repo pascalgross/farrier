@@ -1,12 +1,12 @@
 // Command apply-updates is the root helper that applies package updates, subject to local policy.
 //
-// It is installed as /usr/libexec/farrier/apply-updates and is reachable from the agent only through
-// the socket its unit is activated on, /run/farrier/apply-updates.sock, which is owned root:farrier and
+// It is installed as /usr/libexec/hostseal/apply-updates and is reachable from the agent only through
+// the socket its unit is activated on, /run/hostseal/apply-updates.sock, which is owned root:hostseal and
 // mode 0660. See internal/privsep for why that replaced sudo. It accepts no command to run, no path to
 // execute and no shell fragment; its entire input is an intent name, a job id, an issue time and one
 // boolean.
 //
-// It re-reads /etc/farrier/policy.toml itself, as root, on every invocation. The agent has already
+// It re-reads /etc/hostseal/policy.toml itself, as root, on every invocation. The agent has already
 // evaluated the same policy before calling — that check exists to save a round trip and produce a
 // better error message. This one is the check docs/SECURITY.md §1 depends on, because it runs as root
 // against the root-owned file and does not trust its caller.
@@ -36,13 +36,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/collect/platform"
-	"github.com/pascalgross/farrier/internal/helper"
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/run"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/collect/platform"
+	"github.com/pascalgross/hostseal/internal/helper"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/run"
 )
 
 // AptConfigPath is the apt configuration fragment the package ships for update runs.
@@ -57,7 +57,7 @@ import (
 // apt reads the file named by APT_CONFIG first, then /etc/apt/apt.conf.d, then /etc/apt/apt.conf, so an
 // administrator's own settings still land on top of these and DPkg::Options accumulates rather than
 // being replaced. Verified against apt 2.8.3 with `APT_CONFIG=… apt-config dump`.
-const AptConfigPath = "/usr/share/farrier/apt.conf"
+const AptConfigPath = "/usr/share/hostseal/apt.conf"
 
 // updateTimeout bounds one update run.
 //
@@ -88,7 +88,7 @@ func main() {
 	flag.Parse()
 
 	if *version {
-		fmt.Println("farrier apply-updates " + buildinfo.String())
+		fmt.Println("hostseal apply-updates " + buildinfo.String())
 		return
 	}
 	if flag.NArg() > 0 {
@@ -247,7 +247,7 @@ func rebootIfRequired(ctx context.Context, jobID string) (string, error) {
 	if err != nil {
 		// Degraded rather than fatal on its own: RebootRequired returns a usable report alongside its
 		// error. Whether that report can be acted on is the next check's business, not this one's.
-		fmt.Fprintf(os.Stderr, "farrier-helper: reading the reboot signal: %v\n", err)
+		fmt.Fprintf(os.Stderr, "hostseal-helper: reading the reboot signal: %v\n", err)
 	}
 
 	// "No reboot is needed" and "nothing here can tell me whether one is needed" both arrive as
@@ -288,7 +288,7 @@ func rebootIfRequired(ctx context.Context, jobID string) (string, error) {
 	// begin with one, so nothing is wrong here today — the separator is present so that the safe form is
 	// what the next person copies.
 	res, err := run.Command(ctx, run.Shutdown, "-r", "--", "now",
-		"farrier: rebooting after applying updates")
+		"hostseal: rebooting after applying updates")
 	if err != nil {
 		return commandOutput(res), fmt.Errorf("apply-updates: the updates were applied but the "+
 			"reboot could not be scheduled: %w", err)

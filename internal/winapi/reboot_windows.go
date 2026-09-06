@@ -11,7 +11,7 @@ import (
 
 // RebootSignal is one reason Windows believes a restart is outstanding.
 //
-// It is a named value rather than a bare string so that the reasons Farrier reports are a closed set a
+// It is a named value rather than a bare string so that the reasons HostSeal reports are a closed set a
 // reviewer can read, in the same spirit as the intent catalogue: an operator seeing "a reboot is
 // pending" should be able to find out which of the four mechanisms said so, because they are not
 // equally urgent and two of them are routinely stale.
@@ -22,8 +22,8 @@ type RebootSignal struct {
 	// Stale reports that this signal is known to survive the reboot that should have cleared it.
 	//
 	// It exists because PendingFileRenameOperations is genuinely unreliable in this direction: an entry
-	// whose source file no longer exists is never removed, so a host can carry one for months. Farrier
-	// reports the signal and marks it rather than hiding it, because suppressing it would be Farrier
+	// whose source file no longer exists is never removed, so a host can carry one for months. HostSeal
+	// reports the signal and marks it rather than hiding it, because suppressing it would be HostSeal
 	// deciding an operator's business, and presenting it unqualified would train them to ignore the
 	// field.
 	Stale bool

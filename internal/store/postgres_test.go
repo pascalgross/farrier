@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // databaseEnv names the environment variable holding a PostgreSQL URL for these tests.
@@ -18,7 +18,7 @@ import (
 // store depends on — atomic claiming, LISTEN/NOTIFY, conditional updates — is not exercised by the
 // in-memory store at all, and a test suite that only ran against Memory would prove nothing about the
 // code that actually ships.
-const databaseEnv = "FARRIER_TEST_DATABASE_URL"
+const databaseEnv = "HOSTSEAL_TEST_DATABASE_URL"
 
 // newPostgres opens a migrated store and empties it, or skips the test.
 //
@@ -598,7 +598,7 @@ func enqueue(t *testing.T, pg *Postgres, tenant TenantID, hostID string, job pro
 	ctx := context.Background()
 	// In a transaction that names the tenant, because the jobs table is under a row-level security
 	// policy and this statement is outside the code that normally sets it. Writing the tenant into the
-	// INSERT alone is not enough: the policy's WITH CHECK is evaluated against farrier.tenant, so an
+	// INSERT alone is not enough: the policy's WITH CHECK is evaluated against hostseal.tenant, so an
 	// insert that merely *claims* a tenant without the session saying so is refused. That refusal is
 	// the boundary working — this helper deliberately bypasses CreateJob, and the database noticed.
 	tx, err := pg.pool.Begin(ctx)
@@ -607,7 +607,7 @@ func enqueue(t *testing.T, pg *Postgres, tenant TenantID, hostID string, job pro
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `SELECT set_config('farrier.tenant', $1, true)`, string(tenant)); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('hostseal.tenant', $1, true)`, string(tenant)); err != nil {
 		t.Fatalf("setting the tenant: %v", err)
 	}
 	_, err = tx.Exec(ctx, `

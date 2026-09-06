@@ -6,7 +6,7 @@
   },
   "newProjectRoot": "projects",
   "projects": {
-    "farrier-web": {
+    "hostseal-web": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -72,10 +72,10 @@
           "builder": "@angular/build:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "farrier-web:build:production"
+              "buildTarget": "hostseal-web:build:production"
             },
             "development": {
-              "buildTarget": "farrier-web:build:development"
+              "buildTarget": "hostseal-web:build:development"
             }
           },
           "defaultConfiguration": "development"

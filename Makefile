@@ -1,4 +1,4 @@
-# Farrier build entry points.
+# HostSeal build entry points.
 #
 # Everything a contributor or CI runs lives here, so that "what does CI do" is answerable by reading one
 # file rather than by reading five workflow YAMLs. The workflows in .github/workflows call these targets
@@ -19,8 +19,8 @@ DIST    := dist
 # bytes the release does. Without it a maintainer checking a published archive against a local build
 # gets a different checksum and has no way to tell a real difference from a build-id.
 LDFLAGS := -s -w -buildid= \
-	-X github.com/pascalgross/farrier/internal/buildinfo.Version=$(VERSION) \
-	-X github.com/pascalgross/farrier/internal/buildinfo.Commit=$(COMMIT)
+	-X github.com/pascalgross/hostseal/internal/buildinfo.Version=$(VERSION) \
+	-X github.com/pascalgross/hostseal/internal/buildinfo.Commit=$(COMMIT)
 
 GO_PACKAGES := ./...
 
@@ -30,19 +30,19 @@ help: ## Show this help
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build
-build: $(DIST)/farrier-agent $(DIST)/farrier-server $(DIST)/farrier helpers ## Build every binary
+build: $(DIST)/hostseal-agent $(DIST)/hostseal-server $(DIST)/hostseal helpers ## Build every binary
 
 $(DIST):
 	mkdir -p $(DIST)
 
-$(DIST)/farrier-agent: $(DIST)
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/farrier-agent
+$(DIST)/hostseal-agent: $(DIST)
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/hostseal-agent
 
-$(DIST)/farrier-server: $(DIST)
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/farrier-server
+$(DIST)/hostseal-server: $(DIST)
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/hostseal-server
 
-$(DIST)/farrier: $(DIST)
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/farrier
+$(DIST)/hostseal: $(DIST)
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/hostseal
 
 .PHONY: helpers
 helpers: $(DIST) ## Build the three root helpers
@@ -63,30 +63,30 @@ WINDOWS_DIST := $(DIST)/windows
 windows: $(DIST) ## Build the Windows agent and assemble its release archive
 	mkdir -p $(WINDOWS_DIST)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-agent.exe ./cmd/farrier-agent
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/hostseal-agent.exe ./cmd/hostseal-agent
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier-update-scan.exe ./cmd/farrier-update-scan
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/hostseal-update-scan.exe ./cmd/hostseal-update-scan
 	@# The operator's CLI ships in the archive for the same reason it is in the .deb rather than a
-	@# package of its own: `farrier enroll` runs ON the host, writing the private key and agent.json into
+	@# package of its own: `hostseal enroll` runs ON the host, writing the private key and agent.json into
 	@# the local state directory, so a host that has only the agent can never enrol and idles for ever.
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/farrier.exe ./cmd/farrier
-	cp packaging/windows/Install-FarrierAgent.ps1 $(WINDOWS_DIST)/
+	  go build -trimpath -ldflags '$(LDFLAGS)' -o $(WINDOWS_DIST)/hostseal.exe ./cmd/hostseal
+	cp packaging/windows/Install-HostSealAgent.ps1 $(WINDOWS_DIST)/
 	cp packaging/policy.toml $(WINDOWS_DIST)/
 	@# -X drops the extra fields that carry local timestamps and uids, so two builds of the same
 	@# source produce the same archive rather than one that only differs in metadata.
-	cd $(WINDOWS_DIST) && zip -q -X -r ../farrier-agent-windows-amd64.zip . && cd -
-	@echo "wrote $(DIST)/farrier-agent-windows-amd64.zip"
+	cd $(WINDOWS_DIST) && zip -q -X -r ../hostseal-agent-windows-amd64.zip . && cd -
+	@echo "wrote $(DIST)/hostseal-agent-windows-amd64.zip"
 
 # The Windows agent must keep cross-compiling, and `make ci` runs on Linux. Compiling it is not a test —
 # nothing here can exercise COM, the SCM or the registry — but a build failure is the one Windows defect
 # this project can catch without a Windows machine, and catching it costs seconds.
 .PHONY: windows-build
 windows-build: ## Check that the Windows agent still cross-compiles
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-agent
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier-update-scan
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/farrier
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/farrier-agent ./cmd/farrier-update-scan \
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/hostseal-agent
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/hostseal-update-scan
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/hostseal
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/hostseal-agent ./cmd/hostseal-update-scan \
 	  ./internal/winapi ./internal/updatescan ./internal/collect/platform
 	@# internal/wua is vetted by golangci-lint, which can scope the unsafeptr exclusion to the one
 	@# file that earns it. Raw `go vet` has no such setting, and excluding the whole package here
@@ -188,7 +188,7 @@ golangci: ## golangci-lint, for this platform and for Windows
 #
 # Listed once and used twice so the two cannot drift apart — a package added to one and forgotten in the
 # other would be one that compiles and is never linted, which is the state this list exists to end.
-WINDOWS_PACKAGES := ./cmd/farrier/... ./cmd/farrier-agent/... ./cmd/farrier-update-scan/... \
+WINDOWS_PACKAGES := ./cmd/hostseal/... ./cmd/hostseal-agent/... ./cmd/hostseal-update-scan/... \
   ./internal/winapi/... ./internal/wua/... ./internal/updatescan/... \
   ./internal/collect/... ./internal/agent/... ./internal/policy/... ./internal/run/...
 
@@ -208,7 +208,7 @@ tidy: ## go mod tidy
 	go mod tidy
 
 .PHONY: web
-web: ## Build the Angular application into the location farrier-server embeds
+web: ## Build the Angular application into the location hostseal-server embeds
 	cd web && pnpm install --frozen-lockfile && pnpm run build
 	find internal/server/assets -mindepth 1 -maxdepth 1 \
 	  ! -name .gitignore ! -name PLACEHOLDER.md -exec rm -rf {} +
@@ -221,10 +221,10 @@ web-lint: ## Lint the web application, including the doc-comment rule on private
 # Every systemd unit the package ships. systemd silently ignores a directive it does not understand, so
 # a typo in one of these is a hardening line that is simply absent on every host — which is why the deb
 # target verifies them and CI verifies them again with the binaries in place.
-UNITS := packaging/farrier-agent.service \
-	packaging/farrier-apply-updates.socket packaging/farrier-apply-updates@.service \
-	packaging/farrier-restart-unit.socket packaging/farrier-restart-unit@.service \
-	packaging/farrier-reboot-host.socket packaging/farrier-reboot-host@.service
+UNITS := packaging/hostseal-agent.service \
+	packaging/hostseal-apply-updates.socket packaging/hostseal-apply-updates@.service \
+	packaging/hostseal-restart-unit.socket packaging/hostseal-restart-unit@.service \
+	packaging/hostseal-reboot-host.socket packaging/hostseal-reboot-host@.service
 
 .PHONY: units
 units: ## Check every packaged systemd unit with systemd-analyze
@@ -242,7 +242,7 @@ DEB_FILE_VERSION = $(subst -,~,$(DEB_VERSION))
 
 .PHONY: deb-path
 deb-path: ## Print the .deb path `make deb` would produce, for scripts that need to name it
-	@echo "$(DIST)/packages/farrier-agent_$(DEB_FILE_VERSION)_$(ARCH).deb"
+	@echo "$(DIST)/packages/hostseal-agent_$(DEB_FILE_VERSION)_$(ARCH).deb"
 
 # The packager version, used by the nfpm-install target and by every workflow that builds a .deb. Pinned
 # for a sharper reason than the linter above is. nfpm is the program that assembles the package every
@@ -257,7 +257,7 @@ nfpm-install: ## Install the pinned packager
 	go install github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
 
 .PHONY: deb
-deb: build ## Build the farrier-agent .deb
+deb: build ## Build the hostseal-agent .deb
 	@command -v nfpm >/dev/null 2>&1 || { echo "nfpm not installed; see https://nfpm.goreleaser.com/install/"; exit 1; }
 	@command -v systemd-analyze >/dev/null 2>&1 && systemd-analyze verify $(UNITS) >/dev/null 2>&1 || true
 	mkdir -p $(DIST)/packages
@@ -268,11 +268,11 @@ deb: build ## Build the farrier-agent .deb
 # The control plane's container image, and the Compose stack in deploy/. The agent is packaged as a .deb
 # above and is deliberately not containerised: it manages a host, and a host it managed from inside a
 # container on the control plane would be the control plane.
-IMAGE ?= farrier-server
+IMAGE ?= hostseal-server
 IMAGE_TAG ?= $(VERSION)
 
 .PHONY: image
-image: ## Build the farrier-server container image
+image: ## Build the hostseal-server container image
 	docker build -t $(IMAGE):$(IMAGE_TAG) \
 	  --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) .
 
@@ -281,9 +281,9 @@ image: ## Build the farrier-server container image
 # them would be a control plane whose every password is the word "check". A real value in the
 # environment wins, because Compose prefers the environment over .env — so this never validates the file
 # it is checking against somebody's actual secrets.
-COMPOSE_CHECK_ENV := POSTGRES_SUPERUSER_PASSWORD=check FARRIER_DB_PASSWORD=check \
-	FARRIER_REPLICATION_PASSWORD=check \
-	FARRIER_AGENT_HOSTNAME=agents.example.invalid FARRIER_UI_HOSTNAME=farrier.example.invalid
+COMPOSE_CHECK_ENV := POSTGRES_SUPERUSER_PASSWORD=check HOSTSEAL_DB_PASSWORD=check \
+	HOSTSEAL_REPLICATION_PASSWORD=check \
+	HOSTSEAL_AGENT_HOSTNAME=agents.example.invalid HOSTSEAL_UI_HOSTNAME=hostseal.example.invalid
 
 .PHONY: compose-check
 compose-check: ## Parse every Compose file, including the optional overlays

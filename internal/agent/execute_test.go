@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // stubPlatform is a collect.Platform whose answers the test controls.

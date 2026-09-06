@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // TestEnsureSurvivesASecondControlPlaneStartingAtTheSameMoment is why the key is linked into place.

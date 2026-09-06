@@ -14,14 +14,14 @@ package agent
 // The installer sets this directory's ACL explicitly and does not rely on what ProgramData inherits.
 // The inherited ACL grants CREATOR OWNER full control on new files and lets ordinary accounts create
 // them, which is fine for the agent's own state and would be a hole for anything else.
-const DefaultStateDir = `C:\ProgramData\Farrier`
+const DefaultStateDir = `C:\ProgramData\HostSeal`
 
 // DefaultServerCABundle is where an administrator puts the control plane's CA before enrolling.
 //
 // Under Program Files with the policy file, for the same reason: it is administrator-supplied
 // configuration chosen before the agent exists, and an agent that could rewrite the authority it
 // verifies its control plane against would be verifying against one it chose.
-const DefaultServerCABundle = `C:\Program Files\Farrier\server-ca.crt`
+const DefaultServerCABundle = `C:\Program Files\HostSeal\server-ca.crt`
 
 // MachineIDPath is unused on Windows and is the empty string.
 //

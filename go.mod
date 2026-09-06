@@ -1,4 +1,4 @@
-module github.com/pascalgross/farrier
+module github.com/pascalgross/hostseal
 
 go 1.26.7
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/canonical"
 )
 
 // File names inside the agent's state directory.
@@ -56,7 +56,7 @@ type State struct {
 func LoadState(dir string) (*State, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, StateFile))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("agent: this host is not enrolled; run `farrier enroll`: %w", err)
+		return nil, fmt.Errorf("agent: this host is not enrolled; run `hostseal enroll`: %w", err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("agent: reading enrolment state: %w", err)
@@ -97,7 +97,7 @@ func (s *State) Path(name string) string { return filepath.Join(s.dir, name) }
 // is.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".farrier-*")
+	tmp, err := os.CreateTemp(dir, ".hostseal-*")
 	if err != nil {
 		return fmt.Errorf("agent: creating a temporary file in %s: %w", dir, err)
 	}
@@ -141,7 +141,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 // distinct outcome a caller has to be able to recognise rather than a failure.
 func WriteFileExclusive(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".farrier-*")
+	tmp, err := os.CreateTemp(dir, ".hostseal-*")
 	if err != nil {
 		return fmt.Errorf("agent: creating a temporary file in %s: %w", dir, err)
 	}
@@ -221,10 +221,10 @@ type ownership struct {
 
 // AdoptStateDir gives the state directory's contents to whoever owns the directory.
 //
-// It exists because enrolment and the agent are two different users. `farrier enroll` is run with sudo,
+// It exists because enrolment and the agent are two different users. `hostseal enroll` is run with sudo,
 // as the documentation and the interface both instruct, and everything it writes — the credential, the
 // CA bundle, the cached online key, agent.json at 0600 — therefore lands owned by root. The service
-// runs as the unprivileged account the package created, with User=farrier and no capabilities, so it
+// runs as the unprivileged account the package created, with User=hostseal and no capabilities, so it
 // opens agent.json, gets EACCES, and reports "not enrolled" on a host that enrolled successfully
 // seconds earlier.
 //
@@ -234,8 +234,8 @@ type ownership struct {
 // says it in the place an operator is least likely to read it as a permissions problem on their own
 // machine.
 //
-// The directory's own owner is the target rather than a compiled-in "farrier", because that is what the
-// package established with `install -d -o farrier -g farrier` and it stays right for an installation
+// The directory's own owner is the target rather than a compiled-in "hostseal", because that is what the
+// package established with `install -d -o hostseal -g hostseal` and it stays right for an installation
 // that runs the agent as something else. Where the owner already matches — an unpackaged install where
 // both are root, or a test in a temporary directory — every chown is a no-op, so this costs nothing and
 // needs no guard for the ordinary case.

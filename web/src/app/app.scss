@@ -11,7 +11,7 @@
 // Every other page is a centred column with padding, which is right for something read at a desk. The
 // published wallboard sizes itself in viewport units, so the same frame would be a screen with a
 // border drawn round it and its footer pushed under the fold.
-.farrier-shell__bare {
+.hostseal-shell__bare {
   display: block;
 }
 
@@ -32,7 +32,7 @@ code {
 // is the ordinary one — mark, name, form, then the two things worth reading afterwards — and the
 // widths are the point: a form whose fields run the width of a 27-inch monitor reads as unfinished
 // however carefully it is spaced.
-.farrier-signin {
+.hostseal-signin {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -42,7 +42,7 @@ code {
   padding: clamp(2rem, 8vh, 6rem) 0 3rem;
 }
 
-.farrier-signin__brand {
+.hostseal-signin__brand {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -63,7 +63,7 @@ code {
   }
 }
 
-.farrier-signin__card {
+.hostseal-signin__card {
   width: 100%;
   max-width: 24rem;
 }
@@ -73,7 +73,7 @@ code {
 // Material's outlined field reserves no space under itself when subscriptSizing is dynamic and there
 // is no hint, so two of them stack flush and read as one control with a line through the middle. The
 // gap is what makes them two.
-.farrier-signin__fields {
+.hostseal-signin__fields {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -83,7 +83,7 @@ code {
 //
 // Full width because there is one action on this card and nothing to weigh it against; a button
 // hugging the right edge of a form this narrow reads as a secondary choice.
-.farrier-signin__submit {
+.hostseal-signin__submit {
   width: 100%;
   margin-top: 0.5rem;
 }
@@ -93,7 +93,7 @@ code {
 // Coloured text under a field is what a validation error looks like, and neither of these is one: they
 // are answers from the control plane about a credential that was sent. The box is what tells them
 // apart at a glance.
-.farrier-signin__note {
+.hostseal-signin__note {
   margin: 0 0 0.75rem;
   padding: 0.625rem 0.75rem;
   border-radius: 0.5rem;
@@ -102,13 +102,13 @@ code {
   line-height: 1.4;
 }
 
-.farrier-signin__note--bad {
+.hostseal-signin__note--bad {
   color: var(--mat-sys-on-error-container);
   background: var(--mat-sys-error-container);
   border-color: color-mix(in oklab, var(--mat-sys-error) 40%, transparent);
 }
 
-.farrier-signin__note--warn {
+.hostseal-signin__note--warn {
   color: var(--mat-sys-on-surface);
   background: color-mix(in oklab, var(--mat-sys-tertiary) 12%, transparent);
   border-color: color-mix(in oklab, var(--mat-sys-tertiary) 40%, transparent);
@@ -118,7 +118,7 @@ code {
 //
 // Narrower than a comfortable reading measure would be, deliberately: they are here to be available
 // rather than to be read first, and matching the card's width keeps the column of the page single.
-.farrier-signin__aside {
+.hostseal-signin__aside {
   max-width: 32rem;
   display: flex;
   flex-direction: column;
@@ -133,22 +133,22 @@ code {
 }
 
 // The account button in the toolbar, and the header of the menu it opens.
-.farrier-account-button {
+.hostseal-account-button {
   margin-inline-start: 0.25rem;
 }
 
-.farrier-account-menu__who {
+.hostseal-account-menu__who {
   display: flex;
   flex-direction: column;
   padding: 0.75rem 1rem 0.5rem;
   line-height: 1.3;
 }
 
-.farrier-account-menu__display {
+.hostseal-account-menu__display {
   font-weight: 500;
 }
 
-.farrier-account-menu__principal {
+.hostseal-account-menu__principal {
   font-size: 0.75rem;
   color: var(--mat-sys-on-surface-variant);
 }

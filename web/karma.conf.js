@@ -1,4 +1,4 @@
-// Karma configuration for the Farrier web application.
+// Karma configuration for the HostSeal web application.
 //
 // It sets only the browser. The frameworks, plugins and reporters come from Angular's own builder,
 // which supplies a complete configuration and merges this on top; listing them here would pin versions

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ if eq .Current "index.html" }}Farrier — fleet management without a remote shell{{ else }}{{ .Title }} — Farrier{{ end }}</title>
+<title>{{ if eq .Current "index.html" }}HostSeal — fleet management without a remote shell{{ else }}{{ .Title }} — HostSeal{{ end }}</title>
 <meta name="description" content="{{ .Summary }}">
 <link rel="stylesheet" href="site.css">
 <link rel="icon" href="favicon.svg">
@@ -12,7 +12,7 @@
 <a class="skip" href="#content">Skip to content</a>
 <div class="shell">
   <nav class="sidebar" aria-label="Documentation">
-    <a class="brand" href="index.html">Farrier</a>
+    <a class="brand" href="index.html">HostSeal</a>
     <p class="brand-sub">Fleet management for Ubuntu and Debian, without a remote shell.</p>
     <ul>
       {{ range .Nav }}
@@ -33,7 +33,7 @@
     <footer>
       <p>
         <a href="{{ .Repo }}/blob/{{ .Ref }}/{{ .Source }}">Edit this page</a> ·
-        Licensed Apache-2.0 · Copyright 2026 Pascal Groß and the Farrier contributors
+        Licensed Apache-2.0 · Copyright 2026 Pascal Groß and the HostSeal contributors
       </p>
     </footer>
   </main>

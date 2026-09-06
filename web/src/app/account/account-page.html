@@ -1,5 +1,5 @@
-<div class="farrier-account">
-  <header class="farrier-account__header">
+<div class="hostseal-account">
+  <header class="hostseal-account__header">
     <h1>Your account</h1>
     @if (account(); as me) {
       <p>
@@ -17,7 +17,7 @@
   }
 
   @if (loadError(); as failure) {
-    <p class="farrier-account__error">{{ failure }}</p>
+    <p class="hostseal-account__error">{{ failure }}</p>
   }
 
   <!-- ─── Password ───────────────────────────────────────────────────────────────────────────── -->
@@ -31,7 +31,7 @@
       </mat-card-subtitle>
     </mat-card-header>
 
-    <mat-card-content class="farrier-account__form">
+    <mat-card-content class="hostseal-account__form">
       <mat-form-field appearance="outline">
         <mat-label>Current password</mat-label>
         <input matInput type="password" autocomplete="current-password"
@@ -60,10 +60,10 @@
       </mat-form-field>
 
       @if (passwordError(); as failure) {
-        <p class="farrier-account__note farrier-account__note--bad">{{ failure }}</p>
+        <p class="hostseal-account__note hostseal-account__note--bad">{{ failure }}</p>
       }
       @if (passwordDone(); as done) {
-        <p class="farrier-account__note farrier-account__note--good">{{ done }}</p>
+        <p class="hostseal-account__note hostseal-account__note--good">{{ done }}</p>
       }
     </mat-card-content>
 
@@ -87,27 +87,27 @@
 
     <mat-card-content>
       @if (sessions().length === 0) {
-        <p class="farrier-account__empty">No sessions. Not even this one, which means the list has
+        <p class="hostseal-account__empty">No sessions. Not even this one, which means the list has
           not loaded.</p>
       } @else {
-        <ul class="farrier-account__list">
+        <ul class="hostseal-account__list">
           @for (held of sessions(); track held.createdAt + held.userAgent) {
-            <li class="farrier-account__row" [class.farrier-account__row--muted]="held.expired">
-              <mat-icon class="farrier-account__row-icon">
+            <li class="hostseal-account__row" [class.hostseal-account__row--muted]="held.expired">
+              <mat-icon class="hostseal-account__row-icon">
                 {{ held.current ? 'laptop_mac' : 'devices' }}
               </mat-icon>
 
-              <div class="farrier-account__row-body">
-                <span class="farrier-account__row-title">
+              <div class="hostseal-account__row-body">
+                <span class="hostseal-account__row-title">
                   {{ describeSession(held) }}
                   @if (held.current) {
-                    <span class="farrier-account__badge">this browser</span>
+                    <span class="hostseal-account__badge">this browser</span>
                   }
                   @if (held.expired) {
-                    <span class="farrier-account__badge farrier-account__badge--muted">expired</span>
+                    <span class="hostseal-account__badge hostseal-account__badge--muted">expired</span>
                   }
                 </span>
-                <span class="farrier-account__row-meta farrier-numeric">
+                <span class="hostseal-account__row-meta hostseal-numeric">
                   Signed in {{ age(held.createdAt) }} · last used {{ age(held.lastUsed) }}
                 </span>
               </div>
@@ -142,38 +142,38 @@
       </mat-card-subtitle>
     </mat-card-header>
 
-    <mat-card-content class="farrier-account__form">
+    <mat-card-content class="hostseal-account__form">
       @if (issued(); as fresh) {
         <!--
           Shown here and never again: only the SHA-256 is stored, so this is the one moment the value
           exists anywhere but in whoever copies it.
         -->
-        <div class="farrier-account__issued">
-          <div class="farrier-account__issued-head">
+        <div class="hostseal-account__issued">
+          <div class="hostseal-account__issued-head">
             <mat-icon>vpn_key</mat-icon>
             <span>{{ fresh.label }} — copy it now</span>
           </div>
-          <code class="farrier-account__secret">{{ fresh.token }}</code>
-          <p class="farrier-account__issued-note">
+          <code class="hostseal-account__secret">{{ fresh.token }}</code>
+          <p class="hostseal-account__issued-note">
             Only its hash is stored, so this will not be shown again. Send it as
             <code>Authorization: Bearer …</code>. If you lose it, revoke it and mint another — that
             costs nothing.
           </p>
-          <div class="farrier-account__issued-actions">
+          <div class="hostseal-account__issued-actions">
             <button mat-button (click)="dismissIssued()">Done</button>
           </div>
         </div>
       }
 
-      <div class="farrier-account__mint">
-        <mat-form-field appearance="outline" class="farrier-account__mint-label">
+      <div class="hostseal-account__mint">
+        <mat-form-field appearance="outline" class="hostseal-account__mint-label">
           <mat-label>What is it for</mat-label>
           <input matInput [ngModel]="tokenLabel()" (ngModelChange)="tokenLabel.set($event)"
                  (keyup.enter)="mintToken()" placeholder="deployment pipeline" />
           <mat-hint>A token nobody can tell from the others is a token nobody revokes.</mat-hint>
         </mat-form-field>
 
-        <mat-form-field appearance="outline" class="farrier-account__mint-expiry">
+        <mat-form-field appearance="outline" class="hostseal-account__mint-expiry">
           <mat-label>Expires</mat-label>
           <mat-select [ngModel]="tokenDays()" (ngModelChange)="tokenDays.set($event)">
             @for (choice of lifetimes; track choice.days) {
@@ -182,32 +182,32 @@
           </mat-select>
         </mat-form-field>
 
-        <button mat-flat-button class="farrier-account__mint-button"
+        <button mat-flat-button class="hostseal-account__mint-button"
                 [disabled]="!canMintToken()" (click)="mintToken()">
           Issue token
         </button>
       </div>
 
       @if (tokenError(); as failure) {
-        <p class="farrier-account__note farrier-account__note--bad">{{ failure }}</p>
+        <p class="hostseal-account__note hostseal-account__note--bad">{{ failure }}</p>
       }
 
       @if (tokens().length === 0) {
-        <p class="farrier-account__empty">No tokens. Nothing is acting as you but this browser.</p>
+        <p class="hostseal-account__empty">No tokens. Nothing is acting as you but this browser.</p>
       } @else {
-        <ul class="farrier-account__list">
+        <ul class="hostseal-account__list">
           @for (token of tokens(); track token.id) {
-            <li class="farrier-account__row" [class.farrier-account__row--muted]="!token.usable">
-              <mat-icon class="farrier-account__row-icon">key</mat-icon>
+            <li class="hostseal-account__row" [class.hostseal-account__row--muted]="!token.usable">
+              <mat-icon class="hostseal-account__row-icon">key</mat-icon>
 
-              <div class="farrier-account__row-body">
-                <span class="farrier-account__row-title">
+              <div class="hostseal-account__row-body">
+                <span class="hostseal-account__row-title">
                   {{ token.label }}
                   @if (!token.usable) {
-                    <span class="farrier-account__badge farrier-account__badge--muted">expired</span>
+                    <span class="hostseal-account__badge hostseal-account__badge--muted">expired</span>
                   }
                 </span>
-                <span class="farrier-account__row-meta farrier-numeric">
+                <span class="hostseal-account__row-meta hostseal-numeric">
                   Issued {{ age(token.createdAt) }} · last used {{ age(token.lastUsed) }} ·
                   {{ token.expiresAt ? 'expires ' + (token.expiresAt | date: 'mediumDate') : 'no expiry' }}
                 </span>

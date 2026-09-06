@@ -20,7 +20,7 @@
 --     is backed up separately and deliberately.
 --
 -- The signature columns hold a detached signature over the canonical {name, body} payload, produced
--- offline by `farrier sign-template` with a key this control plane does not hold. They are stored
+-- offline by `hostseal sign-template` with a key this control plane does not hold. They are stored
 -- verbatim and handed over verbatim at enrolment: the control plane can no more mint one than it can
 -- mint a destructive job signature, and internal/server's guarantee tests assert that rather than this
 -- comment claiming it.
@@ -55,5 +55,5 @@ ALTER TABLE templates FORCE  ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS templates_tenant_isolation ON templates;
 CREATE POLICY templates_tenant_isolation ON templates
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));

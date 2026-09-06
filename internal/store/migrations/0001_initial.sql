@@ -1,4 +1,4 @@
--- Farrier initial schema.
+-- HostSeal initial schema.
 --
 -- The PostgreSQL features used here are load-bearing rather than incidental, which is why
 -- docs/EXTENDING.md says store.Store is not a portability seam:
@@ -6,7 +6,7 @@
 --   * JSONB with a GIN index for facts, because a fact document gains fields constantly and a column
 --     per fact would mean a migration every time somebody adds one;
 --   * a partial index for the job claim, so that claiming skips completed rows without scanning them;
---   * LISTEN/NOTIFY to wake long-polls, which is why Farrier ships no Redis;
+--   * LISTEN/NOTIFY to wake long-polls, which is why HostSeal ships no Redis;
 --   * SELECT ... FOR UPDATE SKIP LOCKED for atomic claiming, which is what lets the control plane run
 --     more than one replica without delivering a job twice.
 
@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS hosts_last_seen ON hosts (last_seen DESC NULLS LAST);
 
 CREATE TABLE IF NOT EXISTS certificates (
     -- SHA-256 of the DER certificate. Looked up on every authenticated request: this is the whole
-    -- revocation mechanism, and it is why Farrier ships neither a CRL nor an OCSP responder.
+    -- revocation mechanism, and it is why HostSeal ships neither a CRL nor an OCSP responder.
     fingerprint text PRIMARY KEY,
     host_id     text        NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
     serial      text        NOT NULL,
@@ -127,9 +127,9 @@ CREATE TABLE IF NOT EXISTS job_results (
 
 -- Waking a long-poll. A trigger rather than an application-side NOTIFY so that a job inserted by any
 -- path — the API, a maintenance script, a future scheduler — wakes the agent that is waiting for it.
-CREATE OR REPLACE FUNCTION farrier_notify_job() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION hostseal_notify_job() RETURNS trigger AS $$
 BEGIN
-    PERFORM pg_notify('farrier_job', NEW.host_id);
+    PERFORM pg_notify('hostseal_job', NEW.host_id);
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -138,4 +138,4 @@ DROP TRIGGER IF EXISTS jobs_notify ON jobs;
 CREATE TRIGGER jobs_notify
     AFTER INSERT ON jobs
     FOR EACH ROW
-EXECUTE FUNCTION farrier_notify_job();
+EXECUTE FUNCTION hostseal_notify_job();

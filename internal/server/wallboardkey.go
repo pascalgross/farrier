@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/id"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/id"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // wallboardKeyPrefix marks a wallboard key in a log, a paste or a secret scanner's ruleset.
 //
-// Deliberately not the `frr_` that enrolment tokens and API tokens share. Two credentials under one
+// Deliberately not the `hsl_` that enrolment tokens and API tokens share. Two credentials under one
 // prefix means a scanner that finds one cannot say what was leaked, and the two want opposite
 // responses: an enrolment token is revoked by consuming or expiring it, a wallboard key by deleting a
 // row.
@@ -21,7 +21,7 @@ import (
 // the prefix, so a wallboard key presented to an administrative route is tried like any other string
 // and refused because no row matches — not because of the four characters in front. The prefix is for
 // the person and the scanner reading the string, and the refusal is the lookup's.
-const wallboardKeyPrefix = "frb_"
+const wallboardKeyPrefix = "hsb_"
 
 // wallboardSecretBytes is how much randomness the secret half of a key carries.
 //
@@ -34,8 +34,8 @@ const wallboardSecretBytes = 32
 // NewWallboardKey returns the key a screen presents and the digest the control plane stores.
 //
 // The tenant travels inside the key, and that is the load-bearing decision in this file rather than a
-// convenience. It means the lookup happens inside a transaction that has already set `farrier.tenant`,
-// so the wallboard_shares table needs no `farrier.resolve_key` exemption — the narrow, read-only escape
+// convenience. It means the lookup happens inside a transaction that has already set `hostseal.tenant`,
+// so the wallboard_shares table needs no `hostseal.resolve_key` exemption — the narrow, read-only escape
 // four tables already take to be found before the tenant is known. A fifth one on a table reached by an
 // unauthenticated request would be the widest of them, so the design avoids needing it at all.
 //
@@ -96,7 +96,7 @@ const maxTenantIDLength = 256
 // change to internal/id would silently invalidate.
 //
 // What it defends against is narrower and real. The segment does not reach a hash function; it reaches
-// `Store.In`, and from there `set_config('farrier.tenant', …)` inside a transaction. A byte PostgreSQL
+// `Store.In`, and from there `set_config('hostseal.tenant', …)` inside a transaction. A byte PostgreSQL
 // will not accept in a parameter turns a request that is simply wrong into a 500 and an ERROR line —
 // a refusal wearing the clothes of an outage, on the one route in this server that answers callers
 // nobody has authenticated, and therefore a line anybody on the internet could write into an

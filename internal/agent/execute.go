@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/collect/collector"
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/collect/collector"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // acceptance is the outcome of checking whether a job may run.
@@ -127,7 +127,7 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *s
 	// 4. Verify the signature the class requires, against the anchor that class is verified against.
 	//
 	//    Two anchors, never interchangeable. A destructive intent verifies against
-	//    /etc/farrier/trusted-signers, which the control plane cannot write — that is what
+	//    /etc/hostseal/trusted-signers, which the control plane cannot write — that is what
 	//    docs/SECURITY.md §1 rests on. A routine intent verifies against the online key the control
 	//    plane sent, which is a weaker authority and bounded by the local policy rather than by the
 	//    key. Asking the catalogue twice, rather than branching on one boolean, is what keeps a
@@ -152,7 +152,7 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *s
 	//     compromised control plane holding one such job could then redeliver it indefinitely, and it
 	//     would be a validly signed destructive job every time — without ever holding the offline key.
 	//
-	//     Nothing shipped produces one: `farrier sign` sets both edges and refuses --valid-for ≤ 0. That
+	//     Nothing shipped produces one: `hostseal sign` sets both edges and refuses --valid-for ≤ 0. That
 	//     is the point of checking here rather than trusting it. The agent is the side that has to
 	//     survive a signer it did not write, and this is the one check that closes all three at once.
 	//
@@ -208,7 +208,7 @@ func accept(job protocol.Job, hostID string, p policy.Policy, signers, online *s
 // verifyOfflineSignature checks a destructive job against the host's own trusted-signers.
 //
 // A signature by the control plane's online key is not acceptable here, and there is no code path by
-// which it could be: the only key set consulted is the one read from /etc/farrier/trusted-signers, which
+// which it could be: the only key set consulted is the one read from /etc/hostseal/trusted-signers, which
 // the control plane cannot write.
 func verifyOfflineSignature(job protocol.Job, hostID string, signers *signing.SignerSet) error {
 	if signers.Empty() {
@@ -355,7 +355,7 @@ type Runner struct {
 	// Policy is the local policy as the agent last read it.
 	Policy policy.Policy
 
-	// Signers is the host's own trust anchor, read from /etc/farrier/trusted-signers.
+	// Signers is the host's own trust anchor, read from /etc/hostseal/trusted-signers.
 	//
 	// The authority for every destructive intent, and the one the control plane cannot write.
 	Signers *signing.SignerSet
@@ -465,7 +465,7 @@ func (r Runner) Run(ctx context.Context, job protocol.Job) protocol.ResultReques
 //
 // The agent does not perform the operation and does not learn how it was performed. It names an intent,
 // forwards the parameter bytes it received, and reports what came back — which is the whole of its
-// involvement in every privileged thing Farrier does.
+// involvement in every privileged thing HostSeal does.
 func (r Runner) elevate(ctx context.Context, job protocol.Job, decision acceptance,
 	result protocol.ResultRequest) protocol.ResultRequest {
 

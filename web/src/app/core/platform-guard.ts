@@ -9,7 +9,7 @@ import { SessionStore } from './session';
  * The two credentials reach disjoint sets of routes by design: a platform administrator administers
  * fleets and is refused by every route that reaches a fleet's hosts or jobs. Landing on one of those
  * pages renders a console full of refusals rather than an interface, which is the failure
- * [#68](https://github.com/pascalgross/farrier/issues/68) was about in the first place.
+ * [#68](https://github.com/pascalgross/hostseal/issues/68) was about in the first place.
  *
  * A guard rather than an `effect` in the shell, and that is a correction rather than a preference. The
  * shell's effect read `Router.url`, which is a plain property and not a signal — so it re-ran when the

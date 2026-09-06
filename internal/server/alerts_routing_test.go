@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // countingScoped counts the delivery outcomes written through a tenant's store handle.

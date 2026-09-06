@@ -1,4 +1,4 @@
-// Package canonical encodes values the one way both sides of the Farrier protocol agree on.
+// Package canonical encodes values the one way both sides of the HostSeal protocol agree on.
 //
 // It exists because two different things depend on byte-identical encoding and would otherwise depend
 // on two implementations agreeing by luck. Signatures are computed over the canonical form of a job
@@ -62,7 +62,7 @@ func Marshal(v any) ([]byte, error) {
 // encoding a Go value first would be a round trip with nothing to gain.
 //
 // What it is *not* is a way to verify a signature against the bytes a job arrived in. Nothing in
-// Farrier does that, and the shape of the protocol is why: a signature is computed over
+// HostSeal does that, and the shape of the protocol is why: a signature is computed over
 // protocol.Job.SignedPayload, a map both the signer and the agent build from decoded fields, so both
 // sides canonicalise their own view by construction. Byte-identity end to end is not available to be
 // checked either — a job's params reach the agent through a jsonb column, which normalises key order,

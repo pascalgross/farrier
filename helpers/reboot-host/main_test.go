@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/hostseal/internal/intent"
 )
 
 // TestShutdownTimeNeverBringsARebootForward is the property that matters about the rounding.

@@ -14,16 +14,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/agent"
-	"github.com/pascalgross/farrier/internal/auth"
-	"github.com/pascalgross/farrier/internal/ca"
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/onlinekey"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/seal"
-	"github.com/pascalgross/farrier/internal/server"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/agent"
+	"github.com/pascalgross/hostseal/internal/auth"
+	"github.com/pascalgross/hostseal/internal/ca"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/onlinekey"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/seal"
+	"github.com/pascalgross/hostseal/internal/server"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // harness is a running control plane with an in-memory store, for end-to-end tests.
@@ -103,7 +103,7 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	dir := t.TempDir()
-	authority, err := ca.Init(filepath.Join(dir, "ca"), "Farrier Test CA")
+	authority, err := ca.Init(filepath.Join(dir, "ca"), "HostSeal Test CA")
 	if err != nil {
 		t.Fatalf("creating a CA: %v", err)
 	}
@@ -216,7 +216,7 @@ func newHarness(t *testing.T) *harness {
 // So there is no exemption. The scanner keeps its full strength everywhere, and these read as what they
 // are to a person as well as to a regular expression.
 func harnessCredential(role string) string {
-	return "farrier-test-harness-" + role + "-not-a-real-credential"
+	return "hostseal-test-harness-" + role + "-not-a-real-credential"
 }
 
 // makeTenant creates one fleet in the in-memory store.
@@ -465,7 +465,7 @@ func TestUnknownAndExpiredTokensAreIndistinguishable(t *testing.T) {
 	}
 
 	var statuses []int
-	for i, token := range []string{"frr_completely-unknown", expired} {
+	for i, token := range []string{"hsl_completely-unknown", expired} {
 		_, err := agent.Enroll(context.Background(), agent.EnrollOptions{
 			ServerURL: h.server.URL,
 			Token:     token,
@@ -551,7 +551,7 @@ func TestEnrolmentIsRateLimited(t *testing.T) {
 
 // TestRevocationTakesEffectImmediately is the whole revocation design in one test.
 //
-// Farrier uses neither CRL nor OCSP: every authenticated request looks the certificate's fingerprint up
+// HostSeal uses neither CRL nor OCSP: every authenticated request looks the certificate's fingerprint up
 // in the database. The property that buys is exactly this — a revoked host stops working on its next
 // request, with no distribution delay.
 func TestRevocationTakesEffectImmediately(t *testing.T) {

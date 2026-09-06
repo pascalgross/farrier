@@ -36,7 +36,7 @@ import { toneClass } from '../core/tone';
  * and then discounted for ever.
  */
 @Component({
-  selector: 'farrier-services-page',
+  selector: 'hostseal-services-page',
   imports: [
     MatButtonModule,
     MatCardModule,

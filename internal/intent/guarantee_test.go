@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// expectedCatalogue is the complete set of intents Farrier is allowed to have, written as a literal.
+// expectedCatalogue is the complete set of intents HostSeal is allowed to have, written as a literal.
 //
 // It is duplicated from intent.go on purpose. A test that derived the expectation from the catalogue
 // would assert only that the catalogue equals itself; this one fails the moment a member is added,
@@ -31,7 +31,7 @@ var expectedCatalogue = map[Name]Class{
 
 // TestGuaranteeCatalogueMatchesExpectedSet asserts the catalogue is exactly the expected literal set.
 //
-// This is the load-bearing test of the whole project. Everything Farrier claims about not shipping
+// This is the load-bearing test of the whole project. Everything HostSeal claims about not shipping
 // remote execution reduces to "the set of things the control plane can ask for is this list and no
 // other", and this is where that is checked rather than asserted.
 func TestGuaranteeCatalogueMatchesExpectedSet(t *testing.T) {
@@ -105,7 +105,7 @@ func TestGuaranteeEveryIntentHasClassAndDecoder(t *testing.T) {
 				"needs a decoder that rejects everything except the empty object", s.Name)
 		}
 		if strings.TrimSpace(s.Summary) == "" {
-			t.Errorf("intent %q has no summary: farrier sign renders it to an operator who is about "+
+			t.Errorf("intent %q has no summary: hostseal sign renders it to an operator who is about "+
 				"to authorise the job offline", s.Name)
 		}
 		if s.Name == "" {
@@ -391,7 +391,7 @@ func TestGuaranteeUnitNamesRejectKnownAttacks(t *testing.T) {
 		"apt-daily.timer",
 		"getty@tty1.service",
 		"user_session.service",
-		"farrier-agent.service",
+		"hostseal-agent.service",
 	}
 	for _, unit := range good {
 		raw, err := json.Marshal(map[string]string{"unit": unit})
@@ -499,7 +499,7 @@ func FuzzGuaranteeParamsNeverEscapeConstraints(f *testing.F) {
 						n, up.Unit, err)
 				}
 			}
-			// Describe feeds farrier sign, which is what an operator reads before authorising a job
+			// Describe feeds hostseal sign, which is what an operator reads before authorising a job
 			// offline. A control character there could hide part of the operation in a terminal.
 			if !safeParamCharacters.MatchString(strings.NewReplacer(`"`, "", "(", "", ")", "").Replace(params.Describe())) {
 				t.Fatalf("intent %q rendered an unsafe description %q", n, params.Describe())

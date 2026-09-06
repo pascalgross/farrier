@@ -14,7 +14,7 @@
 //
 // The agent learns nothing from any of this. It verifies a signature against a key in its own
 // trusted-signers and cannot tell which backend produced it, which is why an open-ended set of
-// backends is safe here and nowhere else in Farrier.
+// backends is safe here and nowhere else in HostSeal.
 package pkcs11
 
 import (
@@ -32,8 +32,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pascalgross/farrier/internal/signing"
-	"github.com/pascalgross/farrier/internal/signing/backend"
+	"github.com/pascalgross/hostseal/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing/backend"
 )
 
 // maxMatches bounds an object search.
@@ -172,7 +172,7 @@ func open(_ context.Context, ref string, prompt backend.PassphraseFunc) (signing
 //
 // It opens the token exactly as signing does and then signs nothing. That is more ceremony than the
 // file backend needs for the same question, and it is what a token requires: the public object is
-// often readable without a login and often is not, and a `farrier key show` that worked on one vendor
+// often readable without a login and often is not, and a `hostseal key show` that worked on one vendor
 // and silently returned nothing on another would send an operator looking for a fault in their key.
 func inspect(ctx context.Context, ref string, prompt backend.PassphraseFunc) (signing.PublicKey, error) {
 	signer, err := open(ctx, ref, prompt)
@@ -291,7 +291,7 @@ func findSlot(mod *module, parsed uri) (ckULong, error) {
 // across a replug on every module — which is the reason a reference pins a slot and a serial together
 // in the first place, the serial being the half that notices when the number has gone stale. Honouring
 // the number and ignoring the serial resolves to whatever is in that slot now, and if that token
-// happens to hold a key with the same label, `farrier sign` signs with a key the operator did not name
+// happens to hold a key with the same label, `hostseal sign` signs with a key the operator did not name
 // and says nothing.
 //
 // So this asserts rather than searches, and asserts only what the reference actually said. A reference
@@ -496,7 +496,7 @@ func decodeKey(keyType ckULong, params, point []byte) (signing.Algorithm, crypto
 	switch keyType {
 	case ckkEC:
 		if !bytesEqual(params, p256Params) {
-			return "", nil, fmt.Errorf("pkcs11: this key is on an elliptic curve Farrier does not "+
+			return "", nil, fmt.Errorf("pkcs11: this key is on an elliptic curve HostSeal does not "+
 				"carry (CKA_EC_PARAMS %x). The wire format is ed25519 and ecdsa-p256; generate a "+
 				"P-256 key on the token, or use an Ed25519 one", params)
 		}
@@ -514,7 +514,7 @@ func decodeKey(keyType ckULong, params, point []byte) (signing.Algorithm, crypto
 			}
 		}
 		if !known {
-			return "", nil, fmt.Errorf("pkcs11: this Edwards key names a curve Farrier does not carry "+
+			return "", nil, fmt.Errorf("pkcs11: this Edwards key names a curve HostSeal does not carry "+
 				"(CKA_EC_PARAMS %x); only Ed25519 is on the wire", params)
 		}
 		if len(raw) != ed25519.PublicKeySize {
@@ -524,13 +524,13 @@ func decodeKey(keyType ckULong, params, point []byte) (signing.Algorithm, crypto
 		return signing.Ed25519, ed25519.PublicKey(raw), nil
 
 	case ckkRSA:
-		return "", nil, fmt.Errorf("pkcs11: this key is RSA, and Farrier's wire format carries " +
+		return "", nil, fmt.Errorf("pkcs11: this key is RSA, and HostSeal's wire format carries " +
 			"ed25519 and ecdsa-p256 only. A YubiKey PIV slot holding an RSA key needs a new key pair " +
 			"generated as ECCP256 before it can authorise anything here")
 
 	default:
 		return "", nil, fmt.Errorf("pkcs11: this key's CKA_KEY_TYPE is 0x%X, which is neither "+
-			"CKK_EC nor CKK_EC_EDWARDS; Farrier carries ed25519 and ecdsa-p256 only", keyType)
+			"CKK_EC nor CKK_EC_EDWARDS; HostSeal carries ed25519 and ecdsa-p256 only", keyType)
 	}
 }
 

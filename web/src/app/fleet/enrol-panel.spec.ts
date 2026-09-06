@@ -13,7 +13,7 @@ function instructions(partial: Partial<EnrolmentInstructions> = {}): EnrolmentIn
     agentUrlIsAGuess: false,
     caCertificatePath: '/api/v1/ca.crt',
     caFingerprint: 'C0:62:73:A0:FD:3C:25:86:BE:F7:7F:0E:08:66:72:C0:F6:E3:AF:3B:A4:94:FB:2A:D9:BF:CC:1D:C5:8E:15:61',
-    aptUrl: 'https://farrier.tools/apt',
+    aptUrl: 'https://hostseal.io/apt',
     ...partial,
   };
 }
@@ -44,7 +44,7 @@ interface PanelInternals {
  */
 function render(
   details: EnrolmentInstructions,
-  pageBase = 'https://farrier.example.org/',
+  pageBase = 'https://hostseal.example.org/',
 ): ComponentFixture<EnrolPanel> {
   TestBed.resetTestingModule();
   TestBed.configureTestingModule({
@@ -95,8 +95,8 @@ describe('EnrolPanel', () => {
   it('builds every command from the configured agent address', () => {
     const rendered = text(render(instructions()).nativeElement);
 
-    expect(rendered).toContain('sudo farrier enroll --server https://agents.example.org');
-    expect(rendered).toContain('https://farrier.tools/apt/farrier.sources');
+    expect(rendered).toContain('sudo hostseal enroll --server https://agents.example.org');
+    expect(rendered).toContain('https://hostseal.io/apt/hostseal.sources');
     expect(rendered).not.toContain('this-control-plane');
   });
 
@@ -113,7 +113,7 @@ describe('EnrolPanel', () => {
   it('fetches the certificate from the interface address, not the agent address', () => {
     const rendered = text(render(instructions()).nativeElement);
 
-    expect(rendered).toContain('https://farrier.example.org/api/v1/ca.crt');
+    expect(rendered).toContain('https://hostseal.example.org/api/v1/ca.crt');
     expect(rendered).not.toContain('https://agents.example.org/api/v1/ca.crt');
   });
 
@@ -127,7 +127,7 @@ describe('EnrolPanel', () => {
    */
   it('warns when the certificate would be fetched from the name it authenticates', () => {
     const shared = text(
-      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org/')
+      render(instructions({ agentUrl: 'https://hostseal.example.org' }), 'https://hostseal.example.org/')
         .nativeElement,
     );
     expect(shared).toContain('unable to get local issuer certificate');
@@ -147,7 +147,7 @@ describe('EnrolPanel', () => {
    */
   it('pairs an unverified fetch with a fingerprint check that fails closed', () => {
     const rendered = text(
-      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org/')
+      render(instructions({ agentUrl: 'https://hostseal.example.org' }), 'https://hostseal.example.org/')
         .nativeElement,
     );
 
@@ -166,7 +166,7 @@ describe('EnrolPanel', () => {
     const rendered = text(render(instructions()).nativeElement);
 
     expect(rendered).not.toContain('curl -fsSLk');
-    expect(rendered).toContain('curl -fsSL https://farrier.example.org/api/v1/ca.crt');
+    expect(rendered).toContain('curl -fsSL https://hostseal.example.org/api/v1/ca.crt');
   });
 
   /**
@@ -179,12 +179,12 @@ describe('EnrolPanel', () => {
    */
   it('says so when the agent address is a guess', () => {
     const guessed = text(
-      render(instructions({ agentUrl: 'https://farrier.example.org', agentUrlIsAGuess: true })).nativeElement,
+      render(instructions({ agentUrl: 'https://hostseal.example.org', agentUrlIsAGuess: true })).nativeElement,
     );
-    expect(guessed).toContain('FARRIER_AGENT_URL');
+    expect(guessed).toContain('HOSTSEAL_AGENT_URL');
 
     const configured = text(render(instructions()).nativeElement);
-    expect(configured).not.toContain('FARRIER_AGENT_URL');
+    expect(configured).not.toContain('HOSTSEAL_AGENT_URL');
   });
 
   /**
@@ -217,7 +217,7 @@ describe('EnrolPanel', () => {
    */
   it('installs the CA certificate with an explicit owner and mode', () => {
     const rendered = text(render(instructions()).nativeElement);
-    expect(rendered).toContain('/etc/farrier/server-ca.crt');
+    expect(rendered).toContain('/etc/hostseal/server-ca.crt');
     expect(rendered).toContain('-o root -g root -m 0644');
   });
   /**
@@ -230,7 +230,7 @@ describe('EnrolPanel', () => {
    */
   it('separates a fingerprint mismatch from a failed installation', () => {
     const command = text(
-      render(instructions({ agentUrl: 'https://farrier.example.org' }), 'https://farrier.example.org/')
+      render(instructions({ agentUrl: 'https://hostseal.example.org' }), 'https://hostseal.example.org/')
         .nativeElement,
     );
 
@@ -251,13 +251,13 @@ describe('EnrolPanel', () => {
   it('compares origins, and keeps the path a control plane is published under', () => {
     const prefixed = text(
       render(
-        instructions({ agentUrl: 'https://farrier.example.org/control' }),
-        'https://farrier.example.org/control/',
+        instructions({ agentUrl: 'https://hostseal.example.org/control' }),
+        'https://hostseal.example.org/control/',
       ).nativeElement,
     );
 
     expect(prefixed).toContain('unable to get local issuer certificate');
-    expect(prefixed).toContain('https://farrier.example.org/control/api/v1/ca.crt');
+    expect(prefixed).toContain('https://hostseal.example.org/control/api/v1/ca.crt');
   });
 
   /**
@@ -268,9 +268,9 @@ describe('EnrolPanel', () => {
    */
   it('keeps the interface path when the fetch can be verified', () => {
     const rendered = text(
-      render(instructions(), 'https://farrier.example.org/control/').nativeElement,
+      render(instructions(), 'https://hostseal.example.org/control/').nativeElement,
     );
 
-    expect(rendered).toContain('curl -fsSL https://farrier.example.org/control/api/v1/ca.crt');
+    expect(rendered).toContain('curl -fsSL https://hostseal.example.org/control/api/v1/ca.crt');
   });
 });

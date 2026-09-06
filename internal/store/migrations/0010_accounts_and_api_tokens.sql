@@ -83,7 +83,7 @@ CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id, expires_at)
 -- A token per account, for the scripts the shared one used to serve.
 --
 -- It is a bearer token and that is not a contradiction with removing the other one. What was wrong
--- with `FARRIER_ADMIN_TOKEN` was not the word "bearer": it was one credential for a whole fleet, held
+-- with `HOSTSEAL_ADMIN_TOKEN` was not the word "bearer": it was one credential for a whole fleet, held
 -- in a flag, naming nobody in the audit trail, never expiring, and withdrawable only by restarting the
 -- control plane with a new one and telling everybody. This is a credential that belongs to a person,
 -- acts as that person, expires, and is revoked from a page in a second.
@@ -120,11 +120,11 @@ CREATE INDEX IF NOT EXISTS api_tokens_account ON api_tokens (account_id, created
 --
 -- The accounts policy has three ways in and each says something different:
 --
---   * a fleet's operator, through farrier.tenant, exactly as in 0009 and for every other tenant table;
---   * the installation's own administrators, through farrier.platform — a NULL tenant is unreachable
+--   * a fleet's operator, through hostseal.tenant, exactly as in 0009 and for every other tenant table;
+--   * the installation's own administrators, through hostseal.platform — a NULL tenant is unreachable
 --     from any fleet, because `NULL = 'anything'` is NULL and not true, so this is the only door to
 --     those rows;
---   * one named row, through farrier.resolve_key, for the two lookups that must happen before either
+--   * one named row, through hostseal.resolve_key, for the two lookups that must happen before either
 --     of the above is known: an address on a sign-in form, and an account id read out of a session.
 --
 -- The address is the one key here that is guessable, and 0009 wrote down what keeps that from being a
@@ -136,23 +136,23 @@ CREATE INDEX IF NOT EXISTS api_tokens_account ON api_tokens (account_id, created
 DROP POLICY IF EXISTS operator_accounts_tenant_isolation ON accounts;
 DROP POLICY IF EXISTS accounts_tenant_isolation ON accounts;
 CREATE POLICY accounts_tenant_isolation ON accounts
-    USING      (tenant_id = current_setting('farrier.tenant', true)
-                OR (tenant_id IS NULL AND current_setting('farrier.platform', true) = 'on')
-                OR email_key = current_setting('farrier.resolve_key', true)
-                OR id = current_setting('farrier.resolve_key', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true)
-                OR (tenant_id IS NULL AND current_setting('farrier.platform', true) = 'on'));
+    USING      (tenant_id = current_setting('hostseal.tenant', true)
+                OR (tenant_id IS NULL AND current_setting('hostseal.platform', true) = 'on')
+                OR email_key = current_setting('hostseal.resolve_key', true)
+                OR id = current_setting('hostseal.resolve_key', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true)
+                OR (tenant_id IS NULL AND current_setting('hostseal.platform', true) = 'on'));
 
 -- A credential is reachable by its own hash, or through the account that owns it. Nothing else.
 --
 -- The second half is a subquery on purpose, and it is the difference between a boundary the database
--- holds and one it merely records. The obvious spelling is a farrier.account session setting compared
+-- holds and one it merely records. The obvious spelling is a hostseal.account session setting compared
 -- against account_id — but the value in such a setting is one the caller picked, so a request naming
 -- somebody else's account id would be handed their sessions by the very policy whose job was to refuse
 -- it. The subquery asks the question that actually matters instead: *can this transaction see that
 -- account?* PostgreSQL applies row-level security to a table referenced inside a policy expression, so
--- the answer comes from the accounts policy above — a fleet's rows through farrier.tenant, the
--- installation's own through farrier.platform, and no way to reach across either. A session is visible
+-- the answer comes from the accounts policy above — a fleet's rows through hostseal.tenant, the
+-- installation's own through hostseal.platform, and no way to reach across either. A session is visible
 -- exactly when its owner is, an insert is allowed exactly when its owner is, and a method written later
 -- that forgets to check inherits both without knowing it.
 --
@@ -160,7 +160,7 @@ CREATE POLICY accounts_tenant_isolation ON accounts
 -- question nothing has a reason to ask.
 DROP POLICY IF EXISTS sessions_account_isolation ON sessions;
 CREATE POLICY sessions_account_isolation ON sessions
-    USING      (token_hash = current_setting('farrier.resolve_key', true)
+    USING      (token_hash = current_setting('hostseal.resolve_key', true)
                 OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = sessions.account_id))
     WITH CHECK (EXISTS (SELECT 1 FROM accounts a WHERE a.id = sessions.account_id));
 
@@ -169,6 +169,6 @@ ALTER TABLE api_tokens FORCE  ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS api_tokens_account_isolation ON api_tokens;
 CREATE POLICY api_tokens_account_isolation ON api_tokens
-    USING      (hash = current_setting('farrier.resolve_key', true)
+    USING      (hash = current_setting('hostseal.resolve_key', true)
                 OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = api_tokens.account_id))
     WITH CHECK (EXISTS (SELECT 1 FROM accounts a WHERE a.id = api_tokens.account_id));

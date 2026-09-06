@@ -1,4 +1,4 @@
-// Package winapi is the only place in Farrier that calls the Windows API.
+// Package winapi is the only place in HostSeal that calls the Windows API.
 //
 // It is the Windows counterpart of internal/run's role rather than of its mechanism. internal/run
 // concentrates process execution so that "no code path leads from a network message to a shell" can be
@@ -13,7 +13,7 @@
 // CreateProcessAsUser, and no COM: `TestGuaranteeWinapiStartsNoProcess` asserts it over the AST, and
 // the agent's one process start on Windows goes through internal/run to the update-scan binary exactly
 // as it goes through internal/run to apt-get on Linux. COM lives in internal/wua, behind its own
-// chokepoint and its own tests, and is reachable only from cmd/farrier-update-scan.
+// chokepoint and its own tests, and is reachable only from cmd/hostseal-update-scan.
 //
 // Everything is read-only. There is no function here that changes the host: no StartService, no
 // ControlService, no InitiateSystemShutdown, no registry write. That is not an omission to be filled in
@@ -26,7 +26,7 @@
 // file holding an actual call carries //go:build windows.
 package winapi
 
-// SupportedBuilds are the Windows Server builds a Farrier agent supports.
+// SupportedBuilds are the Windows Server builds a HostSeal agent supports.
 //
 // The rule is the one README.md already states for Ubuntu and Debian — the releases in standard support
 // — applied to a different vendor's calendar: Server 2019 (17763), 2022 (20348) and 2025 (26100).

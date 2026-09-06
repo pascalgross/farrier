@@ -8,7 +8,7 @@ import (
 // ConnectionRole reports the database role this store connects as, and whether it can see through
 // row-level security.
 //
-// It exists so that farrier-server can refuse to start on a role that would make tenant isolation a
+// It exists so that hostseal-server can refuse to start on a role that would make tenant isolation a
 // no-op. PostgreSQL exempts two kinds of role from every policy — a superuser, and one with BYPASSRLS —
 // and the exemption is total: the policies are still in the schema, the predicates are still in the
 // queries, and every query returns every tenant's rows anyway. There is no symptom. A control plane

@@ -17,7 +17,7 @@
 //
 // Accounts reaches internal/store, which is why this package does. That is a property of local accounts
 // rather than of the seam — an OIDC implementation would reach an issuer instead — and nothing on a
-// managed host links any of it: only cmd/farrier-server and internal/server import this package.
+// managed host links any of it: only cmd/hostseal-server and internal/server import this package.
 //
 // It is worth being explicit that this is **not** a boundary the guarantee in docs/SECURITY.md rests
 // on. A compromised administrator account is inside that threat model by construction — the guarantee
@@ -100,7 +100,7 @@ type Identity struct {
 	// Platform reports a platform administrator: the installation's operator rather than a customer's.
 	//
 	// It carries no tenant and is refused by every route that reaches tenant data. That separation is
-	// the point rather than a convenience — running Farrier for other people should not require being
+	// the point rather than a convenience — running HostSeal for other people should not require being
 	// able to read their fleets, and a role that could do both would make "the hoster cannot see your
 	// hosts" a promise about restraint instead of about routing.
 	Platform bool

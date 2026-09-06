@@ -13,7 +13,7 @@ import (
 // over a canonical payload, and cannot learn — or care — which backend produced it. Adding a backend is
 // therefore purely client-side and cannot widen the agent's attack surface by a single branch.
 //
-// This is the one place in Farrier where an open-ended plugin-shaped list is acceptable, and the reason
+// This is the one place in HostSeal where an open-ended plugin-shaped list is acceptable, and the reason
 // is worth stating next to the interface rather than only in docs/EXTENDING.md: everything that runs on
 // a managed host is compile-time closed, and this runs on the operator's own machine.
 //
@@ -22,7 +22,7 @@ import (
 // this is the wrong one — a comment on the seam is what an editor shows a reader who never opens the
 // document, which makes a stale copy here worse than no copy at all.
 //
-// The rule that governs the set does belong here: a backend ships only when `farrier sign` can exercise
+// The rule that governs the set does belong here: a backend ships only when `hostseal sign` can exercise
 // it end to end, because untested code in the one path where being wrong is unrecoverable is worse than
 // an absent backend. And no token vendor is hard-coded anywhere — a PKCS#11 key is named by an RFC 7512
 // URI and each cloud gets a scheme — so the set grows without this package ever learning a vendor's

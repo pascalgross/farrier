@@ -55,10 +55,10 @@ import {
  * It is exported because the live event feed reads its stream with `fetch` rather than through this
  * service, and a header written twice is a header that will one day be written differently.
  */
-export const SESSION_HEADER = 'X-Farrier-Session';
+export const SESSION_HEADER = 'X-HostSeal-Session';
 
 /**
- * Talks to the Farrier control plane's administrative API.
+ * Talks to the HostSeal control plane's administrative API.
  *
  * It is the only place in the application that knows a URL or a header. Components take an
  * `Observable` and render it, which means a change to how operators authenticate — a session cookie, an
@@ -78,7 +78,7 @@ export class ApiService {
    * `SESSION_HEADER` is what proves the request came from this origin rather than from a page that
    * merely caused a browser to make it.
    *
-   * A script authenticates with `Authorization: Bearer frr_…`, minted from the account page. That path
+   * A script authenticates with `Authorization: Bearer hsl_…`, minted from the account page. That path
    * deliberately does not exist in this file: a browser that could send one would be a browser that
    * had a bearer token somewhere a script could reach.
    */
@@ -216,7 +216,7 @@ export class ApiService {
    * Deletes a fleet and everything belonging to it.
    *
    * Hosts, certificates, enrolment tokens, jobs, results and accounts. It does not reach the machines
-   * — nothing in Farrier does — so their agents keep running on their own local policy and are refused
+   * — nothing in HostSeal does — so their agents keep running on their own local policy and are refused
    * at the next request as an unknown certificate.
    */
   deleteTenant(id: string): Observable<unknown> {
@@ -256,7 +256,7 @@ export class ApiService {
   /**
    * Fetches the complete intent catalogue this control plane knows.
    *
-   * The UI shows it in full, including the permanently refused list, because the claim Farrier makes is
+   * The UI shows it in full, including the permanently refused list, because the claim HostSeal makes is
    * about that set being small and closed — and a claim an operator can check from the running system
    * in one screen is worth more than the same claim in a README.
    */
@@ -452,7 +452,7 @@ export class ApiService {
    *
    * The response is a credential — it usually carries a freshly minted enrolment token — so it is
    * shown once and nothing stores it, here or on the server. There is deliberately no method that
-   * would *deliver* the result to a host: Farrier is not in the delivery path, and a control that
+   * would *deliver* the result to a host: HostSeal is not in the delivery path, and a control that
    * implied otherwise would be Tier 3, which is never built.
    */
   renderTemplate(name: string, request: RenderTemplateRequest): Observable<RenderedTemplate> {

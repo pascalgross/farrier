@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // WallboardPollSeconds is how often a screen should come back for a new summary.
@@ -59,7 +59,7 @@ const (
 	// reasonNeverSeen is an enrolled host that has never reported at all.
 	reasonNeverSeen = "never_seen"
 
-	// reasonPaused is a host carrying /etc/farrier/paused.
+	// reasonPaused is a host carrying /etc/hostseal/paused.
 	reasonPaused = "paused"
 
 	// reasonFactsUnknown is a host whose last report cannot answer the questions this screen asks.

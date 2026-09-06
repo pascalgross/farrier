@@ -20,7 +20,7 @@ const maxParamsBytes = 8 << 10
 //
 // It is written here, once, rather than at each call site, because the value of a constrained
 // parameter comes entirely from the constraint being unavoidable. The alternation is limited to the
-// three unit types Farrier ever acts on; .mount, .swap and .device are excluded because acting on them
+// three unit types HostSeal ever acts on; .mount, .swap and .device are excluded because acting on them
 // is not something this product does, and an allowlist that includes unused entries is not an
 // allowlist.
 var unitPattern = regexp.MustCompile(`^[a-zA-Z0-9@._-]+\.(service|socket|timer)$`)
@@ -58,7 +58,7 @@ type Params interface {
 
 	// Describe renders the parameters as one human-readable line.
 	//
-	// It exists for farrier sign, which must show an operator what they are about to authorise
+	// It exists for hostseal sign, which must show an operator what they are about to authorise
 	// without contacting the server. That rendering has to come from the same typed value the agent
 	// will act on; a description supplied alongside the job would let a compromised control plane
 	// display one operation and have another signed.
@@ -110,7 +110,7 @@ func (p UnitParams) sealed() {}
 // ApplyParams carries the options of an update-application intent.
 //
 // RebootIfRequired is a request, not an instruction: the root helper still consults
-// /etc/farrier/policy.toml and will decline to reboot a host whose policy forbids it or whose
+// /etc/hostseal/policy.toml and will decline to reboot a host whose policy forbids it or whose
 // maintenance window has closed. It exists so an operator can express "and finish the job" in one
 // authorisation rather than having to sign a second one at an hour nobody wants to be awake for.
 //

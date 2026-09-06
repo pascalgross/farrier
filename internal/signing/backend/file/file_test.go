@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // newSigner generates a key file in a temporary directory and returns the unlocked signer.
@@ -136,7 +136,7 @@ func TestKeyFileIsNotWorldReadable(t *testing.T) {
 
 // TestInspectReadsThePublicHalfWithoutThePassphrase covers the setup-time convenience.
 //
-// It exists so `farrier key show` can print a trusted-signers line for a key the operator cannot
+// It exists so `hostseal key show` can print a trusted-signers line for a key the operator cannot
 // currently unlock — which is the situation somebody is in while setting up a host with the token
 // somewhere else.
 func TestInspectReadsThePublicHalfWithoutThePassphrase(t *testing.T) {

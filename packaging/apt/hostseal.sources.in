@@ -1,0 +1,18 @@
+# HostSeal APT repository, deb822 format.
+#
+# This file is installed at /etc/apt/sources.list.d/hostseal.sources. It is host-facing, so it explains
+# only what a person reading it on their own machine needs: why the key is named here rather than added
+# to the system keyring. The choice of URL is a maintainer decision and is documented in
+# packaging/README.md, where the person making it will be — a host is not where that argument belongs,
+# and the placeholder below is substituted on the URIs line only, so this comment stays true after it.
+#
+# Signed-By names an explicit keyring, so the HostSeal signing key is trusted for the HostSeal repository
+# and for nothing else. apt-key is never used: it installs a key trusted for every repository on the
+# system, which turns one compromised project into root on the machine.
+
+Types: deb
+URIs: @@APT_URL@@
+Suites: stable
+Components: main
+Architectures: amd64 arm64
+Signed-By: /usr/share/keyrings/hostseal-archive-keyring.gpg

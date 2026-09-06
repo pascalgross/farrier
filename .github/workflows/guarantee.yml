@@ -40,18 +40,18 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: farrier_test
-          POSTGRES_PASSWORD: farrier_test
-          POSTGRES_DB: farrier_test
+          POSTGRES_USER: hostseal_test
+          POSTGRES_PASSWORD: hostseal_test
+          POSTGRES_DB: hostseal_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U farrier_test"
+          --health-cmd "pg_isready -U hostseal_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      FARRIER_TEST_DATABASE_URL: postgres://farrier_app:farrier_app@127.0.0.1:5432/farrier_app?sslmode=disable
+      HOSTSEAL_TEST_DATABASE_URL: postgres://hostseal_app:hostseal_app@127.0.0.1:5432/hostseal_app?sslmode=disable
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -73,13 +73,13 @@ jobs:
         # operator to do, which means CI now runs against the documented production arrangement rather
         # than a more privileged one.
         env:
-          PGPASSWORD: farrier_test
+          PGPASSWORD: hostseal_test
         run: |
-          psql -h 127.0.0.1 -U farrier_test -d farrier_test -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE farrier_app LOGIN PASSWORD 'farrier_app';
-          CREATE DATABASE farrier_app OWNER farrier_app;
+          psql -h 127.0.0.1 -U hostseal_test -d hostseal_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE hostseal_app LOGIN PASSWORD 'hostseal_app';
+          CREATE DATABASE hostseal_app OWNER hostseal_app;
           SQL
-          PGPASSWORD=farrier_app psql -h 127.0.0.1 -U farrier_app -d farrier_app -tAc \
+          PGPASSWORD=hostseal_app psql -h 127.0.0.1 -U hostseal_app -d hostseal_app -tAc \
             'SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user;' \
             | grep -qx f
 
@@ -118,8 +118,8 @@ jobs:
         # catalogue had drifted from the document would make the document a description of an older
         # version, which for this particular document is worse than having none.
         run: |
-          go build -o /tmp/farrier-server ./cmd/farrier-server
-          /tmp/farrier-server catalogue > /tmp/catalogue.txt
+          go build -o /tmp/hostseal-server ./cmd/hostseal-server
+          /tmp/hostseal-server catalogue > /tmp/catalogue.txt
           cat /tmp/catalogue.txt
           for intent in facts.collect packages.listUpgradable services.list reboot.checkRequired \
                         packages.applySecurity packages.applyAll service.start service.stop \
@@ -151,7 +151,7 @@ jobs:
         run: |
           set -eu
           cat > "$RUNNER_TEMP/guarantee.txt" <<'PARAGRAPH'
-          An attacker who fully owns the Farrier control plane, its database, and an administrator account still cannot run arbitrary code on any **enrolled** host, cannot exceed any host's local policy, and cannot reboot or stop services on hosts whose policy forbids it.
+          An attacker who fully owns the HostSeal control plane, its database, and an administrator account still cannot run arbitrary code on any **enrolled** host, cannot exceed any host's local policy, and cannot reboot or stop services on hosts whose policy forbids it.
           PARAGRAPH
           cat > "$RUNNER_TEMP/exception.txt" <<'PARAGRAPH'
           A host **being enrolled** applies, at most once, the bootstrap template its operator named on the command line — shown in full before it runs, signed by a key from that host's own `trusted-signers`, and recorded permanently on the host.

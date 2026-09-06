@@ -1,7 +1,7 @@
 // Package prompt reads secrets and answers from a terminal, for the two commands that need them.
 //
-// It exists because both binaries now ask: `farrier` for the passphrase that unlocks a signing key, and
-// `farrier-server accounts` for an operator's password. The alternative was a second copy of the shared
+// It exists because both binaries now ask: `hostseal` for the passphrase that unlocks a signing key, and
+// `hostseal-server accounts` for an operator's password. The alternative was a second copy of the shared
 // reader below, and a second copy is the wrong thing to have here specifically — the bug it exists to
 // prevent is silent, was diagnosed once already, and would be diagnosed again from scratch.
 //

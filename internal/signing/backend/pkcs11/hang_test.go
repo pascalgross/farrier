@@ -12,7 +12,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // blockingToken builds a Signer over a fake module whose C_Sign blocks until it is released.

@@ -3,14 +3,14 @@
 #
 # An APT repository is nothing but dists/, pool/, Release and InRelease. GitHub Packages has no APT
 # registry, but Pages serves a static tree perfectly well within its limits (roughly 1 GB per file,
-# 100 GB of bandwidth a month, public repositories only), and a Farrier agent .deb is a few megabytes.
+# 100 GB of bandwidth a month, public repositories only), and a HostSeal agent .deb is a few megabytes.
 #
 # One suite, "stable", covers every supported release. The agent is a static Go binary with no
 # distribution-specific dependencies, so per-codename suites would be five copies of the same file and
 # five chances for one of them to go stale.
 #
 # Usage:
-#   FARRIER_APT_URL=https://apt.example.org GPG_KEY_ID=ABCD1234 ./mkapt.sh <deb-dir> <output-dir>
+#   HOSTSEAL_APT_URL=https://apt.example.org GPG_KEY_ID=ABCD1234 ./mkapt.sh <deb-dir> <output-dir>
 #
 # Signing is done with the project GPG key. When GPG_KEY_ID is unset the tree is still built and
 # checksummed but left unsigned, which is what CI does to prove the mechanism on every pull request
@@ -21,7 +21,7 @@ DEB_DIR=${1:?usage: mkapt.sh <deb-dir> <output-dir>}
 OUT_DIR=${2:?usage: mkapt.sh <deb-dir> <output-dir>}
 SUITE=${SUITE:-stable}
 COMPONENT=${COMPONENT:-main}
-ORIGIN=${ORIGIN:-Farrier}
+ORIGIN=${ORIGIN:-HostSeal}
 ARCHES=${ARCHES:-amd64 arm64}
 
 command -v apt-ftparchive >/dev/null 2>&1 || {
@@ -30,7 +30,7 @@ command -v apt-ftparchive >/dev/null 2>&1 || {
 }
 
 rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR/pool/$COMPONENT/f/farrier-agent"
+mkdir -p "$OUT_DIR/pool/$COMPONENT/f/hostseal-agent"
 
 shopt -s nullglob
 debs=("$DEB_DIR"/*.deb)
@@ -38,7 +38,7 @@ if [ ${#debs[@]} -eq 0 ]; then
 	echo "mkapt: no .deb files in $DEB_DIR" >&2
 	exit 1
 fi
-cp "${debs[@]}" "$OUT_DIR/pool/$COMPONENT/f/farrier-agent/"
+cp "${debs[@]}" "$OUT_DIR/pool/$COMPONENT/f/hostseal-agent/"
 
 for arch in $ARCHES; do
 	mkdir -p "$OUT_DIR/dists/$SUITE/$COMPONENT/binary-$arch"
@@ -73,7 +73,7 @@ done
 		-o "APT::FTPArchive::Release::Codename=$SUITE" \
 		-o "APT::FTPArchive::Release::Components=$COMPONENT" \
 		-o "APT::FTPArchive::Release::Architectures=$ARCHES" \
-		-o "APT::FTPArchive::Release::Description=Farrier agent packages for Ubuntu and Debian" \
+		-o "APT::FTPArchive::Release::Description=HostSeal agent packages for Ubuntu and Debian" \
 		release . > Release.tmp
 	mv Release.tmp Release
 )
@@ -84,26 +84,26 @@ if [ -n "${GPG_KEY_ID:-}" ]; then
 		gpg --batch --yes --default-key "$GPG_KEY_ID" --clearsign -o InRelease Release
 		gpg --batch --yes --default-key "$GPG_KEY_ID" -abs -o Release.gpg Release
 	)
-	gpg --export "$GPG_KEY_ID" > "$OUT_DIR/farrier-archive-keyring.gpg"
-	gpg --export --armor "$GPG_KEY_ID" > "$OUT_DIR/farrier-archive-keyring.asc"
+	gpg --export "$GPG_KEY_ID" > "$OUT_DIR/hostseal-archive-keyring.gpg"
+	gpg --export --armor "$GPG_KEY_ID" > "$OUT_DIR/hostseal-archive-keyring.asc"
 	echo "mkapt: signed with $GPG_KEY_ID"
 else
 	echo "mkapt: GPG_KEY_ID unset; repository built unsigned (CI mechanism check only)" >&2
 fi
 
-if [ -n "${FARRIER_APT_URL:-}" ]; then
+if [ -n "${HOSTSEAL_APT_URL:-}" ]; then
 	# Anchored to the URIs line. An unanchored substitution also rewrites the placeholder inside the
 	# explanatory comment at the top of the template, which then reads as though the decision had been
 	# made rather than substituted.
-	sed "/^URIs:/ s|@@APT_URL@@|$FARRIER_APT_URL|" "$(dirname "$0")/farrier.sources.in" \
-		> "$OUT_DIR/farrier.sources"
-	echo "mkapt: wrote farrier.sources for $FARRIER_APT_URL"
+	sed "/^URIs:/ s|@@APT_URL@@|$HOSTSEAL_APT_URL|" "$(dirname "$0")/hostseal.sources.in" \
+		> "$OUT_DIR/hostseal.sources"
+	echo "mkapt: wrote hostseal.sources for $HOSTSEAL_APT_URL"
 else
-	echo "mkapt: FARRIER_APT_URL unset; farrier.sources not generated" >&2
+	echo "mkapt: HOSTSEAL_APT_URL unset; hostseal.sources not generated" >&2
 fi
 
 # The tree root gets an index.html, because the repository root is a URL like any other: it is printed
-# in farrier.sources, in the install instructions and in every release, so sooner or later somebody
+# in hostseal.sources, in the install instructions and in every release, so sooner or later somebody
 # pastes it into a browser. A static host answers that with a 404 — GitHub Pages does not list
 # directories — and a 404 at the root of a package repository is indistinguishable from a repository
 # that is genuinely broken, which is an expensive thing to have to disprove while a fleet is waiting
@@ -122,18 +122,18 @@ html_escape() {
 	printf '%s' "${1-}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
 }
 
-apt_url_html=$(html_escape "${FARRIER_APT_URL:-}")
+apt_url_html=$(html_escape "${HOSTSEAL_APT_URL:-}")
 
 # What the page may point at is what was actually written, which is not the same on every run: an
-# unsigned tree has no InRelease and no keyring, and a tree built without a URL has no farrier.sources.
+# unsigned tree has no InRelease and no keyring, and a tree built without a URL has no hostseal.sources.
 # A generated page that links to all of them regardless would advertise a repository more complete than
 # the one it sits in — the failure this script already refuses to produce for apt, in HTML.
 if [ -n "${GPG_KEY_ID:-}" ]; then
 	signing_row="<tr><th scope=\"row\">Signing key</th><td><code>$(html_escape "$GPG_KEY_ID")</code></td></tr>"
 	signed_items="<li><a href=\"dists/$SUITE/InRelease\">dists/$SUITE/InRelease</a> — the signed index</li>
 <li><a href=\"dists/$SUITE/Release.gpg\">dists/$SUITE/Release.gpg</a> — the detached signature</li>
-<li><a href=\"farrier-archive-keyring.gpg\">farrier-archive-keyring.gpg</a>
-    (<a href=\"farrier-archive-keyring.asc\">armoured</a>) — the archive signing key</li>"
+<li><a href=\"hostseal-archive-keyring.gpg\">hostseal-archive-keyring.gpg</a>
+    (<a href=\"hostseal-archive-keyring.asc\">armoured</a>) — the archive signing key</li>"
 else
 	signing_row='<tr><th scope="row">Signing key</th><td>none — this tree was built unsigned</td></tr>'
 	signed_items=''
@@ -142,26 +142,26 @@ fi
 # Instructions need both halves: a URL to fetch from, and a keyring in the tree to install. An unsigned
 # tree has no keyring, so printing them anyway would send the reader to a 404 on the very first
 # command — the failure this page exists to prevent, reproduced inside it.
-if [ -n "${FARRIER_APT_URL:-}" ] && [ -n "${GPG_KEY_ID:-}" ]; then
-	install_block="<pre><code>curl -fsSL $apt_url_html/farrier-archive-keyring.gpg \\
-  | sudo tee /usr/share/keyrings/farrier-archive-keyring.gpg &gt; /dev/null
-curl -fsSL $apt_url_html/farrier.sources \\
-  | sudo tee /etc/apt/sources.list.d/farrier.sources &gt; /dev/null
-sudo apt-get update &amp;&amp; sudo apt-get install farrier-agent</code></pre>"
-elif [ -n "${FARRIER_APT_URL:-}" ]; then
+if [ -n "${HOSTSEAL_APT_URL:-}" ] && [ -n "${GPG_KEY_ID:-}" ]; then
+	install_block="<pre><code>curl -fsSL $apt_url_html/hostseal-archive-keyring.gpg \\
+  | sudo tee /usr/share/keyrings/hostseal-archive-keyring.gpg &gt; /dev/null
+curl -fsSL $apt_url_html/hostseal.sources \\
+  | sudo tee /etc/apt/sources.list.d/hostseal.sources &gt; /dev/null
+sudo apt-get update &amp;&amp; sudo apt-get install hostseal-agent</code></pre>"
+elif [ -n "${HOSTSEAL_APT_URL:-}" ]; then
 	install_block='<p>This tree is unsigned — built without a signing key, which is what the mechanism
 check on every pull request does. There is no keyring here to install and <code>apt</code> would
 refuse the repository, so the instructions a signed tree carries are omitted rather than printed for
 somebody to follow.</p>'
 else
-	install_block='<p>Built without <code>FARRIER_APT_URL</code>, so this tree carries no
-<code>farrier.sources</code> and no instructions naming a host it may not be served from.</p>'
+	install_block='<p>Built without <code>HOSTSEAL_APT_URL</code>, so this tree carries no
+<code>hostseal.sources</code> and no instructions naming a host it may not be served from.</p>'
 fi
 
-# farrier.sources is written whenever the URL is known, signed or not, so it is listed on that
+# hostseal.sources is written whenever the URL is known, signed or not, so it is listed on that
 # condition alone rather than alongside the instructions above.
-if [ -n "${FARRIER_APT_URL:-}" ]; then
-	sources_item='<li><a href="farrier.sources">farrier.sources</a> — the deb822 source, with
+if [ -n "${HOSTSEAL_APT_URL:-}" ]; then
+	sources_item='<li><a href="hostseal.sources">hostseal.sources</a> — the deb822 source, with
     <code>Signed-By:</code> naming that keyring and nothing wider</li>'
 else
 	sources_item=''
@@ -169,7 +169,7 @@ fi
 
 package_items=$(
 	cd "$OUT_DIR"
-	for deb in "pool/$COMPONENT/f/farrier-agent"/*.deb; do
+	for deb in "pool/$COMPONENT/f/hostseal-agent"/*.deb; do
 		printf '<li><a href="%s">%s</a></li>\n' "$deb" "${deb##*/}"
 	done
 )
@@ -180,7 +180,7 @@ cat > "$OUT_DIR/index.html" <<HTML
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Farrier APT repository</title>
+<title>HostSeal APT repository</title>
 <style>
 :root { color-scheme: light dark; --bg: #fbfaf8; --ink: #23201c; --soft: #5c554c;
         --rule: #e3ded6; --sunken: #f2efea; --accent: #9a5b2c; }
@@ -208,13 +208,13 @@ footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
 </style>
 </head>
 <body>
-<h1>Farrier APT repository</h1>
+<h1>HostSeal APT repository</h1>
 <p class="lede">This is a Debian package repository, not a page to read. Point
 <code>apt</code> at it rather than a browser.</p>
 
 <h2>Installing the agent</h2>
 $install_block
-<p>The agent installs with no keys in <code>/etc/farrier/trusted-signers</code> and a policy that
+<p>The agent installs with no keys in <code>/etc/hostseal/trusted-signers</code> and a policy that
 permits security updates and nothing else.</p>
 
 <h2>What this repository is</h2>
@@ -241,7 +241,7 @@ $package_items
 </ul>
 
 <footer>
-Built by <a href="https://github.com/pascalgross/farrier">Farrier</a>. Fleet management for Ubuntu and
+Built by <a href="https://github.com/pascalgross/hostseal">HostSeal</a>. Fleet management for Ubuntu and
 Debian servers, without a remote shell.
 </footer>
 </body>

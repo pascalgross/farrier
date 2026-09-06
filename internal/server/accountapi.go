@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/pascalgross/farrier/internal/auth"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/auth"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // MaxAccountRequestBytes bounds a request to the account routes.

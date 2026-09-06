@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/agent"
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/agent"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // listedEvent is the slice of an event row these tests read back.

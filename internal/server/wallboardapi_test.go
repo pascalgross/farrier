@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/server"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/server"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // wallboardFacts renders a facts document with the fields the wallboard reads.
@@ -351,7 +351,7 @@ func TestAFloodOfInventedKeysIsRefusedBeforeItAllocatesAnything(t *testing.T) {
 	// was answered 404 indefinitely, one bucket and one database transaction at a time.
 	var limited int
 	for i := range boardFloodAttempts {
-		key := "frb_" + string(h.tenant) + "." + fmt.Sprintf("%052d", i)
+		key := "hsb_" + string(h.tenant) + "." + fmt.Sprintf("%052d", i)
 		status, _ := h.shareJSON(t, key, http.MethodGet, "/api/v1/wallboard/public", nil)
 		if status == http.StatusTooManyRequests {
 			limited++
@@ -552,8 +552,8 @@ func TestThePublishedAndSignedInWallboardsAgree(t *testing.T) {
 
 // TestAWallboardKeyReachesOnlyItsOwnFleet is the tenant boundary as this credential meets it.
 //
-// The tenant travels inside the key, which is what lets the lookup run with farrier.tenant already set
-// and therefore what saves this table from needing a fifth farrier.resolve_key exemption. It is safe
+// The tenant travels inside the key, which is what lets the lookup run with hostseal.tenant already set
+// and therefore what saves this table from needing a fifth hostseal.resolve_key exemption. It is safe
 // because the digest covers the whole key: editing the tenant segment produces a string that hashes to
 // a value no row holds. This asserts the edit is refused rather than trusting the argument.
 func TestAWallboardKeyReachesOnlyItsOwnFleet(t *testing.T) {
@@ -778,7 +778,7 @@ func TestALinkIsShownOnceAndIsNotInTheList(t *testing.T) {
 	h := newHarness(t)
 
 	key := publishShare(t, h, "Once", "")
-	if !strings.HasPrefix(key, "frb_") {
+	if !strings.HasPrefix(key, "hsb_") {
 		t.Fatalf("a published key is %q, which a secret scanner cannot recognise", key)
 	}
 

@@ -9,7 +9,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/hostseal/internal/intent"
 )
 
 // ErrNoEndpoint reports an intent with no privileged route from the agent.
@@ -70,7 +70,7 @@ func (c *Client) Invoke(ctx context.Context, req Request) (Response, error) {
 // refusal proves the socket exists, that this process may connect to it, that systemd started the
 // helper as root, and that the helper answered. Proving all of that with an operation that cannot do
 // anything is the whole point.
-const ProbeIntent intent.Name = "farrier.unroutable.probe"
+const ProbeIntent intent.Name = "hostseal.unroutable.probe"
 
 // Probe reports whether a helper socket is reachable and answering.
 //

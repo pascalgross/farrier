@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/hostseal/internal/auth"
 )
 
 // browser is an HTTP client that keeps cookies, the way an operator's actually does.

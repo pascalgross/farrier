@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/run"
+	"github.com/pascalgross/hostseal/internal/run"
 )
 
 // instLine matches one "Inst" line of an apt-get simulation.

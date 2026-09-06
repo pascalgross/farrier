@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // sharedMachineID is one physical machine's identity, enrolled into both tenants below.
@@ -1428,7 +1428,7 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 
 	// The role has to be one the policies apply to. A superuser, or a role with BYPASSRLS, is exempt
 	// from every policy in the schema with no symptom whatsoever — so a suite run as one would pass
-	// this test while proving the opposite of what it claims. farrier-server refuses to start on such a
+	// this test while proving the opposite of what it claims. hostseal-server refuses to start on such a
 	// role for the same reason; here it is a failure rather than a skip, because a guarantee test that
 	// quietly opted out would be worse than none.
 	var role string
@@ -1440,7 +1440,7 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 	}
 	if superuser || bypass {
 		t.Fatalf("these tests connect as %q, which bypasses row-level security, so they cannot "+
-			"observe it. Run them as an ordinary role: CREATE ROLE farrier_test LOGIN; and grant it "+
+			"observe it. Run them as an ordinary role: CREATE ROLE hostseal_test LOGIN; and grant it "+
 			"the schema", role)
 	}
 
@@ -1548,7 +1548,7 @@ func TestGuaranteeRowLevelSecurityIsTheRuleNotThePredicate(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx,
-		`SELECT set_config('farrier.tenant', $1, true)`, string(alpha.Tenant())); err != nil {
+		`SELECT set_config('hostseal.tenant', $1, true)`, string(alpha.Tenant())); err != nil {
 		t.Fatalf("setting the tenant: %v", err)
 	}
 	_, err = tx.Exec(ctx,
@@ -1580,7 +1580,7 @@ func visibleAsTenant(ctx context.Context, pg *Postgres, tenant TenantID, table s
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `SELECT set_config('farrier.tenant', $1, true)`, string(tenant)); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('hostseal.tenant', $1, true)`, string(tenant)); err != nil {
 		return 0, 0, "", err
 	}
 	// No predicate, deliberately: no production query looks like this, and the answer has to be

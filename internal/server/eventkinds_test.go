@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // TestAnEventOutsideTheVocabularyIsRefusedRatherThanDelivered pins the closed set at the emit boundary.

@@ -22,7 +22,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `farrier-agent version` or `farrier-server version`.
+      description: Output of `hostseal-agent version` or `hostseal-server version`.
     validations:
       required: true
 
@@ -39,7 +39,7 @@ body:
     attributes:
       label: Journal
       description: |
-        `journalctl -u farrier-agent -n 200`, or the control plane's output. The agent logs JSON, so
+        `journalctl -u hostseal-agent -n 200`, or the control plane's output. The agent logs JSON, so
         paste it as-is rather than summarising — the field that turns out to matter is usually not the
         one that looked interesting.
       render: shell
@@ -49,6 +49,6 @@ body:
     attributes:
       label: The host's policy
       description: |
-        `farrier-agent policy check`. Most "it refused to do the thing" reports are the local policy
+        `hostseal-agent policy check`. Most "it refused to do the thing" reports are the local policy
         working correctly, and this is the fastest way to tell.
       render: shell

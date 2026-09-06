@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/pascalgross/farrier/internal/auth"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/auth"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // MaxWallboardRequestBytes bounds a share-publication request body.
@@ -460,7 +460,7 @@ func unlockProof(key string, share store.WallboardShare) string {
 // Named per share rather than once for the whole origin, so that an operator with two published boards
 // open in two tabs does not have each unlock evict the other's.
 func unlockCookieName(shareID string) string {
-	return "farrier_board_" + shareID
+	return "hostseal_board_" + shareID
 }
 
 // unlockCookie builds the credential a screen holds after it has proved a passphrase.

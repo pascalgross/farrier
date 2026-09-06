@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/auth"
+	"github.com/pascalgross/hostseal/internal/auth"
 )
 
 // MaxSessionRequestBytes bounds a sign-in request body.
@@ -102,7 +102,7 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 		// locked out of their own control plane is the commonest reason anybody reads it — and never
 		// the password.
 		slog.Info("sign-in refused", "email", auth.NormaliseEmail(req.Email), "source", auth.RequestSource(r))
-		w.Header().Set("WWW-Authenticate", `Bearer realm="farrier"`)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="hostseal"`)
 		writeError(w, http.StatusUnauthorized, "unauthenticated",
 			"that address and password do not match an account on this control plane")
 		return

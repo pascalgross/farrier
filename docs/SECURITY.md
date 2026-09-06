@@ -1,8 +1,8 @@
 # Security
 
-This document is the specification of Farrier's security posture. It is not marketing copy: every
+This document is the specification of HostSeal's security posture. It is not marketing copy: every
 claim below is either enforced by code with a test in the `guarantee` CI workflow, or explicitly
-marked as a boundary that Farrier does **not** defend.
+marked as a boundary that HostSeal does **not** defend.
 
 If you find a way to violate the guarantee in [§1](#1-the-guarantee), that is the most serious class
 of bug this project can have. See [§11](#11-reporting-a-vulnerability).
@@ -11,7 +11,7 @@ of bug this project can have. See [§11](#11-reporting-a-vulnerability).
 
 ## 1. The guarantee
 
-> An attacker who fully owns the Farrier control plane, its database, and an administrator account
+> An attacker who fully owns the HostSeal control plane, its database, and an administrator account
 > still cannot run arbitrary code on any **enrolled** host, cannot exceed any host's local policy, and
 > cannot reboot or stop services on hosts whose policy forbids it.
 >
@@ -24,12 +24,12 @@ Both paragraphs ship together, always. The second is the price of the Tier 2 boo
 worse than no guarantee, so the first paragraph is never quoted on its own — not in the README, not
 in a release announcement, not on a slide — because it reads better that way.
 
-Farrier competes with Landscape, Salt, Uyuni and Rudder on exactly one axis: all of them ship a remote
-execution channel, and Farrier does not. That absence is the product.
+HostSeal competes with Landscape, Salt, Uyuni and Rudder on exactly one axis: all of them ship a remote
+execution channel, and HostSeal does not. That absence is the product.
 
-Neither paragraph names an operating system, and neither will. Farrier manages Ubuntu and Debian today
+Neither paragraph names an operating system, and neither will. HostSeal manages Ubuntu and Debian today
 and ships no agent for anything else; where another platform cannot carry a mechanism at the strength
-Linux carries it, Farrier does less there rather than qualifying the sentence above.
+Linux carries it, HostSeal does less there rather than qualifying the sentence above.
 [§12](#12-windows-hosts) is where that is worked out for Windows, and it is a set of decisions rather
 than a description of shipped code.
 
@@ -43,7 +43,7 @@ property of three mechanisms, each of which is load-bearing on its own.
 ### 2.1 A closed intent catalogue
 
 The wire protocol carries an enumerated, typed operation — never a command string. `internal/intent`
-defines the complete set of things a Farrier job can be, as Go constants. There is no registry, no
+defines the complete set of things a HostSeal job can be, as Go constants. There is no registry, no
 plugin table, no configuration file that adds an intent, and no code path that leads from a network
 message to a shell.
 
@@ -66,9 +66,9 @@ string that escapes the unit-name pattern.
 
 ### 2.2 Local policy sovereignty
 
-Each host carries `/etc/farrier/policy.toml`, owned `root:root`, mode `0644`, shipped
+Each host carries `/etc/hostseal/policy.toml`, owned `root:root`, mode `0644`, shipped
 `config|noreplace` so package upgrades never overwrite a local edit. The agent runs as the unprivileged
-`farrier` user and **cannot write it**. No intent modifies it. There is no `policy.set` operation and
+`hostseal` user and **cannot write it**. No intent modifies it. There is no `policy.set` operation and
 there will not be one.
 
 Effective permission is always:
@@ -83,18 +83,18 @@ including the person who installed the control plane.
 
 **Enforcement lives in the root helper, not in the agent.** The agent's own policy check exists to save
 a round trip and to give a good error message. The check that matters runs as root, inside
-`/usr/libexec/farrier/*`, re-reading the root-owned policy file from disk on every invocation. That
+`/usr/libexec/hostseal/*`, re-reading the root-owned policy file from disk on every invocation. That
 placement is what makes the guarantee survive a *fully compromised agent process*: an attacker with
-arbitrary code execution as `farrier` still cannot exceed the policy, because the helper does not
+arbitrary code execution as `hostseal` still cannot exceed the policy, because the helper does not
 trust its caller.
 
 "Does not trust its caller" includes not taking the policy's location from it. The helpers accept no
-`--policy` flag: the path is the packaged constant, always. The agent can write `/var/lib/farrier`, so
+`--policy` flag: the path is the packaged constant, always. The agent can write `/var/lib/hostseal`, so
 a helper that read a caller-supplied path would enforce — carefully, as root — whatever policy the
 attacker had just written. Nor is there a field for one in the request that crosses the socket. A test
 in `internal/intent` parses each helper's source and fails if one grows such a flag.
 
-`systemctl stop farrier-agent` and the presence of `/etc/farrier/paused` are a kill switch that the
+`systemctl stop hostseal-agent` and the presence of `/etc/hostseal/paused` are a kill switch that the
 control plane cannot override. There is deliberately **no `agent.resume` intent** — an off switch that
 something else can flip back on is not an off switch.
 
@@ -105,10 +105,10 @@ more precisely, one it **cannot cause to be used**. The distinction did not matt
 backend was a file on a laptop, and it matters now that a key can live in a cloud key store: the
 control plane holds nothing there either, and if its own identity can call `Sign` on that key then it
 has the authority anyway. For the `kms` backend this is an IAM property of the deployment rather than
-anything Farrier can enforce, and it is stated as such in [§9](#9-what-farrier-does-not-defend-against)
+anything HostSeal can enforce, and it is stated as such in [§9](#9-what-hostseal-does-not-defend-against)
 and [§10](#10-hardening-notes-for-operators).
 
-The trust anchor is `/etc/farrier/trusted-signers` — **not the package**. It is root-owned,
+The trust anchor is `/etc/hostseal/trusted-signers` — **not the package**. It is root-owned,
 `config|noreplace`, and **empty by default**, so a freshly installed agent will execute nothing
 destructive until an administrator deliberately places a public key in it.
 
@@ -135,7 +135,7 @@ The catalogue is closed. Its current contents:
 
 ### Read-only — unprivileged, unsigned
 
-mTLS is sufficient authorisation. These run as the `farrier` user with no capabilities and read
+mTLS is sufficient authorisation. These run as the `hostseal` user with no capabilities and read
 nothing an unprivileged local user could not read.
 
 | Intent | What it does |
@@ -290,7 +290,7 @@ The agent makes exactly four calls plus a certificate renewal, documented in
 
 ### 4.2 mTLS
 
-A private CA is created at control-plane install time (`farrier-server ca init`). Agent certificates
+A private CA is created at control-plane install time (`hostseal-server ca init`). Agent certificates
 are host-scoped, valid 90 days, and auto-renewed at two-thirds of lifetime via `POST /agent/v1/renew`
 authenticated by the current certificate.
 
@@ -353,8 +353,8 @@ When the measured offset exceeds five minutes:
 
 ### 4.4 No VPN requirement
 
-Farrier will never require a VPN. The agent connects outbound, so there is no port to protect; and
-tunnel membership cannot prove host identity anyway, which is what mTLS is for. Running Farrier over
+HostSeal will never require a VPN. The agent connects outbound, so there is no port to protect; and
+tunnel membership cannot prove host identity anyway, which is what mTLS is for. Running HostSeal over
 an existing Tailscale or WireGuard network already works with zero additional code — the agent talks
 to a URL.
 
@@ -366,7 +366,7 @@ networks would be a substantially larger backdoor than the remote-exec channel t
 ### 4.5 Who the operator is
 
 Everybody who reaches the administrative API is an **account**, and `auth.Provider` is the seam. There
-is no shared credential and no way to configure one. `FARRIER_ADMIN_TOKEN` and `FARRIER_PLATFORM_TOKEN`
+is no shared credential and no way to configure one. `HOSTSEAL_ADMIN_TOKEN` and `HOSTSEAL_PLATFORM_TOKEN`
 were exactly that and have been removed rather than deprecated: one string for a whole fleet names
 nobody in the audit trail, cannot be taken from one person who has left, never expires, is changed only
 by restarting the control plane and telling everybody, and made the second-person rule below
@@ -385,9 +385,9 @@ an `HttpOnly`, `Secure`, `SameSite=Lax` cookie; only its SHA-256 is stored, so a
 set of live sessions. Two windows bound it and the credential dies at whichever comes first: twelve
 hours idle, restarting each time it is used, inside seven days absolute, measured from the sign-in and
 never extended. Both are checked against the control plane's own clock, like every other validity window
-in Farrier ([§4.3](#43-clock-skew)). Signing out deletes the row; so does deleting the account; and an operator
+in HostSeal ([§4.3](#43-clock-skew)). Signing out deletes the row; so does deleting the account; and an operator
 can end every session they hold, from any of them, in one request. A cookie without the
-`X-Farrier-Session` header authenticates nothing, which is the cross-site request forgery defence: a
+`X-HostSeal-Session` header authenticates nothing, which is the cross-site request forgery defence: a
 cross-site form post cannot set a header, and a cross-site fetch that sets one triggers a preflight this
 server does not answer.
 
@@ -403,7 +403,7 @@ holding matters as much as *who* they are. A token presented to `/api/v1/account
 and revoke tokens, change a password and end sessions — is refused with 403. A token that could issue
 another, with no expiry, would survive its own revocation.
 
-**Accounts are created on the machine**, with `farrier-server accounts`, and by no API at all. That is
+**Accounts are created on the machine**, with `hostseal-server accounts`, and by no API at all. That is
 [§5.3](#53-the-platform-administrator) applied rather than worked around: a platform credential must not
 be able to authenticate as a customer, so it is not given a route that would let it. Creating an account
 from a shell on the control plane adds no power to a role that §5.3 already concedes has the database
@@ -437,7 +437,7 @@ queue a reboot. So a share is a credential of its own kind. It reaches one fixed
 fleet, over one endpoint, and there is no route from it to a second thing.
 
 That is a shared bearer credential in a URL, which is exactly what [§4.5](#45-who-the-operator-is)
-removed, so the comparison is owed rather than avoided. `FARRIER_ADMIN_TOKEN` was refused on five
+removed, so the comparison is owed rather than avoided. `HOSTSEAL_ADMIN_TOKEN` was refused on five
 counts, and four of them are answered here. It could not be taken away from one person who had left; a
 share is withdrawn in one request, by deleting one row, and stops answering at the next poll — within
 fifteen seconds. It never expired; a share is given an expiry or it is not created, ninety days by
@@ -497,7 +497,7 @@ would drift behind, and somebody would eventually and reasonably reuse the riche
 that does not authenticate.
 
 **The key travels in the URL fragment.** A published link is
-`https://farrier.example/board#frb_<tenant>.<secret>`, and the page reads the fragment and sends it as
+`https://hostseal.example/board#hsb_<tenant>.<secret>`, and the page reads the fragment and sends it as
 an `Authorization: Bearer` header. A fragment is never transmitted, so the secret is absent from this
 control plane's access log, from a reverse proxy's log, from `Referer` on anything the page links to,
 and from the fetch a chat client's link-preview crawler makes when somebody pastes the link into a
@@ -510,11 +510,11 @@ reading.
 **The fleet's identifier is inside the key, and inside the digest.** That is what keeps this table out
 of [§5.2](#52-where-the-boundary-is-enforced)'s narrow exemption. Four tables have to be findable
 before the tenant is known, because finding them is *how* it becomes known, and each takes a read-only
-`farrier.resolve_key` disjunct admitting exactly the one row whose key the caller can already name. A
+`hostseal.resolve_key` disjunct admitting exactly the one row whose key the caller can already name. A
 fifth one, on a table reached by an unauthenticated request from the public internet, would be the
 widest of the set — and it is not needed: the server splits the key, opens a handle for the fleet the
 key names, and only then looks the secret up, so the lookup already runs inside a transaction that has
-set `farrier.tenant`. Naming the fleet in a credential a stranger holds is safe because the stored
+set `hostseal.tenant`. Naming the fleet in a credential a stranger holds is safe because the stored
 digest covers the *whole* key rather than its secret half: a key edited to name a neighbouring fleet
 hashes to a value no row holds, and is refused by the lookup before the tenant predicate and the
 row-level security policy are consulted at all. Both of those are still there, second and third. It is
@@ -561,7 +561,7 @@ no host, carries no intent, produces no job, and there is no route from one to a
 a fleet. The attacker §1 already concedes — the one who owns the control plane and its database — can
 publish a share, and could equally have read the same rows with `psql`; what that changes is the
 convenience of the crossing rather than its existence, and it is written down in
-[§9](#9-what-farrier-does-not-defend-against) rather than here.
+[§9](#9-what-hostseal-does-not-defend-against) rather than here.
 
 The limits, stated as limits rather than left to be inferred from what is not claimed:
 
@@ -580,7 +580,7 @@ The limits, stated as limits rather than left to be inferred from what is not cl
 
 ## 5. Tenants
 
-One control plane can serve many independent fleets. That is what makes hosting Farrier for other
+One control plane can serve many independent fleets. That is what makes hosting HostSeal for other
 people possible, and it introduces the only boundary in this document that is *not* enforced on the
 host: everything else here is something a machine checks about a job, and this is something the control
 plane checks about a request.
@@ -657,28 +657,28 @@ pointing at another's host is refused by the database rather than noticed in rev
 
 **A role that bypasses row-level security removes all of layer 3 with no symptom.** A superuser, or a
 role with `BYPASSRLS`, is exempt from every policy: the policies are still in the schema, the predicates
-are still in the queries, and every query returns every tenant's rows. `farrier-server` therefore checks
+are still in the queries, and every query returns every tenant's rows. `hostseal-server` therefore checks
 its own role at startup and **refuses to start** rather than serving many customers from one database
 with the boundary switched off.
 
 ### 5.3 The platform administrator
 
-Running an installation is a different job from reading what runs on it, and Farrier keeps them
+Running an installation is a different job from reading what runs on it, and HostSeal keeps them
 separate. A platform administrator can create, configure and delete tenants through `/api/v1/tenants`.
 They hold no tenant of their own, and every route that reaches a tenant's hosts or jobs refuses them.
 
-They are an account like anybody else — created with `farrier-server accounts add --platform`, signing
+They are an account like anybody else — created with `hostseal-server accounts add --platform`, signing
 in with an address and a password — and the only thing that distinguishes them is that their account
 row carries no tenant. That is a database fact rather than a flag: the row-level security policy on
-accounts admits a tenant's rows through `farrier.tenant` and the tenantless ones through
-`farrier.platform`, and `NULL = 'anything'` is `NULL` rather than true, so neither side can reach the
+accounts admits a tenant's rows through `hostseal.tenant` and the tenantless ones through
+`hostseal.platform`, and `NULL = 'anything'` is `NULL` rather than true, so neither side can reach the
 other. A row that claimed to be a platform administrator *and* named a fleet is not a state that exists
 to be refused; it is a state the schema cannot represent.
 
 It also cannot mint an operator credential. Issuing a fleet's credential belongs to the identity
 provider — `auth.Provider` is the seam for it — and a tenant API that handed out tokens would make the
 platform administrator able to authenticate as any customer, which is precisely the separation the role
-exists to keep. This is why a fleet's accounts are created with `farrier-server accounts`, on the
+exists to keep. This is why a fleet's accounts are created with `hostseal-server accounts`, on the
 machine, and by no route: see [§4.5](#45-who-the-operator-is).
 
 The interface it reaches is one screen: the fleets, their names, approval modes and webhooks, and the
@@ -720,7 +720,7 @@ it renders as a *healthy* one — counters at zero and an all-clear panel where 
 green screen in a corridor for a customer who left three weeks ago is the worst failure this screen
 has, because a green screen is the one nobody investigates.
 
-It does not reach the machines — nothing in Farrier does. Their agents keep running, keep applying
+It does not reach the machines — nothing in HostSeal does. Their agents keep running, keep applying
 their own local policy, and are refused at the next request as an unknown certificate. That is the
 correct end state for a customer who has left, and it is worth saying out loud that deleting a tenant
 does not uninstall anything.
@@ -729,24 +729,24 @@ does not uninstall anything.
 
 ## 6. Host privileges
 
-The agent runs as the `farrier` system user with **zero capabilities**, under a systemd unit hardened
-as shown in `packaging/farrier-agent.service`. Notably it sets `MemoryDenyWriteExecute=yes`, which is
+The agent runs as the `hostseal` system user with **zero capabilities**, under a systemd unit hardened
+as shown in `packaging/hostseal-agent.service`. Notably it sets `MemoryDenyWriteExecute=yes`, which is
 one of the reasons the agent is written in Go: any JIT runtime is incompatible with that setting, so
 choosing a JIT language would have silently cost this mitigation.
 
 Privileged work happens in exactly three root helpers:
 
 ```
-/usr/libexec/farrier/apply-updates
-/usr/libexec/farrier/restart-unit
-/usr/libexec/farrier/reboot-host
+/usr/libexec/hostseal/apply-updates
+/usr/libexec/hostseal/restart-unit
+/usr/libexec/hostseal/reboot-host
 ```
 
-Each helper re-reads and enforces `/etc/farrier/policy.toml` itself, as root, on every invocation. None
+Each helper re-reads and enforces `/etc/hostseal/policy.toml` itself, as root, on every invocation. None
 of them accepts a command to run, a path to execute, or a shell fragment.
 
-**The agent reaches them over a unix socket, not through `sudo`.** Nothing in Farrier is setuid and
-there is no `/etc/sudoers.d/farrier`. That is forced rather than chosen: with `NoNewPrivileges=yes` in
+**The agent reaches them over a unix socket, not through `sudo`.** Nothing in HostSeal is setuid and
+there is no `/etc/sudoers.d/hostseal`. That is forced rather than chosen: with `NoNewPrivileges=yes` in
 force, `execve` drops the setuid bit, so `sudo` cannot become root at all — and systemd *implies*
 `NoNewPrivileges=yes` from `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectClock`,
 `RestrictNamespaces`, `RestrictSUIDSGID`, `MemoryDenyWriteExecute`, `LockPersonality` and
@@ -754,14 +754,14 @@ force, `execve` drops the setuid bit, so `sudo` cannot become root at all — an
 most of this section.
 
 ```
-/run/farrier/apply-updates.sock   root:farrier 0660  → farrier-apply-updates@N.service (root)
-/run/farrier/restart-unit.sock    root:farrier 0660  → farrier-restart-unit@N.service  (root)
-/run/farrier/reboot-host.sock     root:farrier 0660  → farrier-reboot-host@N.service   (root)
+/run/hostseal/apply-updates.sock   root:hostseal 0660  → hostseal-apply-updates@N.service (root)
+/run/hostseal/restart-unit.sock    root:hostseal 0660  → hostseal-restart-unit@N.service  (root)
+/run/hostseal/reboot-host.sock     root:hostseal 0660  → hostseal-reboot-host@N.service   (root)
 ```
 
 Each socket is `Accept=yes`: systemd accepts the connection and starts one instance of one helper with
 the connection as its standard input. There is no listening socket inside a privileged process, no
-accept loop of Farrier's own, and **no resident root daemon** — a helper exists for exactly as long as
+accept loop of HostSeal's own, and **no resident root daemon** — a helper exists for exactly as long as
 one operation does.
 
 The three properties that made the sudoers entry safe are kept, and each is asserted by the guarantee
@@ -774,7 +774,7 @@ suite rather than reviewed for:
 2. **A caller names an intent, never a program.** The request carries an intent and a parameter object
    and has no field a path, a command or an argument vector could occupy — and the helper decodes the
    parameters again, itself, with the same catalogue decoder, on its own side of the boundary.
-3. **Authorisation is by identity the caller cannot forge.** The socket's mode names the `farrier`
+3. **Authorisation is by identity the caller cannot forge.** The socket's mode names the `hostseal`
    group; the helper additionally reads the peer's credentials with `SO_PEERCRED`, which the kernel
    records at connect time. Only the agent's own account and root are served.
 
@@ -791,12 +791,12 @@ section says so rather than leaving it to be discovered.
 
 That is a decision and not an oversight, and it follows from [§2.2](#22-local-policy-sovereignty). What
 survives a compromised agent is *policy*, not the signature: an attacker with code execution as
-`farrier` is in the `farrier` group, so they can reach the sockets and invoke any routed intent without
+`hostseal` is in the `hostseal` group, so they can reach the sockets and invoke any routed intent without
 one — and the helper still performs `min(request, policy)` against the root-owned file it read itself.
 A host whose policy forbids reboot does not reboot, whoever is asking and whatever they claim to hold.
 
 Moving the check into the helper would not close that. The signed payload binds a host id, and the
-host id lives in `/var/lib/farrier`, which the agent can write; a helper verifying a signature would be
+host id lives in `/var/lib/hostseal`, which the agent can write; a helper verifying a signature would be
 verifying it against an identity the attacker chose. It would also require `privsep.Request` to grow
 four fields, which is the property in point 2 above — a caller names an intent and never anything else
 — given up for a check that does not hold. `TestGuaranteeARequestCannotNameAProgram` asserts the field
@@ -811,17 +811,17 @@ The helper units themselves are **not** sandboxed, and that is deliberate rather
 program whose job is to install packages cannot be confined against writing to `/usr` and `/etc`. What
 bounds them is the root-owned policy file and the closed catalogue, not a systemd directive.
 
-`farrier-agent doctor` checks the whole path from the agent's own account and changes nothing: it sends
+`hostseal-agent doctor` checks the whole path from the agent's own account and changes nothing: it sends
 an intent that is in no catalogue and on no route, which every helper refuses at its first check. A
 refusal is what success looks like, because there is no harmless privileged intent to send instead.
 
-**`farrier` is never added to the `docker` group.** Docker socket access is root equivalence and would
-silently undo everything in this section. If you package Farrier for a system where the agent needs to
+**`hostseal` is never added to the `docker` group.** Docker socket access is root equivalence and would
+silently undo everything in this section. If you package HostSeal for a system where the agent needs to
 report container state, that must be done through a read-only path, not group membership.
 
 That read-only path now exists, and it is worth naming because it is what makes the refusal above
 sustainable rather than merely principled. The `containers` collector reads `/proc` and the unified
-cgroup hierarchy as the unprivileged `farrier` user: no socket, no helper, no group, no new intent,
+cgroup hierarchy as the unprivileged `hostseal` user: no socket, no helper, no group, no new intent,
 and nothing in this section changes. It is off until `[containers] report = true` is written into the
 host's own `policy.toml`, because container state is a more revealing disclosure than a unit list.
 
@@ -839,12 +839,12 @@ paragraph is about, found on a host rather than assumed.
 ## 7. Provisioning and the enrolment-time exception
 
 This is the exception named in the second paragraph of the guarantee. It is stated plainly here because
-it is the only way a Farrier component ever applies operator-authored configuration to a host.
+it is the only way a HostSeal component ever applies operator-authored configuration to a host.
 
-**Tier 1 — implemented.** Farrier stores, versions and renders cloud-init templates, and **never
+**Tier 1 — implemented.** HostSeal stores, versions and renders cloud-init templates, and **never
 delivers them to a host**. The rendered `user-data` goes to a human, or to Terraform / Proxmox / MAAS /
 a cloud provider's user-data field; the machine consumes it at first boot from the hypervisor that
-created it. Farrier is not in the delivery path at all. This also covers bare metal, since Ubuntu
+created it. HostSeal is not in the delivery path at all. This also covers bare metal, since Ubuntu
 `autoinstall` for PXE and ISO is delivered as cloud-init user-data.
 
 A template is a document with `{{placeholder}}` substitution sites and nothing else: no conditional, no
@@ -853,15 +853,15 @@ the intent catalogue, so `internal/provision` refuses to be a template language 
 saved revision is a new immutable version, because the Tier 2 record below names one and a record that
 resolves to editable bytes is not a record.
 
-Farrier ships no template: what a machine should look like on its first boot is a decision about a
+HostSeal ships no template: what a machine should look like on its first boot is a decision about a
 fleet. One worked body — unattended upgrades left on, a `wheel` group, `su` restricted to it — is in
 [`examples/cloud-init/`](../examples/cloud-init/README.md), as an example to read rather than a default
 to inherit.
 
-**Tier 2 — the exception, implemented.** `farrier enroll --bootstrap NAME` applies a named template
+**Tier 2 — the exception, implemented.** `hostseal enroll --bootstrap NAME` applies a named template
 once, on a host that is being enrolled by hand. The template arrives in the enrolment response carrying
 a signature the control plane stored but cannot mint — it is produced offline by
-`farrier sign-template`, with a key the control plane does not hold, and the enrolment token must have
+`hostseal sign-template`, with a key the control plane does not hold, and the enrolment token must have
 been minted naming that template, so holding a leaked token is not the authority to choose what runs.
 An agent that asked for a template and receives none, or an unsigned one, fails the enrolment loudly
 rather than continuing as though something had been applied. Every one of these guardrails is required:
@@ -869,7 +869,7 @@ rather than continuing as though something had been applied. Every one of these 
 1. Explicit `--bootstrap NAME` on that specific invocation. Never implicit, never a server default,
    never a group setting.
 2. The full text is printed to the terminal and recorded in
-   `/var/lib/farrier/bootstrap-applied.json` **before** execution. The record is fsynced — file and
+   `/var/lib/hostseal/bootstrap-applied.json` **before** execution. The record is fsynced — file and
    directory — before anything runs, because it is the only thing that survives a template that
    crashes the machine halfway, and "what was attempted" is the question an incident asks.
 
@@ -886,9 +886,9 @@ rather than continuing as though something had been applied. Every one of these 
    created with `link(2)`, which fails when the file exists, so two concurrent enrolments sharing a
    state directory produce one application and one refusal rather than two applications — a rename
    would have let the second silently replace the first's record.
-5. **cloud-init does the applying.** Farrier writes the verified body into cloud-init's NoCloud seed
+5. **cloud-init does the applying.** HostSeal writes the verified body into cloud-init's NoCloud seed
    directory under a fresh instance-id and runs cloud-init's own stages with argument vectors fixed in
-   the agent; no byte of a template ever reaches a command line. Farrier never ships a hand-written
+   the agent; no byte of a template ever reaches a command line. HostSeal never ships a hand-written
    YAML-to-shell engine — that would be the exec channel wearing a hat.
 
 The seed is the one thing beside the template that the control plane has any say in, because its
@@ -901,20 +901,20 @@ guardrails above — not covered by the signature, not shown, not recorded. The 
 cloud-init has read it, because a NoCloud seed left in place outranks the machine's real datasource on
 every later boot.
 
-Two honest limits on guardrail 2. The record is written by `farrier enroll`, which runs as root, but it
-lives in a directory the unprivileged `farrier` user owns — so it defends the audit trail against the
+Two honest limits on guardrail 2. The record is written by `hostseal enroll`, which runs as root, but it
+lives in a directory the unprivileged `hostseal` user owns — so it defends the audit trail against the
 adversary [§1](#1-the-guarantee) is about, the control plane, and not against local code running as the
 agent, which [§2.2](#22-local-policy-sovereignty) already assumes may be compromised and which is above
 this file in the trust hierarchy. And the terminal copy is standard output, which systemd also routes to
 the journal when enrolment is run from a unit — so a host enrolled by a unit rather than by a person
-still has the body in its journal, unstructured. An operator running `farrier enroll` by hand, which is
+still has the body in its journal, unstructured. An operator running `hostseal enroll` by hand, which is
 what guardrail 2 is written for, sees it on their terminal and nowhere else.
 
 The chicken-and-egg problem is that `trusted-signers` is empty on a fresh install. It is solved by
 establishing the anchor from a local, administrator-chosen file **before** anything is fetched:
 
 ```bash
-sudo farrier enroll --token XYZ \
+sudo hostseal enroll --token XYZ \
      --signers ./trusted-signers \   # local, admin-chosen, written first
      --policy  ./policy.toml \
      --bootstrap standard-server     # fetched, verified against the above, displayed, confirmed
@@ -928,7 +928,7 @@ between "fleet management without a remote shell" and "a remote shell with extra
 ### Templates are not a secret store
 
 cloud-init `user-data` is plaintext in the cloud metadata service and in
-`/var/lib/cloud/instance/user-data.txt`, readable by anything with instance or metadata access. Farrier
+`/var/lib/cloud/instance/user-data.txt`, readable by anything with instance or metadata access. HostSeal
 therefore:
 
 - **warns** (and does not block) on private-key blocks, `password:` fields and API-token shapes in
@@ -940,7 +940,7 @@ therefore:
 
 ## 8. Observability
 
-Farrier tells an operator what it noticed. It does not act on it — the two halves of that sentence are
+HostSeal tells an operator what it noticed. It does not act on it — the two halves of that sentence are
 the whole of this section.
 
 ### 8.1 What may be said, and where it goes
@@ -1066,12 +1066,12 @@ rule: an alert that never went out and an alert that never fired are indistingui
 
 ---
 
-## 9. What Farrier does *not* defend against
+## 9. What HostSeal does *not* defend against
 
-An honest guarantee needs an honest boundary. Farrier does not protect you from:
+An honest guarantee needs an honest boundary. HostSeal does not protect you from:
 
 - **Anyone with root on the managed host.** They can edit `policy.toml` and `trusted-signers`, or
-  simply not run the agent. Local root is above Farrier in the trust hierarchy, by construction.
+  simply not run the agent. Local root is above HostSeal in the trust hierarchy, by construction.
 - **A compromised holder of a key in `trusted-signers`.** That key is the authority for destructive
   operations; this is exactly why the hardware-backed signing backends exist and why the audit log
   records *which* signer authorised each job.
@@ -1081,14 +1081,14 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   can assume a role with `kms:Sign`, `cryptoKeyVersions.useToSign` or the Key Vault `sign` permission on
   that key, then an attacker who owns the control plane can authorise a reboot, and **§1 is false for
   that installation**. A hardware token keeps them apart by physics; a KMS does it by IAM policy, which
-  is a weaker thing and one people misconfigure. Farrier cannot check this, so it is
+  is a weaker thing and one people misconfigure. HostSeal cannot check this, so it is
   [§10](#10-hardening-notes-for-operators)'s job to say what to check.
 - **The APT repository's signing key.** The agent is installed and updated as a normal Debian package
   from a signed repository. Whoever controls that GPG key controls the agent binary on every host that
   updates from it. This is a different adversary from the one in §1 — it is the ordinary distribution
   trust that applies to every package on the system — but it is real, and the honest statement of the
   guarantee is that it covers *control-plane* compromise, not *package-supply-chain* compromise. Hosts
-  use deb822 with `Signed-By:` and an explicit keyring so the Farrier key is trusted for the Farrier
+  use deb822 with `Signed-By:` and an explicit keyring so the HostSeal key is trusted for the HostSeal
   repository only, never system-wide; `apt-key` is never used.
 - **Denial of service by a compromised control plane.** An attacker owning the control plane can stop
   issuing jobs, or issue jobs that fail. They cannot make hosts do anything the policy forbids, but
@@ -1145,8 +1145,8 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   separate account, subscription or project; a key policy or role assignment that names the operator
   principals and *excludes* the control plane's own role or managed identity. Then check it the only
   way that catches the mistake: assume the control plane's identity and confirm that signing with that
-  key is denied. Everything in [§9](#9-what-farrier-does-not-defend-against) about this depends on that
-  one arrangement, and nothing in Farrier can verify it for you.
+  key is denied. Everything in [§9](#9-what-hostseal-does-not-defend-against) about this depends on that
+  one arrangement, and nothing in HostSeal can verify it for you.
 - Set `policy.toml` to the least permission each host actually needs. It is the only control that
   survives a total control-plane compromise.
 - Leave `[containers] report` off unless somebody has asked for it. It is off in the shipped file. A
@@ -1157,12 +1157,12 @@ An honest guarantee needs an honest boundary. Farrier does not protect you from:
   wanting a fourth helper, that is a request for a new typed intent upstream.
 - Back up the control plane's CA key separately from its database. An attacker with both can
   impersonate hosts; an attacker with the database alone cannot.
-- Review `/var/lib/farrier/bootstrap-applied.json` on hosts you did not personally enrol.
+- Review `/var/lib/hostseal/bootstrap-applied.json` on hosts you did not personally enrol.
 - **Connect the control plane to PostgreSQL as an ordinary role that owns its schema — never as a
   superuser, and never as one with `BYPASSRLS`.** Both are exempt from every row-level security policy,
   which is the whole of the tenant boundary ([§5](#5-tenants)), and the exemption has no symptom: the
   policies are still there, the queries still carry their predicates, and every one of them returns
-  every tenant's rows. `farrier-server` checks its own role at startup and refuses to run on either, so
+  every tenant's rows. `hostseal-server` checks its own role at startup and refuses to run on either, so
   this is a note about what to configure rather than a trap left open — but a `postgres://postgres@…`
   URL in a Compose file is the obvious thing to reach for, and it is the wrong thing.
 - If you run one control plane for more than one customer, turn on `second_person` approval for the
@@ -1194,7 +1194,7 @@ recognises, regardless of how difficult they are to reach. That includes:
 
 **A Windows agent ships, and it is a smaller product than the Linux one.** It executes the four
 read-class intents and refuses everything else — not as a staging decision to be revisited quietly, but
-because of 12.2 below. `cmd/farrier-agent` carries `//go:build linux || windows`, and
+because of 12.2 below. `cmd/hostseal-agent` carries `//go:build linux || windows`, and
 `TestGuaranteeTheAgentBinaryNamesItsPlatforms` fails if a third platform is added without the three
 things that make one real: a `collect.Platform` implementation, an `intent.Profile` saying what it will
 execute, and a section of this document saying which mechanisms it enforces by test rather than by
@@ -1212,7 +1212,7 @@ Both paragraphs of [§1](#1-the-guarantee) say **any enrolled host**. No operati
 either, and none will. A Windows host is inside the guarantee or it is not managed.
 
 That is a constraint on what may be built rather than a claim that it is easy. Where Windows cannot
-carry a mechanism at the strength Linux carries it, the answer is that Farrier does less on Windows —
+carry a mechanism at the strength Linux carries it, the answer is that HostSeal does less on Windows —
 never that the sentence acquires a qualifier. The CI check that pins both paragraphs matches them word
 for word for exactly this reason: `grep`ping a fragment of the first one also matches "on any enrolled
 **Linux** host", which is how a guarantee narrows without anybody deciding to narrow it.
@@ -1301,7 +1301,7 @@ Two further decisions:
   binary at a fixed absolute path, started through `internal/run` with a fixed argument vector, is the
   same shape the agent already uses for `apt-get`: it does not parse apt's internals either.
 - **`ServerSelection` is `ssDefault`.** A host configured against WSUS is scanned against WSUS.
-  Farrier never selects `ssWindowsUpdate`, which would bypass an authority the host's owner chose.
+  HostSeal never selects `ssWindowsUpdate`, which would bypass an authority the host's owner chose.
 
 The privilege split in Microsoft's own API is worth recording, because it lands almost exactly where
 this catalogue's classes already are: `IUpdateSearcher` and `IUpdateSession` are available to the User
@@ -1336,8 +1336,8 @@ In the spirit of [§6](#6-host-privileges)'s own list, written down rather than 
 
 - **COM class resolution is a registry lookup.** `CoCreateInstance` resolves a CLSID to a DLL through
   `HKCR\CLSID\{...}\InprocServer32`. Anyone who can write that key can choose what the scan process
-  loads. That is local administrator, who is already above Farrier in the trust hierarchy by
-  [§9](#9-what-farrier-does-not-defend-against)'s first bullet — the adversary [§1](#1-the-guarantee)
+  loads. That is local administrator, who is already above HostSeal in the trust hierarchy by
+  [§9](#9-what-hostseal-does-not-defend-against)'s first bullet — the adversary [§1](#1-the-guarantee)
   names is a control plane, which cannot write a host's registry. It is recorded here because "the
   agent loads no foreign code" is a claim with a footnote on Windows and should not read as one without.
 - **A result is fsynced, but its directory entry is not.** The agent's promise that a result reaches

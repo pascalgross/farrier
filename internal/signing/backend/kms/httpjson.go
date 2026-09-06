@@ -14,7 +14,7 @@ import (
 // maxResponseBytes bounds what a provider's answer may be.
 //
 // A signature and a public key are both small; a megabyte is three orders of magnitude of headroom and
-// still a bound. It exists because this is the one part of `farrier sign` that reads bytes from
+// still a bound. It exists because this is the one part of `hostseal sign` that reads bytes from
 // somewhere else, and an unbounded read from a service that is having a bad day is a signing tool that
 // stops responding rather than one that reports an error.
 const maxResponseBytes = 1 << 20

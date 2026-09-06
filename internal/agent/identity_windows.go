@@ -2,7 +2,7 @@
 
 package agent
 
-import "github.com/pascalgross/farrier/internal/winapi"
+import "github.com/pascalgross/hostseal/internal/winapi"
 
 // machineIdentity returns the host's stable identifier, before hashing.
 //

@@ -1,6 +1,6 @@
 // Package ca is the control plane's private certificate authority.
 //
-// Farrier issues its own agent certificates rather than using a public CA because the certificates
+// HostSeal issues its own agent certificates rather than using a public CA because the certificates
 // identify hosts to one control plane, not services to the internet. A private CA means enrolment needs
 // no external dependency, no rate limit and no DNS name per host, and it means the control plane can
 // revoke a host instantly by forgetting its fingerprint.
@@ -109,7 +109,7 @@ func Init(dir, commonName string) (*Authority, error) {
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"Farrier"}},
+		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"HostSeal"}},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(CALifetime),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
@@ -152,7 +152,7 @@ func Init(dir, commonName string) (*Authority, error) {
 func Load(dir string) (*Authority, error) {
 	certPEM, err := os.ReadFile(filepath.Join(dir, CertFile))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%w at %s; run `farrier-server ca init`", ErrNotInitialised, dir)
+		return nil, fmt.Errorf("%w at %s; run `hostseal-server ca init`", ErrNotInitialised, dir)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("ca: reading %s: %w", CertFile, err)
@@ -227,9 +227,9 @@ func (a *Authority) Issue(csrPEM []byte, hostID string) ([]byte, *x509.Certifica
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		// Only the common name is taken from Farrier, and everything else in the CSR's subject is
+		// Only the common name is taken from HostSeal, and everything else in the CSR's subject is
 		// discarded. The host id is the identity the server will look up on every request.
-		Subject:     pkix.Name{CommonName: hostID, Organization: []string{"Farrier Agents"}},
+		Subject:     pkix.Name{CommonName: hostID, Organization: []string{"HostSeal Agents"}},
 		NotBefore:   now.Add(-5 * time.Minute),
 		NotAfter:    now.Add(AgentCertLifetime),
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -285,7 +285,7 @@ func RenewAt(cert *x509.Certificate) time.Time {
 
 // Server certificate file names inside the CA directory.
 const (
-	// ServerCertFile is the control plane's own HTTPS certificate, when Farrier issued it.
+	// ServerCertFile is the control plane's own HTTPS certificate, when HostSeal issued it.
 	ServerCertFile = "server.crt"
 
 	// ServerKeyFile is the key for it.
@@ -333,7 +333,7 @@ func (a *Authority) EnsureServerCertificate(dir string, dnsNames []string, ips [
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "Farrier control plane", Organization: []string{"Farrier"}},
+		Subject:               pkix.Name{CommonName: "HostSeal control plane", Organization: []string{"HostSeal"}},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(AgentCertLifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

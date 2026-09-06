@@ -33,7 +33,7 @@ type Service struct {
 	State string
 }
 
-// serviceStates maps the SCM's current-state numbers onto the words Farrier reports.
+// serviceStates maps the SCM's current-state numbers onto the words HostSeal reports.
 //
 // The words are chosen to read the way systemd's do — "running", "stopped" — rather than to transcribe
 // the constant names, because these strings are rendered in a fleet list beside Linux hosts and an
@@ -48,7 +48,7 @@ var serviceStates = map[uint32]string{
 	windows.SERVICE_PAUSED:           "paused",
 }
 
-// startTypes maps the SCM's start-type numbers onto the words Farrier reports.
+// startTypes maps the SCM's start-type numbers onto the words HostSeal reports.
 var startTypes = map[uint32]string{
 	windows.SERVICE_BOOT_START:   "boot",
 	windows.SERVICE_SYSTEM_START: "system",
@@ -108,7 +108,7 @@ func ListServices() ([]Service, bool, error) {
 // maxServices bounds the list before it is turned into report entries.
 //
 // It matches collect.MaxServices, and is restated here rather than imported so that this package
-// depends on nothing of Farrier's above it — internal/collect imports the platform, not the reverse.
+// depends on nothing of HostSeal's above it — internal/collect imports the platform, not the reverse.
 // The guarantee suite checks the two agree.
 const maxServices = 500
 

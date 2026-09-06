@@ -3,10 +3,10 @@
 
   <p class="m-0 text-sm opacity-80 flex items-center gap-2">
     @if (stream.connected()) {
-      <mat-icon class="!w-4 !h-4 !text-base text-farrier-ok" aria-hidden="true">bolt</mat-icon>
+      <mat-icon class="!w-4 !h-4 !text-base text-hostseal-ok" aria-hidden="true">bolt</mat-icon>
       <span>live</span>
     } @else {
-      <mat-icon class="!w-4 !h-4 !text-base text-farrier-quiet" aria-hidden="true">bolt</mat-icon>
+      <mat-icon class="!w-4 !h-4 !text-base text-hostseal-quiet" aria-hidden="true">bolt</mat-icon>
       <span [matTooltip]="'The page is reconnecting. Nothing is lost: every event is in this inbox.'">
         reconnecting
       </span>
@@ -32,7 +32,7 @@
       </mat-slide-toggle>
 
       @if (desktopDenied) {
-        <p class="m-0 text-sm text-farrier-warn">
+        <p class="m-0 text-sm text-hostseal-warn">
           This browser has denied notifications for this origin. Re-allow them in the site settings;
           the page cannot ask again.
         </p>
@@ -69,7 +69,7 @@
   </mat-form-field>
 
   @if (filterError()) {
-    <p class="m-0 text-sm text-farrier-warn flex items-start gap-2">
+    <p class="m-0 text-sm text-hostseal-warn flex items-start gap-2">
       <mat-icon class="!w-4 !h-4 !text-base" aria-hidden="true">error_outline</mat-icon>
       <span>{{ filterError() }} What is below is only what this tab has seen.</span>
     </p>
@@ -99,7 +99,7 @@
 
         <div class="min-w-0 flex-1">
           <p class="m-0">{{ event.summary }}</p>
-          <p class="m-0 text-xs opacity-70 farrier-numeric">
+          <p class="m-0 text-xs opacity-70 hostseal-numeric">
             {{ label(event) }} · {{ age(event) }}
             @if (event.hostId) {
               · <a [routerLink]="['/hosts', event.hostId]">{{ event.hostname || event.hostId }}</a>

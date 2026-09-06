@@ -1,4 +1,4 @@
-# Farrier trusted signers.
+# HostSeal trusted signers.
 #
 # This file is the trust anchor for every destructive operation on this host: applying all updates,
 # starting, stopping or restarting a unit, and rebooting. A job for any of those is executed only if it
@@ -10,7 +10,7 @@
 # promotes whoever controls APT signing to ultimate authority over this host — and in a hosted
 # deployment would hand the provider a route around your own control plane.
 #
-# The control plane does not hold these keys and cannot add to this file. Nothing in Farrier's intent
+# The control plane does not hold these keys and cannot add to this file. Nothing in HostSeal's intent
 # catalogue modifies it. It is a dpkg conffile, so your edits survive package upgrades.
 #
 # Format, one key per line, deliberately close to authorized_keys:
@@ -29,8 +29,8 @@
 #
 # Generate a key on your own machine — not on this host — and print the line to paste here:
 #
-#   farrier key generate --out ~/.config/farrier/signing.key --id ops-laptop
-#   farrier key show     --in  ~/.config/farrier/signing.key
+#   hostseal key generate --out ~/.config/hostseal/signing.key --id ops-laptop
+#   hostseal key show     --in  ~/.config/hostseal/signing.key
 #
 # `key show` needs no passphrase: the public half of the file is stored in the clear, so you can print
 # the line for a key you cannot currently unlock — which is the situation you are in when the token is

@@ -1,4 +1,4 @@
-# The control plane, in containers: one PostgreSQL and one farrier-server.
+# The control plane, in containers: one PostgreSQL and one hostseal-server.
 #
 # It is two services because the product is two things. There is no cache, no queue, no worker and no
 # reverse proxy in here — the UI is embedded in the binary, the job queue is a PostgreSQL table with
@@ -11,7 +11,7 @@
 # Traefik is a separate file, because it is optional: compose.traefik.yaml. So is a streaming replica:
 # compose.standby.yaml. See README.md beside this file.
 
-name: farrier
+name: hostseal
 
 services:
   postgres:
@@ -22,7 +22,7 @@ services:
     image: postgres:17
     restart: unless-stopped
     environment:
-      # The bootstrap superuser. farrier-server never connects as this role — see the init scripts, and
+      # The bootstrap superuser. hostseal-server never connects as this role — see the init scripts, and
       # docs/SECURITY.md §5 for what a superuser connection would silently switch off.
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
@@ -34,17 +34,17 @@ services:
       POSTGRES_INITDB_ARGS: --data-checksums
 
       # Read by the scripts in postgres/initdb, which run once, on an empty data directory.
-      FARRIER_DB_USER: ${FARRIER_DB_USER:-farrier}
-      FARRIER_DB_PASSWORD: ${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}
-      FARRIER_DB_NAME: ${FARRIER_DB_NAME:-farrier}
-      FARRIER_REPLICATION_USER: ${FARRIER_REPLICATION_USER:-replicator}
-      FARRIER_REPLICATION_PASSWORD: ${FARRIER_REPLICATION_PASSWORD:?set FARRIER_REPLICATION_PASSWORD in .env}
-      FARRIER_REPLICATION_HBA: ${FARRIER_REPLICATION_HBA:-samenet}
+      HOSTSEAL_DB_USER: ${HOSTSEAL_DB_USER:-hostseal}
+      HOSTSEAL_DB_PASSWORD: ${HOSTSEAL_DB_PASSWORD:?set HOSTSEAL_DB_PASSWORD in .env}
+      HOSTSEAL_DB_NAME: ${HOSTSEAL_DB_NAME:-hostseal}
+      HOSTSEAL_REPLICATION_USER: ${HOSTSEAL_REPLICATION_USER:-replicator}
+      HOSTSEAL_REPLICATION_PASSWORD: ${HOSTSEAL_REPLICATION_PASSWORD:?set HOSTSEAL_REPLICATION_PASSWORD in .env}
+      HOSTSEAL_REPLICATION_HBA: ${HOSTSEAL_REPLICATION_HBA:-samenet}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       # Read-only: the cluster reads this on every start and reload, and nothing in the container has
       # any business writing to it.
-      - ./postgres/farrier.conf:/etc/postgresql/farrier.conf:ro
+      - ./postgres/hostseal.conf:/etc/postgresql/hostseal.conf:ro
       - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # Over TCP, and that is the whole point of the -h. While the image is initialising, it runs a
@@ -53,7 +53,7 @@ services:
       # whose role does not exist yet. Nothing is listening on 127.0.0.1 until initialisation is over
       # and the real server starts.
       test:
-        ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${FARRIER_DB_USER:-farrier} -d ${FARRIER_DB_NAME:-farrier}"]
+        ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${HOSTSEAL_DB_USER:-hostseal} -d ${HOSTSEAL_DB_NAME:-hostseal}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -64,17 +64,17 @@ services:
     # PostgreSQL puts parallel query and hash-join working memory in shared memory, and Docker's default
     # 64 MB /dev/shm is where that shows up as "could not resize shared memory segment".
     shm_size: 256mb
-    networks: [farrier]
+    networks: [hostseal]
 
-  farrier-server:
+  hostseal-server:
     # Built from this repository by default, so that `compose up` works in a clone with no registry
-    # involved. Set FARRIER_IMAGE to a published image and the build stanza is ignored.
+    # involved. Set HOSTSEAL_IMAGE to a published image and the build stanza is ignored.
     build:
       context: ..
       dockerfile: Dockerfile
       args:
-        VERSION: ${FARRIER_VERSION:-0.0.0-compose}
-    image: ${FARRIER_IMAGE:-farrier-server:local}
+        VERSION: ${HOSTSEAL_VERSION:-0.0.0-compose}
+    image: ${HOSTSEAL_IMAGE:-hostseal-server:local}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -82,50 +82,50 @@ services:
         # container: service_started would race initdb and fail on the first attempt every time.
         condition: service_healthy
     environment:
-      # The default points at the postgres service beside it, and an explicit FARRIER_DATABASE_URL in
+      # The default points at the postgres service beside it, and an explicit HOSTSEAL_DATABASE_URL in
       # .env replaces it — which is what makes the external-database case a setting rather than an edit
       # to this file. sslmode=disable is honest about the default: a connection over the project's own
       # bridge network, which does not leave the host. A database on another machine is the first thing
       # to change it for — to verify-full, with a root certificate.
-      FARRIER_DATABASE_URL: >-
-        ${FARRIER_DATABASE_URL:-postgres://${FARRIER_DB_USER:-farrier}@postgres:5432/${FARRIER_DB_NAME:-farrier}?sslmode=disable}
+      HOSTSEAL_DATABASE_URL: >-
+        ${HOSTSEAL_DATABASE_URL:-postgres://${HOSTSEAL_DB_USER:-hostseal}@postgres:5432/${HOSTSEAL_DB_NAME:-hostseal}?sslmode=disable}
       # The password travels beside the URL rather than inside it, and that is not a style choice. A
       # password containing / # or ? makes the URL fail to parse — the server then cannot start against
       # a password PostgreSQL itself accepted, because the init script sets it through psql variables
       # where every character is legal. % is worse: it parses, and silently means something else.
       # libpq's PGPASSWORD has no such syntax, so any password the database accepts works here.
-      # A password inside an explicit FARRIER_DATABASE_URL still wins over this, as libpq specifies.
-      PGPASSWORD: ${FARRIER_DB_PASSWORD:?set FARRIER_DB_PASSWORD in .env}
+      # A password inside an explicit HOSTSEAL_DATABASE_URL still wins over this, as libpq specifies.
+      PGPASSWORD: ${HOSTSEAL_DB_PASSWORD:?set HOSTSEAL_DB_PASSWORD in .env}
       # The first account, read only on the first start of an empty database. Through the environment
       # rather than a flag, because argv is world-readable in ps — the same reasoning the server applies
       # to the SMTP password.
       #
       # Neither is required, and the password being empty is a supported case rather than an oversight:
-      # the server generates one, prints it once, and `docker compose logs farrier-server` is where it
+      # the server generates one, prints it once, and `docker compose logs hostseal-server` is where it
       # is. That is right for trying this out and wrong for anything somebody has to get back into.
-      FARRIER_BOOTSTRAP_EMAIL: ${FARRIER_BOOTSTRAP_EMAIL:-admin@localhost}
-      FARRIER_BOOTSTRAP_PASSWORD: ${FARRIER_BOOTSTRAP_PASSWORD:-}
-      FARRIER_TENANT: ${FARRIER_TENANT:-default}
+      HOSTSEAL_BOOTSTRAP_EMAIL: ${HOSTSEAL_BOOTSTRAP_EMAIL:-admin@localhost}
+      HOSTSEAL_BOOTSTRAP_PASSWORD: ${HOSTSEAL_BOOTSTRAP_PASSWORD:-}
+      HOSTSEAL_TENANT: ${HOSTSEAL_TENANT:-default}
     volumes:
       # The CA that issues agent certificates, the key that signs routine jobs, and the key that seals
       # template bodies. All three live here and none of them is in the database — which is the point:
       # a database dump is not a set of provisioning scripts, and it does not let its holder impersonate
       # a host. Back it up separately from the database and restore the two together: a database without
       # the key beside it leaves every stored template permanently unopenable.
-      - farrier-state:/var/lib/farrier-server
+      - hostseal-state:/var/lib/hostseal-server
     ports:
       # Published so that a fresh clone works with nothing else running. compose.traefik.yaml removes
       # this and puts the port behind the proxy instead.
-      - "${FARRIER_PUBLISH_ADDR:-0.0.0.0}:${FARRIER_PORT:-8443}:8443"
+      - "${HOSTSEAL_PUBLISH_ADDR:-0.0.0.0}:${HOSTSEAL_PORT:-8443}:8443"
     # Fifteen seconds of drain plus room to finish an SMTP conversation. The server stops accepting,
     # finishes what it is serving, and flushes the webhook and alert deliveries that handlers detached —
     # a SIGKILL here is an alert somebody would have trusted the absence of.
     stop_grace_period: 45s
-    networks: [farrier]
+    networks: [hostseal]
 
 volumes:
   postgres-data:
-  farrier-state:
+  hostseal-state:
 
 networks:
-  farrier:
+  hostseal:

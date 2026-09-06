@@ -30,7 +30,7 @@ import { formatAge } from '../core/format';
  * fleet, because a job records the rule it was created under.
  */
 @Component({
-  selector: 'farrier-jobs-list',
+  selector: 'hostseal-jobs-list',
   imports: [
     FormsModule,
     MatButtonModule,
@@ -142,7 +142,7 @@ export class JobsList {
    * all, and the routine one, which the control plane signs with its own key. What is missing is the
    * destructive tier, and that is permanent rather than pending — it needs a signature made by a key
    * listed in the host's own trusted-signers, which this control plane does not hold and a browser is
-   * the last place it should ever be. Sign one with `farrier sign` and post it.
+   * the last place it should ever be. Sign one with `hostseal sign` and post it.
    */
   protected readonly startableIntents = computed(() =>
     this.intents().filter(

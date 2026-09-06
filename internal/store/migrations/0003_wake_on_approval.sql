@@ -22,4 +22,4 @@ CREATE TRIGGER jobs_notify_approved
     AFTER UPDATE ON jobs
     FOR EACH ROW
     WHEN (OLD.approved_at IS NULL AND NEW.approved_at IS NOT NULL)
-EXECUTE FUNCTION farrier_notify_job();
+EXECUTE FUNCTION hostseal_notify_job();

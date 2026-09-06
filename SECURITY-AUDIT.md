@@ -1,4 +1,4 @@
-# Independent security audit — Farrier
+# Independent security audit — HostSeal
 
 **Date:** 2026-08-25
 **Reviewed:** commit on `claude/security-audit-independent-yyeczm` (branched from `main` at `9916db7`).
@@ -32,7 +32,7 @@ apply-once interlock, and "applied **at most once**" is a clause of §1's *secon
 paragraph — which ships with the first, always — not merely a §7 implementation detail. The interlock is
 check-then-write rather than an atomic `O_EXCL` create, so two concurrent enrolments could each apply.
 This is still not a §1 break *reachable by the §1 attacker*: winning that race requires two simultaneous
-local `farrier enroll --bootstrap` invocations, and the control-plane / database / administrator attacker
+local `hostseal enroll --bootstrap` invocations, and the control-plane / database / administrator attacker
 of §1 has no server-to-host channel with which to start a process on the host — the absence of that
 channel is the product. Each racing application also still passes every §7 guardrail (offline-signed,
 name-matched to `--bootstrap NAME`, shown in full, recorded), so a double-apply re-runs the operator's own
@@ -65,7 +65,7 @@ Two independent passes, reconciled:
    decision (`internal/policy`, `internal/helper`), canonical encoding (`internal/canonical`), signature
    verification and the acceptance sequence (`internal/signing`, `internal/agent/execute.go`), the NoCloud
    bootstrap seed (`internal/agent/bootstrap.go`), the row-level-security migrations and startup role
-   check (`internal/store`, `cmd/farrier-server`), and the agent's systemd hardening.
+   check (`internal/store`, `cmd/hostseal-server`), and the agent's systemd hardening.
 
 2. **A ten-dimension fan-out audit**, one auditor per subsystem, each finding then handed to an
    independent adversarial verifier that re-read the cited code and tried to refute it; findings that did
@@ -92,7 +92,7 @@ against the code and **confirmed**:
   reaches an `argv` slice as a flag: unit ops go over D-Bus as typed arguments, the reboot message is
   refused when it begins with `-` and placed after a `--` separator, and the apt argv is constant.
 - **Local policy is re-enforced as root, from a packaged constant path** — `internal/helper` re-decodes
-  parameters and re-reads `/etc/farrier/policy.toml`; `internal/policy/decide.go` implements
+  parameters and re-reads `/etc/hostseal/policy.toml`; `internal/policy/decide.go` implements
   `effective = min(central, local)` literally, derives the requested level from the intent, re-evaluates a
   requested follow-up reboot *as a reboot*, and refuses any privileged intent it has no rule for. The
   helpers take no `--policy` flag and the socket request carries no path field.
@@ -116,7 +116,7 @@ against the code and **confirmed**:
 - **The NoCloud seed injection path is closed** — the only control-plane value in `meta-data` is the host
   id, constrained to `^[0-9A-Za-z]+$` ≤64 bytes, closing the `public-keys` YAML-injection route.
 - **Tenant isolation is enforced by the database** — all ten tenant tables have RLS `ENABLE`d **and**
-  `FORCE`d; scoped statements `SET LOCAL farrier.tenant` inside a transaction; `farrier-server` refuses to
+  `FORCE`d; scoped statements `SET LOCAL hostseal.tenant` inside a transaction; `hostseal-server` refuses to
   start on a superuser or `BYPASSRLS` role.
 - **The alerting path cannot create a job**, the routine tier cannot express a reboot, no managed-host
   binary links a signing backend, and the helpers grow no `--policy`/`--exec` flag — each asserted by a
@@ -133,43 +133,43 @@ each linked issue. None breaches §1.
 
 | ID | Sev | Area | Finding | Issue |
 | --- | --- | --- | --- | --- |
-| F-01 | **Med** | packaging / CI | Release pipeline runs unpinned actions and `nfpm@latest` in the code-signing path | [#43](https://github.com/pascalgross/farrier/issues/43) |
-| F-02 | Low | guardrail test | `execve` guarantee test does not cover `x/sys/unix` or raw `syscall` | [#44](https://github.com/pascalgross/farrier/issues/44) |
-| F-03 | Low | guardrail test | `execve` scan silently skips a scanned root that no longer exists | [#45](https://github.com/pascalgross/farrier/issues/45) |
-| F-04 | Low | signing / replay | Agent does not fail closed on a signed privileged job with an unbounded validity window | [#46](https://github.com/pascalgross/farrier/issues/46) |
-| F-05 | Low | signing | `canonical.Normalize` is unused; verification runs over a re-encoding of the decoded view | [#47](https://github.com/pascalgross/farrier/issues/47) |
-| F-06 | Low | priv boundary | Offline signature is enforced only in the unprivileged agent; the root boundary re-checks policy, not signature | [#48](https://github.com/pascalgross/farrier/issues/48) |
-| F-07 | Low | policy | Helper's local `max_job_age` check is caller-controlled; the comment claims it fails closed | [#49](https://github.com/pascalgross/farrier/issues/49) |
-| F-08 | Low | policy | Zero-length maintenance window silently expands to a full 24 hours | [#50](https://github.com/pascalgross/farrier/issues/50) |
-| F-09 | Low | bootstrap | Apply-once interlock uses check-then-write, not an atomic `O_EXCL` create | [#51](https://github.com/pascalgross/farrier/issues/51) |
-| F-10 | Low | bootstrap | Full bootstrap body is written to the systemd journal at INFO | [#52](https://github.com/pascalgross/farrier/issues/52) |
-| F-11 | Low | tenant isolation | `enrollment_tokens` RLS `WITH CHECK` keeps the `resolve_key` disjunct the certificates policy dropped | [#53](https://github.com/pascalgross/farrier/issues/53) |
-| F-12 | Low | tenant isolation | Empty-tenant-id invariant is enforced only in Go, not by a schema `CHECK` | [#54](https://github.com/pascalgross/farrier/issues/54) |
-| F-13 | Low | control plane | Tenant event webhook: no SSRF guard, plaintext `http` allowed, follows redirects | [#55](https://github.com/pascalgross/farrier/issues/55) |
-| F-14 | Low | control plane | `POST /agent/v1/renew`: no rate limit, no per-host cert cap, superseded cert never retired | [#56](https://github.com/pascalgross/farrier/issues/56) |
-| F-15 | Low | control plane | Two-person approval silently becomes unsatisfiable under the shipped shared-token auth | [#57](https://github.com/pascalgross/farrier/issues/57) |
-| F-16 | Low | deploy | Traefik UI-hostname agent-API deny router uses a fixed priority a long hostname can outrank | [#58](https://github.com/pascalgross/farrier/issues/58) |
-| F-17 | Low | CI | `release.yml` grants `contents: write` to the build job that only needs read | [#59](https://github.com/pascalgross/farrier/issues/59) |
-| F-18 | Info | run | `run.Systemctl` is in the runtime allowlist with zero callers (dormant capability) | [#60](https://github.com/pascalgross/farrier/issues/60) |
-| F-19 | Info | control plane | Unauthenticated `/healthz` runs a tenant-list query per request and discloses build version | [#61](https://github.com/pascalgross/farrier/issues/61) |
-| F-20 | Info | transport | TLS listener floor is 1.2 with no cipher-suite pinning | [#62](https://github.com/pascalgross/farrier/issues/62) |
-| F-21 | Info | observability | Invalid event kinds are logged but still delivered | [#63](https://github.com/pascalgross/farrier/issues/63) |
+| F-01 | **Med** | packaging / CI | Release pipeline runs unpinned actions and `nfpm@latest` in the code-signing path | [#43](https://github.com/pascalgross/hostseal/issues/43) |
+| F-02 | Low | guardrail test | `execve` guarantee test does not cover `x/sys/unix` or raw `syscall` | [#44](https://github.com/pascalgross/hostseal/issues/44) |
+| F-03 | Low | guardrail test | `execve` scan silently skips a scanned root that no longer exists | [#45](https://github.com/pascalgross/hostseal/issues/45) |
+| F-04 | Low | signing / replay | Agent does not fail closed on a signed privileged job with an unbounded validity window | [#46](https://github.com/pascalgross/hostseal/issues/46) |
+| F-05 | Low | signing | `canonical.Normalize` is unused; verification runs over a re-encoding of the decoded view | [#47](https://github.com/pascalgross/hostseal/issues/47) |
+| F-06 | Low | priv boundary | Offline signature is enforced only in the unprivileged agent; the root boundary re-checks policy, not signature | [#48](https://github.com/pascalgross/hostseal/issues/48) |
+| F-07 | Low | policy | Helper's local `max_job_age` check is caller-controlled; the comment claims it fails closed | [#49](https://github.com/pascalgross/hostseal/issues/49) |
+| F-08 | Low | policy | Zero-length maintenance window silently expands to a full 24 hours | [#50](https://github.com/pascalgross/hostseal/issues/50) |
+| F-09 | Low | bootstrap | Apply-once interlock uses check-then-write, not an atomic `O_EXCL` create | [#51](https://github.com/pascalgross/hostseal/issues/51) |
+| F-10 | Low | bootstrap | Full bootstrap body is written to the systemd journal at INFO | [#52](https://github.com/pascalgross/hostseal/issues/52) |
+| F-11 | Low | tenant isolation | `enrollment_tokens` RLS `WITH CHECK` keeps the `resolve_key` disjunct the certificates policy dropped | [#53](https://github.com/pascalgross/hostseal/issues/53) |
+| F-12 | Low | tenant isolation | Empty-tenant-id invariant is enforced only in Go, not by a schema `CHECK` | [#54](https://github.com/pascalgross/hostseal/issues/54) |
+| F-13 | Low | control plane | Tenant event webhook: no SSRF guard, plaintext `http` allowed, follows redirects | [#55](https://github.com/pascalgross/hostseal/issues/55) |
+| F-14 | Low | control plane | `POST /agent/v1/renew`: no rate limit, no per-host cert cap, superseded cert never retired | [#56](https://github.com/pascalgross/hostseal/issues/56) |
+| F-15 | Low | control plane | Two-person approval silently becomes unsatisfiable under the shipped shared-token auth | [#57](https://github.com/pascalgross/hostseal/issues/57) |
+| F-16 | Low | deploy | Traefik UI-hostname agent-API deny router uses a fixed priority a long hostname can outrank | [#58](https://github.com/pascalgross/hostseal/issues/58) |
+| F-17 | Low | CI | `release.yml` grants `contents: write` to the build job that only needs read | [#59](https://github.com/pascalgross/hostseal/issues/59) |
+| F-18 | Info | run | `run.Systemctl` is in the runtime allowlist with zero callers (dormant capability) | [#60](https://github.com/pascalgross/hostseal/issues/60) |
+| F-19 | Info | control plane | Unauthenticated `/healthz` runs a tenant-list query per request and discloses build version | [#61](https://github.com/pascalgross/hostseal/issues/61) |
+| F-20 | Info | transport | TLS listener floor is 1.2 with no cipher-suite pinning | [#62](https://github.com/pascalgross/hostseal/issues/62) |
+| F-21 | Info | observability | Invalid event kinds are logged but still delivered | [#63](https://github.com/pascalgross/hostseal/issues/63) |
 
 ---
 
 ## 5. Prioritised remediation
 
-1. **[#43](https://github.com/pascalgross/farrier/issues/43), [#59](https://github.com/pascalgross/farrier/issues/59)** — pin CI actions and `nfpm` to SHAs/exact versions and scope the build token to read. The one finding whose adversary reaches the whole fleet with root.
-2. **[#44](https://github.com/pascalgross/farrier/issues/44), [#46](https://github.com/pascalgross/farrier/issues/46), [#48](https://github.com/pascalgross/farrier/issues/48)** — close the "single point of enforcement" gaps: deny `x/sys/unix`, refuse an unbounded signed window, and document/test the root boundary's signature posture. Each makes a protection independent of future discipline.
-3. **[#53](https://github.com/pascalgross/farrier/issues/53), [#54](https://github.com/pascalgross/farrier/issues/54)** — move two tenant-isolation invariants from Go/asymmetric-policy into database constraints, matching the project's own "enforced by PostgreSQL, not by remembering" principle.
-4. **[#55](https://github.com/pascalgross/farrier/issues/55), [#56](https://github.com/pascalgross/farrier/issues/56), [#57](https://github.com/pascalgross/farrier/issues/57)** — give the webhook the SMTP sink's transport discipline; rate-limit and cap certificate renewal; guard `second_person` against a shared-principal auth provider.
-5. **The remaining low and informational items** ([#45](https://github.com/pascalgross/farrier/issues/45), [#47](https://github.com/pascalgross/farrier/issues/47), [#49](https://github.com/pascalgross/farrier/issues/49)–[#52](https://github.com/pascalgross/farrier/issues/52), [#58](https://github.com/pascalgross/farrier/issues/58), [#60](https://github.com/pascalgross/farrier/issues/60)–[#63](https://github.com/pascalgross/farrier/issues/63)) — correctness, doc/code-mismatch and hardening; fold into normal maintenance.
+1. **[#43](https://github.com/pascalgross/hostseal/issues/43), [#59](https://github.com/pascalgross/hostseal/issues/59)** — pin CI actions and `nfpm` to SHAs/exact versions and scope the build token to read. The one finding whose adversary reaches the whole fleet with root.
+2. **[#44](https://github.com/pascalgross/hostseal/issues/44), [#46](https://github.com/pascalgross/hostseal/issues/46), [#48](https://github.com/pascalgross/hostseal/issues/48)** — close the "single point of enforcement" gaps: deny `x/sys/unix`, refuse an unbounded signed window, and document/test the root boundary's signature posture. Each makes a protection independent of future discipline.
+3. **[#53](https://github.com/pascalgross/hostseal/issues/53), [#54](https://github.com/pascalgross/hostseal/issues/54)** — move two tenant-isolation invariants from Go/asymmetric-policy into database constraints, matching the project's own "enforced by PostgreSQL, not by remembering" principle.
+4. **[#55](https://github.com/pascalgross/hostseal/issues/55), [#56](https://github.com/pascalgross/hostseal/issues/56), [#57](https://github.com/pascalgross/hostseal/issues/57)** — give the webhook the SMTP sink's transport discipline; rate-limit and cap certificate renewal; guard `second_person` against a shared-principal auth provider.
+5. **The remaining low and informational items** ([#45](https://github.com/pascalgross/hostseal/issues/45), [#47](https://github.com/pascalgross/hostseal/issues/47), [#49](https://github.com/pascalgross/hostseal/issues/49)–[#52](https://github.com/pascalgross/hostseal/issues/52), [#58](https://github.com/pascalgross/hostseal/issues/58), [#60](https://github.com/pascalgross/hostseal/issues/60)–[#63](https://github.com/pascalgross/hostseal/issues/63)) — correctness, doc/code-mismatch and hardening; fold into normal maintenance.
 
 ---
 
 ## 6. Conclusion
 
-Farrier's central claim — that an attacker who owns the control plane cannot run code on an enrolled host,
+HostSeal's central claim — that an attacker who owns the control plane cannot run code on an enrolled host,
 exceed its local policy, or reboot it against that policy — holds in the code, and the mechanisms that
 make it hold are unusually well factored and unusually well tested. The findings here are not cracks in
 that guarantee; they are places where a protection sits in one location where the project's own standards

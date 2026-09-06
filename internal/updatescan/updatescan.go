@@ -8,7 +8,7 @@
 // argument about behaviour where the guarantee is about reachability.
 //
 // So the contract is here, where it has no dependencies at all, and internal/wua — which does the COM —
-// is reachable only from cmd/farrier-update-scan. A package holding nothing but types is the cheapest
+// is reachable only from cmd/hostseal-update-scan. A package holding nothing but types is the cheapest
 // possible way to keep an import graph honest, and the alternative was to weaken the test that noticed.
 package updatescan
 

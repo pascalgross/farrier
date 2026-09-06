@@ -2,7 +2,7 @@
 
 # The control plane as a container image.
 #
-# Only farrier-server is in here, and that is a security decision rather than a size one. `farrier` —
+# Only hostseal-server is in here, and that is a security decision rather than a size one. `hostseal` —
 # the command that signs a destructive job — links the signing backends, and a signing key that the
 # control plane's own host can reach is a key the control plane holds, whatever the console says about
 # custody. Signing happens on somebody's laptop or against their token; see docs/SECURITY.md §1 and §9.
@@ -44,9 +44,9 @@ ARG COMMIT=unknown
 # runtime libraries in the final image, so there is nothing in it to keep patched but the binary itself.
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w \
-        -X github.com/pascalgross/farrier/internal/buildinfo.Version=${VERSION} \
-        -X github.com/pascalgross/farrier/internal/buildinfo.Commit=${COMMIT}" \
-      -o /out/farrier-server ./cmd/farrier-server
+        -X github.com/pascalgross/hostseal/internal/buildinfo.Version=${VERSION} \
+        -X github.com/pascalgross/hostseal/internal/buildinfo.Commit=${COMMIT}" \
+      -o /out/hostseal-server ./cmd/hostseal-server
 
 FROM alpine:3.22
 
@@ -59,12 +59,12 @@ RUN apk add --no-cache ca-certificates curl tzdata
 # A fixed uid, not just a name. The CA directory is a volume, and a volume's ownership survives the
 # image that created it: a uid that moved between releases would leave a running installation unable to
 # read its own certificate authority.
-RUN addgroup -g 65532 -S farrier \
- && adduser -u 65532 -S -G farrier -H -s /sbin/nologin farrier \
- && mkdir -p /var/lib/farrier-server \
- && chown farrier:farrier /var/lib/farrier-server
+RUN addgroup -g 65532 -S hostseal \
+ && adduser -u 65532 -S -G hostseal -H -s /sbin/nologin hostseal \
+ && mkdir -p /var/lib/hostseal-server \
+ && chown hostseal:hostseal /var/lib/hostseal-server
 
-COPY --from=build /out/farrier-server /usr/bin/farrier-server
+COPY --from=build /out/hostseal-server /usr/bin/hostseal-server
 # --chmod rather than relying on the mode in the build context: a checkout on a filesystem that does not
 # carry the executable bit would otherwise produce an image whose entry point cannot be run, and the
 # error for that names the shell rather than the file.
@@ -77,25 +77,25 @@ ARG VERSION=0.0.0-docker
 # What a registry shows about this image, and what a vulnerability scanner reports it as. The source
 # link is the one that matters: the guarantee this project makes is checkable only against source, so an
 # image that did not say where it came from would be asking to be taken on trust.
-LABEL org.opencontainers.image.title="farrier-server" \
-      org.opencontainers.image.description="Farrier control plane: fleet management with no remote execution channel" \
-      org.opencontainers.image.source="https://github.com/pascalgross/farrier" \
-      org.opencontainers.image.documentation="https://github.com/pascalgross/farrier/blob/main/deploy/README.md" \
+LABEL org.opencontainers.image.title="hostseal-server" \
+      org.opencontainers.image.description="HostSeal control plane: fleet management with no remote execution channel" \
+      org.opencontainers.image.source="https://github.com/pascalgross/hostseal" \
+      org.opencontainers.image.documentation="https://github.com/pascalgross/hostseal/blob/main/deploy/README.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.vendor="Pascal Groß, trading as Pegasus Networks" \
+      org.opencontainers.image.vendor="Pascal Groß" \
       org.opencontainers.image.version="${VERSION}"
 
 # Declared so that a `docker run` without a volume still keeps the CA, the online signing key and the
 # template sealing key out of the container's writable layer. Losing any of them is not recoverable:
 # every enrolled agent verifies this control plane against that CA, and every stored template is
 # encrypted to that key. deploy/compose.yaml names a volume for it explicitly.
-VOLUME /var/lib/farrier-server
+VOLUME /var/lib/hostseal-server
 
-USER farrier
+USER hostseal
 EXPOSE 8443
 
 # --insecure is correct here and nowhere else. The certificate this reaches is the one the server
-# presents on its own loopback, which on a default installation is issued by Farrier's own CA and is not
+# presents on its own loopback, which on a default installation is issued by HostSeal's own CA and is not
 # in this image's trust store; the check is asking whether the process is up and can reach its database,
 # which is exactly what /healthz answers. Nothing about the agent protocol's own verification is
 # affected: an agent verifies against the CA bundle it was handed at enrolment.

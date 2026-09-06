@@ -1,6 +1,6 @@
-// Package collect gathers the facts a Farrier agent reports about its host.
+// Package collect gathers the facts a HostSeal agent reports about its host.
 //
-// Everything here is read-only and runs as the unprivileged farrier user with no capabilities. A
+// Everything here is read-only and runs as the unprivileged hostseal user with no capabilities. A
 // collector that needs root is not a collector; it is a request for a new intent, which is a different
 // and much longer conversation.
 //
@@ -28,7 +28,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/hostseal/internal/policy"
 )
 
 // Bounds on what a single host may report, from docs/PROTOCOL.md §4.5.
@@ -53,7 +53,7 @@ const (
 // Family is the distribution family a platform implementation handles.
 type Family string
 
-// The distribution families Farrier supports.
+// The distribution families HostSeal supports.
 const (
 	// FamilyUbuntu covers the Ubuntu LTS releases in standard support.
 	FamilyUbuntu Family = "ubuntu"
@@ -87,7 +87,7 @@ type Distribution struct {
 	// PrettyName is the os-release PRETTY_NAME, for display.
 	PrettyName string `json:"prettyName"`
 
-	// Supported reports whether this release is one Farrier supports.
+	// Supported reports whether this release is one HostSeal supports.
 	//
 	// The policy is a rule rather than a list: the Ubuntu LTS releases in standard support, plus Debian
 	// stable and oldstable. Ubuntu 20.04 is excluded as ESM-only. An unsupported host still reports —

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/policy"
 )
 
 // containers returns the registered containers collector.

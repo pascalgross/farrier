@@ -32,7 +32,7 @@ import { toneClass } from '../core/tone';
  * would be a toast for the operator who least needs one.
  */
 @Component({
-  selector: 'farrier-toast-stack',
+  selector: 'hostseal-toast-stack',
   imports: [MatButtonModule, MatIconModule, RouterLink],
   templateUrl: './toast-stack.html',
   styleUrl: './toast-stack.scss',

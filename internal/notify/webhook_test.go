@@ -22,7 +22,7 @@ import (
 // and the sink would then be a feature nobody could configure.
 func TestGuaranteeAWebhookMustBeHTTPS(t *testing.T) {
 	for _, refused := range []string{
-		"http://hooks.example.org/farrier",
+		"http://hooks.example.org/hostseal",
 		"http://169.254.169.254/latest/meta-data/",
 		"ftp://example.org/",
 		"file:///etc/passwd",
@@ -38,8 +38,8 @@ func TestGuaranteeAWebhookMustBeHTTPS(t *testing.T) {
 	}
 
 	for _, accepted := range []string{
-		"https://hooks.example.org/farrier",
-		"https://hooks.example.org:8443/farrier?token=abc",
+		"https://hooks.example.org/hostseal",
+		"https://hooks.example.org:8443/hostseal?token=abc",
 		"https://10.0.0.5:8080/hook",
 	} {
 		if err := ValidateWebhookURL(accepted); err != nil {

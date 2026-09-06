@@ -10,7 +10,7 @@
 @if (error()) {
   <mat-card class="max-w-xl mb-6">
     <mat-card-content class="!pt-6 flex items-start gap-3">
-      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
       <p class="m-0">{{ error() }}</p>
     </mat-card-content>
   </mat-card>
@@ -28,7 +28,7 @@
       tier — applying every update, starting, stopping or restarting a unit, rebooting. Those carry a
       signature made offline by a key listed in that host's own <code>trusted-signers</code>, which this
       control plane does not hold and a browser is the last place that should ever be. Sign one with
-      <code>farrier sign</code> and send it to <code>POST /api/v1/jobs</code>; releasing it is what this
+      <code>hostseal sign</code> and send it to <code>POST /api/v1/jobs</code>; releasing it is what this
       page can do.
     </p>
 
@@ -57,13 +57,13 @@
     </div>
 
     @if (actionError()) {
-      <p class="text-sm text-farrier-bad m-0 mt-2">{{ actionError() }}</p>
+      <p class="text-sm text-hostseal-bad m-0 mt-2">{{ actionError() }}</p>
     }
   </mat-card-content>
 </mat-card>
 
 @if (awaiting().length > 0 || awaitingError()) {
-  <mat-card class="mb-8 max-w-3xl !border-l-4 !border-l-farrier-warn">
+  <mat-card class="mb-8 max-w-3xl !border-l-4 !border-l-hostseal-warn">
     <mat-card-header>
       <mat-card-title>Waiting to be released</mat-card-title>
     </mat-card-header>
@@ -74,7 +74,7 @@
              successful job-list fetch used to wipe it there, and an operator shown a full page with no
              card concludes there is nothing to release. -->
         <p class="m-0 flex items-start gap-2 text-sm">
-          <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+          <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
           <span>
             The approval queue could not be loaded, so jobs may be waiting that this page cannot show:
             {{ awaitingError() }}
@@ -83,7 +83,7 @@
       } @else {
         @if (awaitingTruncated()) {
           <p class="m-0 mb-3 flex items-start gap-2 text-sm">
-            <mat-icon class="text-farrier-warn">warning_amber</mat-icon>
+            <mat-icon class="text-hostseal-warn">warning_amber</mat-icon>
             <span>
               This card holds as many waiting jobs as one request can carry, so there may be more —
               and anything missing is the <em>oldest</em>, the jobs that have waited longest. A queue
@@ -101,7 +101,7 @@
         <ul class="list-none p-0 m-0 flex flex-col gap-3">
           @for (job of awaiting(); track job.id) {
             <li class="flex flex-wrap items-baseline gap-3">
-              <span class="font-medium farrier-numeric">{{ job.intent }}</span>
+              <span class="font-medium hostseal-numeric">{{ job.intent }}</span>
               <span class="text-sm">on <a [routerLink]="['/hosts', job.hostId]">{{ hostname(job) }}</a></span>
               <span class="text-xs opacity-70">
                 {{ authorisation(job) }}, asked {{ age(job) }} by {{ job.createdBy || 'an unnamed operator' }}
@@ -131,7 +131,7 @@
     <ng-container matColumnDef="intent">
       <th mat-header-cell *matHeaderCellDef>Operation</th>
       <td mat-cell *matCellDef="let job">
-        <div class="font-medium farrier-numeric">{{ job.intent }}</div>
+        <div class="font-medium hostseal-numeric">{{ job.intent }}</div>
         @if (job.result?.error) {
           <div class="text-xs opacity-70 max-w-md">{{ job.result.error }}</div>
         }
@@ -152,21 +152,21 @@
       <th mat-header-cell *matHeaderCellDef>State</th>
       <td mat-cell *matCellDef="let job">
         @if (failed(job)) {
-          <mat-chip class="!bg-farrier-bad/20">{{ job.state }}</mat-chip>
+          <mat-chip class="!bg-hostseal-bad/20">{{ job.state }}</mat-chip>
         } @else if (refused(job)) {
-          <mat-chip class="!bg-farrier-warn/20"
+          <mat-chip class="!bg-hostseal-warn/20"
                     matTooltip="Refused rather than attempted. A refusal is the host's policy working, not a failure.">
             {{ job.state }}
           </mat-chip>
         } @else if (awaitingApproval(job)) {
-          <mat-chip class="!bg-farrier-warn/20"
+          <mat-chip class="!bg-hostseal-warn/20"
                     [matTooltip]="job.approvalDistinctOperator
                       ? 'This fleet requires somebody other than the creator to release a destructive job.'
                       : 'This fleet requires a deliberate release before any host may claim the job.'">
             awaiting release
           </mat-chip>
         } @else {
-          <mat-chip class="!bg-farrier-ok/20">{{ job.state }}</mat-chip>
+          <mat-chip class="!bg-hostseal-ok/20">{{ job.state }}</mat-chip>
         }
       </td>
     </ng-container>

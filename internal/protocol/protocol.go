@@ -1,4 +1,4 @@
-// Package protocol defines the wire types shared by the Farrier agent and control plane.
+// Package protocol defines the wire types shared by the HostSeal agent and control plane.
 //
 // It is one package used by both sides rather than two that agree, which is most of the reason both
 // components are written in Go. The intent catalogue and the signature verifier are literally the same
@@ -141,7 +141,7 @@ type Bootstrap struct {
 	// a control plane relabelled its version numbers.
 	Version int `json:"version,omitempty"`
 
-	// Body is the cloud-init user-data, in full. cloud-init does the applying; Farrier never
+	// Body is the cloud-init user-data, in full. cloud-init does the applying; HostSeal never
 	// interprets this itself, because a hand-written YAML-to-shell engine would be the exec channel
 	// wearing a hat.
 	Body string `json:"body"`
@@ -235,7 +235,7 @@ type HeartbeatRequest struct {
 	// ClockOffsetSeconds is the agent's own measurement of its offset from the server.
 	ClockOffsetSeconds int64 `json:"clockOffsetSeconds"`
 
-	// Paused reports whether /etc/farrier/paused exists.
+	// Paused reports whether /etc/hostseal/paused exists.
 	Paused bool `json:"paused"`
 
 	// Facts is the full inventory, sent only when the server asked for it.
@@ -568,7 +568,7 @@ func TruncateOutput(s string) (string, bool) {
 	return s[len(s)-MaxJobOutputBytes:], true
 }
 
-// TLSMinVersion is the floor for every Farrier TLS connection, on both ends.
+// TLSMinVersion is the floor for every HostSeal TLS connection, on both ends.
 //
 // 1.2 rather than 1.3, and the reason is the listener rather than the protocol. One port carries three
 // kinds of client — an agent enrolling, an enrolled agent, and an operator's browser — and only the

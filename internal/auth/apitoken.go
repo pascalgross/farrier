@@ -13,16 +13,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
-// APITokenPrefix marks a Farrier API token as one.
+// APITokenPrefix marks a HostSeal API token as one.
 //
 // It costs nothing and buys two things. A secret scanner — GitHub's, or a pre-commit hook — matches on
 // a prefix, so a token pasted into a repository can be found before somebody uses it; and a person
 // looking at an environment file can tell what they are holding without trying it. The convention is
 // widely copied for exactly these reasons.
-const APITokenPrefix = "frr_"
+const APITokenPrefix = "hsl_"
 
 // APITokenBytes is how much randomness a token carries.
 //
@@ -33,7 +33,7 @@ const APITokenBytes = 32
 
 // APITokens authenticates a script or a job runner as the account whose token it presents.
 //
-// It is what replaces the shared bearer token, and the difference is the whole point. `FARRIER_ADMIN_
+// It is what replaces the shared bearer token, and the difference is the whole point. `HOSTSEAL_ADMIN_
 // TOKEN` was one credential for a whole fleet: it named nobody in the audit trail, made second-person
 // approval unsatisfiable — that rule is a string comparison between two principals, and under one
 // shared token they were always equal — never expired, and could be withdrawn only by restarting the
@@ -73,7 +73,7 @@ func (a *APITokens) Name() string { return "local-account" }
 // guessing.
 //
 // Expiry is checked against this process's clock rather than the database's, matching every other
-// validity window in Farrier — docs/SECURITY.md treats clock skew as a boundary.
+// validity window in HostSeal — docs/SECURITY.md treats clock skew as a boundary.
 func (a *APITokens) Authenticate(ctx context.Context, r *http.Request) (*Identity, error) {
 	presented := bearerToken(r)
 	if presented == "" {

@@ -136,8 +136,8 @@ describe('ServicesPage unit states', () => {
     const crashed = chips.find((chip) => text(chip).includes('cron.service'));
 
     expect(text(masked ?? null)).toContain('masked');
-    expect(masked?.querySelector('.text-farrier-warn')).not.toBeNull();
-    expect(masked?.querySelector('.text-farrier-bad')).toBeNull();
-    expect(crashed?.querySelector('.text-farrier-bad')).not.toBeNull();
+    expect(masked?.querySelector('.text-hostseal-warn')).not.toBeNull();
+    expect(masked?.querySelector('.text-hostseal-bad')).toBeNull();
+    expect(crashed?.querySelector('.text-hostseal-bad')).not.toBeNull();
   });
 });

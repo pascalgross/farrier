@@ -17,10 +17,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // EnrollOptions are the inputs to enrolling a host.
@@ -94,7 +94,7 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 		}
 	}
 	if opts.PolicyFile != "" {
-		if err := installLocalFile(opts.PolicyFile, "/etc/farrier/policy.toml"); err != nil {
+		if err := installLocalFile(opts.PolicyFile, "/etc/hostseal/policy.toml"); err != nil {
 			return nil, err
 		}
 	}
@@ -107,7 +107,7 @@ func Enroll(ctx context.Context, opts EnrollOptions) (*State, error) {
 		}
 		if signers.Empty() {
 			return nil, fmt.Errorf("%w: --bootstrap needs a key in %s to verify the template against, "+
-				"and there is none. Pass --signers with a local file first. Farrier will not fall back "+
+				"and there is none. Pass --signers with a local file first. HostSeal will not fall back "+
 				"to trusting the server: a template verified against a key the server supplied is a "+
 				"template verified against nothing",
 				ErrNoTrustAnchor, signing.TrustedSignersPath)
@@ -266,7 +266,7 @@ func generateKeyAndCSR() (*ecdsa.PrivateKey, []byte, error) {
 		return nil, nil, fmt.Errorf("agent: generating a key: %w", err)
 	}
 	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: "farrier-agent"},
+		Subject: pkix.Name{CommonName: "hostseal-agent"},
 	}, key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent: creating a certificate request: %w", err)
@@ -291,8 +291,8 @@ func installLocalFile(source, destination string) error {
 		return fmt.Errorf("agent: %s already exists and differs from %s; refusing to replace it. "+
 			"Edit it in place if the change is intended", destination, source)
 	}
-	// 0755, not 0750. /etc/farrier holds root-owned, world-readable configuration that the
-	// unprivileged farrier user must be able to read: the agent reads policy.toml and trusted-signers
+	// 0755, not 0750. /etc/hostseal holds root-owned, world-readable configuration that the
+	// unprivileged hostseal user must be able to read: the agent reads policy.toml and trusted-signers
 	// on every cycle, and a directory it cannot traverse would make the host refuse everything.
 	//nolint:gosec // G301: deliberate, and the files inside are individually 0644 root:root.
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
@@ -364,7 +364,7 @@ func enrolledButUnreadable(hostID, stateDir string, err error) error {
 	return fmt.Errorf("%w\n\nThis host enrolled as %s and the credential is on disk, but it is owned "+
 		"by the wrong user, so the agent will report \"not enrolled\" and send nothing. Do not enrol "+
 		"again — that spends another token for the same files. Fix the ownership instead:\n\n"+
-		"    sudo chown -R farrier:farrier %s\n    sudo systemctl restart farrier-agent",
+		"    sudo chown -R hostseal:hostseal %s\n    sudo systemctl restart hostseal-agent",
 		err, hostID, stateDir)
 }
 

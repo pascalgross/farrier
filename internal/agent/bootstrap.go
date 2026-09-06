@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/run"
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/run"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // BootstrapRecordFile is where an applied provisioning template is recorded permanently.
@@ -21,8 +21,8 @@ const BootstrapRecordFile = "bootstrap-applied.json"
 // CloudInitSeedDir is where the verified user-data is written for cloud-init to read.
 //
 // The NoCloud seed directory is cloud-init's own documented file-based datasource. Writing here is
-// what "Farrier writes the user-data where cloud-init reads it" means concretely, and it is the whole
-// of Farrier's involvement in applying: the body becomes a file, cloud-init interprets the file, and
+// what "HostSeal writes the user-data where cloud-init reads it" means concretely, and it is the whole
+// of HostSeal's involvement in applying: the body becomes a file, cloud-init interprets the file, and
 // no byte of it ever appears on a command line.
 const CloudInitSeedDir = "/var/lib/cloud/seed/nocloud"
 
@@ -78,7 +78,7 @@ type bootstrapRecord struct {
 //     and never discovers a template ran twice.
 //  2. The user-data lands in cloud-init's seed directory, under a fresh instance-id, so cloud-init
 //     treats the enrolment as a new instance and processes the seed once.
-//  3. cloud-init runs its own stages, with argument vectors fixed here. Farrier never interprets the
+//  3. cloud-init runs its own stages, with argument vectors fixed here. HostSeal never interprets the
 //     body: a hand-written YAML-to-shell engine is the exec channel wearing a hat, and it is refused
 //     by name in docs/SECURITY.md §7.
 //
@@ -103,7 +103,7 @@ func applyBootstrap(ctx context.Context, opts EnrollOptions, b protocol.Bootstra
 	// Exclusive rather than atomic, and the difference is a second concurrent enrolment.
 	//
 	// checkBootstrapInterlock reads this file early and this writes it late, so on its own that is
-	// check-then-act: two `farrier enroll --bootstrap X` processes sharing a state directory can both
+	// check-then-act: two `hostseal enroll --bootstrap X` processes sharing a state directory can both
 	// read "no record", both pass, and both drive cloud-init — and a rename-based write would let the
 	// second silently replace the first's record, so nothing afterwards would say it had happened
 	// twice. link(2) fails with EEXIST instead, which turns the race into a refusal by the loser.
@@ -170,7 +170,7 @@ func writeSeed(seedDir, hostID, body string) error {
 			"not %s", hostID, protocol.HostIDShape)
 	}
 	// 0700, not 0755. The only reader is cloud-init, which is root, and what is in here is the
-	// rendered user-data — a credential everywhere else in Farrier, and no different for sitting in a
+	// rendered user-data — a credential everywhere else in HostSeal, and no different for sitting in a
 	// seed directory. A mode that let every local account list it would be the one place that
 	// treatment lapsed.
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
@@ -178,23 +178,23 @@ func writeSeed(seedDir, hostID, body string) error {
 	}
 	// MkdirAll leaves an existing directory's mode alone, and this one may well exist: cloud-init's
 	// own package creates /var/lib/cloud. Without this the comment above would be true only of hosts
-	// where Farrier happened to create it first.
+	// where HostSeal happened to create it first.
 	//nolint:gosec // G302 wants 0600 or less, which is a rule about files: a directory with no
 	// execute bit cannot be traversed, so cloud-init could not read the seed it is being handed. 0700
 	// is the tightest mode that works, and the only account that needs it is root.
 	if err := os.Chmod(seedDir, 0o700); err != nil {
 		return fmt.Errorf("agent: tightening %s: %w", seedDir, err)
 	}
-	// 0600: rendered user-data is treated as a credential everywhere else in Farrier, and the seed
+	// 0600: rendered user-data is treated as a credential everywhere else in HostSeal, and the seed
 	// copy is no different. Anything that needs it — cloud-init — is root.
 	if err := WriteFileAtomic(filepath.Join(seedDir, "user-data"), []byte(body), 0o600); err != nil {
 		return err
 	}
-	meta := "instance-id: farrier-bootstrap-" + hostID + "\n"
+	meta := "instance-id: hostseal-bootstrap-" + hostID + "\n"
 	return WriteFileAtomic(filepath.Join(seedDir, "meta-data"), []byte(meta), 0o600)
 }
 
-// cloudInitStages are the argument vectors Farrier may hand cloud-init, in boot order.
+// cloudInitStages are the argument vectors HostSeal may hand cloud-init, in boot order.
 //
 // A package-level list rather than a literal inside the loop, so that what this program can ask
 // cloud-init to do is one readable thing a reviewer and a test can both look at. Every element is a

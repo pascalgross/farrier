@@ -185,7 +185,7 @@ function render(answers: Answers = {}): Rendered {
                 label: 'deployment pipeline',
                 createdAt: '2026-08-25T12:00:00Z',
                 expiresAt: null,
-                token: 'frr_a-freshly-minted-token',
+                token: 'hsl_a-freshly-minted-token',
               })
             );
           },
@@ -222,8 +222,8 @@ describe('AccountPage', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    const secret = fixture.nativeElement.querySelector('.farrier-account__secret');
-    expect(text(secret)).toBe('frr_a-freshly-minted-token');
+    const secret = fixture.nativeElement.querySelector('.hostseal-account__secret');
+    expect(text(secret)).toBe('hsl_a-freshly-minted-token');
     expect(recorded.minted).toEqual([{ label: 'deployment pipeline', expiresInDays: 90 }]);
   });
 
@@ -310,7 +310,7 @@ describe('AccountPage', () => {
       ],
     });
 
-    const rows = fixture.nativeElement.querySelectorAll('.farrier-account__row');
+    const rows = fixture.nativeElement.querySelectorAll('.hostseal-account__row');
     expect(rows.length).toBe(2);
     expect(text(rows[0])).toContain('this browser');
     expect(text(rows[1])).toContain('Mozilla/5.0 (Windows)');
@@ -327,7 +327,7 @@ describe('AccountPage', () => {
       tokens: [apiToken({ usable: false, expiresAt: '2026-01-01T00:00:00Z', label: 'old runner' })],
     });
 
-    const rows = fixture.nativeElement.querySelectorAll('.farrier-account__row--muted');
+    const rows = fixture.nativeElement.querySelectorAll('.hostseal-account__row--muted');
     expect(rows.length).toBe(1);
     expect(text(rows[0])).toContain('old runner');
     expect(text(rows[0])).toContain('expired');

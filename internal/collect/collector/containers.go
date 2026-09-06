@@ -3,19 +3,19 @@ package collector
 import (
 	"context"
 
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/policy"
 )
 
 // containersCollector reports the Docker containers visible on this host, without the docker group.
 //
-// It exists because on the machines Farrier is aimed at the systemd view is close to content-free:
+// It exists because on the machines HostSeal is aimed at the systemd view is close to content-free:
 // docker.service is active, and whether the thing the machine exists to run is up is visible nowhere.
 // The answer here is deliberately the smaller one. Container state lives behind /var/run/docker.sock,
 // which is root:docker, and the two ways to reach it are both refused — the agent is never added to
 // the docker group, because docs/SECURITY.md §6 says socket access is root equivalence, and there is no
 // fourth root helper, because docs/SECURITY.md §3 says there are exactly three and the guarantee suite
-// enforces it. So this reads /proc and /sys/fs/cgroup as the unprivileged farrier user, which needs no
+// enforces it. So this reads /proc and /sys/fs/cgroup as the unprivileged hostseal user, which needs no
 // privilege at all and produces no image names, no exit codes and no restart counts.
 //
 // What it does produce is the part an operator would otherwise have to take on trust: which containers
@@ -46,7 +46,7 @@ func (containersCollector) Collect(context.Context) (any, error) {
 
 // PermittedBy reports whether the host's local policy allows container state to be reported.
 //
-// It is false unless `[containers] report = true` is written in /etc/farrier/policy.toml. That default
+// It is false unless `[containers] report = true` is written in /etc/hostseal/policy.toml. That default
 // is the point rather than caution: a host that reports its package state has not thereby agreed to
 // tell the control plane what its owner's business runs, and the shipped answer to a question nobody
 // has been asked is no.

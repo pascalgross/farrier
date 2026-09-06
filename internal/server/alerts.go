@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // DefaultAlertCooldownSeconds is the re-notification pace a rule gets when its creator names none.

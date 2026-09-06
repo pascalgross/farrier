@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // testHostID is the host identity every job in these tests is addressed to.
@@ -306,7 +306,7 @@ func TestValidityWindowsAreCheckedAgainstTheLocalClock(t *testing.T) {
 // them to its state is how a wrong clock stays wrong.
 func TestGuaranteeClockSkewFailsClosedForPrivilegedIntentsOnly(t *testing.T) {
 	trusted := newSignerFixture(t, "ops-laptop")
-	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	controlPlane := newSignerFixture(t, "hostseal-online-abcd1234")
 	skew := 10 * time.Minute
 
 	t.Run("a signed destructive job is refused, and the refusal names the clock", func(t *testing.T) {
@@ -634,7 +634,7 @@ func TestGuaranteeARoutineJobIsRefusedWithoutTheOnlineKey(t *testing.T) {
 // TestGuaranteeARoutineJobIsRefusedWhenTheOnlineKeyDidNotSignIt covers the key set actually being
 // consulted rather than merely being present.
 func TestGuaranteeARoutineJobIsRefusedWhenTheOnlineKeyDidNotSignIt(t *testing.T) {
-	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	controlPlane := newSignerFixture(t, "hostseal-online-abcd1234")
 	impostor := newSignerFixture(t, "somebody-else")
 
 	job := routineJob("nonce-routine-wrong-key")
@@ -653,7 +653,7 @@ func TestGuaranteeARoutineJobIsRefusedWhenTheOnlineKeyDidNotSignIt(t *testing.T)
 // TestARoutineJobSignedByTheOnlineKeyIsAccepted is the ordinary path, asserted alongside the refusals
 // so that a change which refused everything would not look like a pass.
 func TestARoutineJobSignedByTheOnlineKeyIsAccepted(t *testing.T) {
-	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	controlPlane := newSignerFixture(t, "hostseal-online-abcd1234")
 	job := signJobWith(t, routineJob("nonce-routine-good"), controlPlane)
 
 	got := accept(job, testHostID, permissivePolicy(t), newSignerFixture(t, "ops-laptop").set,
@@ -676,7 +676,7 @@ func TestARoutineJobSignedByTheOnlineKeyIsAccepted(t *testing.T) {
 // routine one. The second is not a security property so much as proof that the two anchors are
 // genuinely separate rather than one set consulted twice.
 func TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob(t *testing.T) {
-	controlPlane := newSignerFixture(t, "farrier-online-abcd1234")
+	controlPlane := newSignerFixture(t, "hostseal-online-abcd1234")
 	operator := newSignerFixture(t, "ops-laptop")
 
 	t.Run("the online key cannot reboot a host", func(t *testing.T) {
@@ -743,7 +743,7 @@ func TestGuaranteeTheOnlineKeyCannotAuthoriseADestructiveJob(t *testing.T) {
 // The signature is genuine in both cases below, which is what makes this a test about the window: it is
 // signed by a key in this host's own anchor and would be accepted if the window were a window.
 //
-// Nothing shipped produces such a job. `farrier sign` sets both edges and refuses --valid-for ≤ 0, and
+// Nothing shipped produces such a job. `hostseal sign` sets both edges and refuses --valid-for ≤ 0, and
 // this is the check that means the guarantee does not rest on that being true of every signer somebody
 // writes later.
 func TestGuaranteeASignedJobWithAnUnboundedWindowIsRefused(t *testing.T) {

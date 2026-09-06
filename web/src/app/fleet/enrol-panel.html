@@ -10,7 +10,7 @@
 
     @if (error()) {
       <div class="flex items-start gap-3">
-        <mat-icon class="text-farrier-bad" aria-hidden="true">error_outline</mat-icon>
+        <mat-icon class="text-hostseal-bad" aria-hidden="true">error_outline</mat-icon>
         <p class="m-0">{{ error() }}</p>
       </div>
     } @else if (instructions() === null) {
@@ -22,13 +22,13 @@
       </p>
 
       @if (instructions()!.agentUrlIsAGuess) {
-        <div class="mb-4 p-3 rounded bg-farrier-warn/15 flex items-start gap-3 text-sm">
-          <mat-icon class="text-farrier-warn" aria-hidden="true">info_outline</mat-icon>
+        <div class="mb-4 p-3 rounded bg-hostseal-warn/15 flex items-start gap-3 text-sm">
+          <mat-icon class="text-hostseal-warn" aria-hidden="true">info_outline</mat-icon>
           <p class="m-0">
             Nobody has told this control plane which address agents reach it at, so the commands below
             use the one this page was loaded from. If the interface has a hostname of its own — the
             Traefik deployment gives it one, and refuses the agent API on it — that is the wrong
-            address. Set <code>--agent-url</code> or <code>FARRIER_AGENT_URL</code> to the agent
+            address. Set <code>--agent-url</code> or <code>HOSTSEAL_AGENT_URL</code> to the agent
             hostname.
           </p>
         </div>
@@ -73,12 +73,12 @@
               <mat-icon aria-hidden="true">{{ copied() === 'ca' ? 'check' : 'content_copy' }}</mat-icon>
               {{ copied() === 'ca' ? 'Copied' : 'Copy' }}
             </button>
-            <a mat-stroked-button [href]="caDownloadUrl()" download="farrier-ca.crt">
+            <a mat-stroked-button [href]="caDownloadUrl()" download="hostseal-ca.crt">
               <mat-icon aria-hidden="true">download</mat-icon>
               Download the certificate
             </a>
           </div>
-          <p class="m-0 text-xs opacity-70 farrier-numeric break-all">
+          <p class="m-0 text-xs opacity-70 hostseal-numeric break-all">
             SHA-256 {{ fingerprint() }}
           </p>
         </li>
@@ -101,7 +101,7 @@
           <pre class="m-0 p-3 rounded bg-black/5 dark:bg-white/10 text-sm overflow-x-auto"><code>{{ enrolCommand() }}</code></pre>
 
           @if (mintError()) {
-            <p class="m-0 text-sm text-farrier-bad">{{ mintError() }}</p>
+            <p class="m-0 text-sm text-hostseal-bad">{{ mintError() }}</p>
           }
 
           <div class="flex flex-wrap gap-2">

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/policy"
+	"github.com/pascalgross/hostseal/internal/policy"
 )
 
 // KernelReleasePath is where the running kernel version can be read without executing anything.

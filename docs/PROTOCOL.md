@@ -1,7 +1,7 @@
-# Farrier agent protocol, version 1
+# HostSeal agent protocol, version 1
 
-This document specifies the wire protocol between a Farrier agent and a Farrier control plane
-completely enough that a third party could write an interoperable agent without reading Farrier's
+This document specifies the wire protocol between a HostSeal agent and a HostSeal control plane
+completely enough that a third party could write an interoperable agent without reading HostSeal's
 source. Where this document and the implementation disagree, that is a bug in one of them; please
 report it.
 
@@ -19,10 +19,10 @@ Companion documents: [`SECURITY.md`](SECURITY.md) for why the protocol is shaped
 ## 1. Shape of the protocol
 
 **The agent always initiates. There is no server→agent direction.** A managed host opens no listening
-port for Farrier and needs no inbound firewall rule.
+port for HostSeal and needs no inbound firewall rule.
 
 The transport is **HTTPS with mutual TLS**, using long-polling for job delivery. This is chosen over
-WebSocket and gRPC deliberately: Farrier's jobs are hours apart, so the latency win of a persistent
+WebSocket and gRPC deliberately: HostSeal's jobs are hours apart, so the latency win of a persistent
 duplex stream is worth nothing, while ordinary HTTPS passes through every corporate proxy, terminates
 on every load balancer, and — the property that matters most during an incident — reproduces exactly
 with `curl`.
@@ -33,7 +33,7 @@ renewal.
 ```
 POST /agent/v1/enroll             bootstrap token + CSR -> host-scoped client certificate
 POST /agent/v1/heartbeat          every ~60s, digest-first
-GET  /agent/v1/jobs?wait=25       long-poll, woken early by NOTIFY farrier_job
+GET  /agent/v1/jobs?wait=25       long-poll, woken early by NOTIFY hostseal_job
 POST /agent/v1/jobs/{id}/result   idempotent, retried, survives reboot
 POST /agent/v1/renew              re-key at 2/3 of certificate lifetime
 ```
@@ -62,7 +62,7 @@ one host. The server MUST, on every request:
 3. look up that certificate's **SHA-256 fingerprint in the database** and reject if it is absent or
    marked revoked.
 
-Step 3 is the revocation mechanism. Farrier deliberately uses neither CRL nor OCSP: a database check
+Step 3 is the revocation mechanism. HostSeal deliberately uses neither CRL nor OCSP: a database check
 that already has to happen is instant, has no distribution delay, and has no stapling infrastructure
 to misconfigure.
 
@@ -100,7 +100,7 @@ to misconfigure.
 ```
 
 `machineIdHash` is `SHA-256(salt || /etc/machine-id)`, where the salt is generated on the host at
-install time and stored in `/var/lib/farrier/machine-id-salt`. The raw `/etc/machine-id` value is
+install time and stored in `/var/lib/hostseal/machine-id-salt`. The raw `/etc/machine-id` value is
 documented by systemd as confidential and MUST NOT be transmitted.
 
 A `machineIdHash` is claimed by at most one host that has not been revoked. Revoking a host, or
@@ -132,7 +132,7 @@ every guardrail in [`SECURITY.md` §7](SECURITY.md#7-provisioning-and-the-enrolm
 ```
 
 `hostId` is letters and digits only, at most 64 of them. An agent MUST check it rather than assume it,
-and Farrier's does: the id is interpolated into cloud-init's `meta-data` when `--bootstrap` was
+and HostSeal's does: the id is interpolated into cloud-init's `meta-data` when `--bootstrap` was
 requested, which is a YAML document cloud-init parses and acts on, so an id carrying a newline would add
 keys to that document — `public-keys` among them — beside a template the operator did approve.
 
@@ -152,9 +152,9 @@ template is missing or unsigned, because an agent that asked and silently receiv
 proceed as though something had been applied.
 
 The agent MUST verify the signature against a key present in the host's **existing**
-`/etc/farrier/trusted-signers` before doing anything with `body`; MUST refuse if `name` is not the name
+`/etc/hostseal/trusted-signers` before doing anything with `body`; MUST refuse if `name` is not the name
 the operator asked for; MUST print the template and record it to journald and
-`/var/lib/farrier/bootstrap-applied.json` before executing it; and MUST refuse entirely if
+`/var/lib/hostseal/bootstrap-applied.json` before executing it; and MUST refuse entirely if
 `trusted-signers` is empty. It MUST NOT fall back to trusting the server.
 
 The body is printed **escaped**, not raw. It comes from the control plane, and a raw body can carry
@@ -333,7 +333,7 @@ so a failed unit late in the alphabet is exactly what disappears — which means
 `serviceScanComplete` states and for the same reason.
 
 A control plane MAY compare the `services` of one full report against the previous one to record unit
-state changes. Farrier's does, which is where its `service.failed` and `service.recovered` events come
+state changes. HostSeal's does, which is where its `service.failed` and `service.recovered` events come
 from, and this is the whole of the mechanism: the resolution is the heartbeat interval, so a unit that
 fails and recovers between two beats is invisible. That is a property of reporting on the heartbeat
 rather than a defect, and a client rendering such a history SHOULD say so beside it. Which units are
@@ -370,7 +370,7 @@ the ones somebody restricted on purpose.
 
 `nextHeartbeatSeconds` is authoritative and MAY change on any response. It exists so a control plane
 can spread load across the minute or back the whole fleet off during an incident **without deploying a
-new agent**. Agents MUST honour it, clamped to a sane local range (Farrier's agent clamps to 15–3600
+new agent**. Agents MUST honour it, clamped to a sane local range (HostSeal's agent clamps to 15–3600
 seconds) so that a compromised or buggy server cannot induce a hot loop.
 
 ### 4.4 `serverTime` and clock skew
@@ -403,7 +403,7 @@ filling the database fills it for other customers.
 
 Long-poll. The server holds the connection for up to `wait` seconds, returning early as soon as a job
 is available for this host. Internally the wake-up is a Postgres `LISTEN`/`NOTIFY` on channel
-`farrier_job`; that is an implementation detail, not part of the wire contract.
+`hostseal_job`; that is an implementation detail, not part of the wire contract.
 
 - `wait` is clamped by the server to `[0, 60]`.
 - The default and recommended value is **25 seconds**. It must sit below the smallest idle timeout on
@@ -432,7 +432,7 @@ is available for this host. Internally the wake-up is a Postgres `LISTEN`/`NOTIF
       "notAfter":  "2026-08-22T14:30:00Z",
       "nonce": "b64...",
       "signature": "b64...",
-      "signerKeyId": "farrier-online-1",
+      "signerKeyId": "hostseal-online-1",
       "signerAlgorithm": "ed25519"
     }
   ]
@@ -471,7 +471,7 @@ Before executing anything, the agent MUST, in this order, and MUST fail closed o
      ([§4](#4-post-agentv1heartbeat)); an agent that has not been given one refuses routine intents
      with `refused_unsigned`. **A signature by a key in `trusted-signers` is not an online-key
      signature** and MUST NOT be accepted as one;
-   - `destructive` — signature by a key present in this host's `/etc/farrier/trusted-signers`
+   - `destructive` — signature by a key present in this host's `/etc/hostseal/trusted-signers`
      required. A signature by the online key is **not** acceptable for this class.
 6. **Verify the signature** over the canonical payload ([§8](#8-canonical-json)), then **refuse a
    signed privileged job whose `notBefore` or `notAfter` is absent**, then **check the nonce** against
@@ -507,7 +507,7 @@ The enrolment response ([§3](#3-post-agentv1enroll)) and every heartbeat respon
 one-line format as a host's `trusted-signers` file.
 
 ```
-ed25519 MCowBQYDK2VwAyEA… farrier-online-4f2a91c3 control-plane
+ed25519 MCowBQYDK2VwAyEA… hostseal-online-4f2a91c3 control-plane
 ```
 
 An agent caches it and verifies routine intents against it. Three rules:
@@ -517,8 +517,8 @@ An agent caches it and verifies routine intents against it. Three rules:
   propagates with no state machine and no host stranded on a key that no longer verifies.
 - An **absent or empty** field means "nothing to say", never "forget your key". An agent MUST keep what
   it has. The other reading would let one malformed response disable a fleet's routine tier.
-- It is cached as *state*, not as a trust anchor. Farrier's agent keeps it in
-  `/var/lib/farrier/online-key` and never in `/etc/farrier`, because `/etc/farrier/trusted-signers` is
+- It is cached as *state*, not as a trust anchor. HostSeal's agent keeps it in
+  `/var/lib/hostseal/online-key` and never in `/etc/hostseal`, because `/etc/hostseal/trusted-signers` is
   what an administrator decided and this is what a control plane said.
 
 That the control plane distributes the key it signs with is acceptable **only** because of what the
@@ -565,9 +565,9 @@ a `2xx`. **Work that succeeded but whose result was lost must never re-execute**
 `host.reboot` completes by the host disappearing, which means the naive implementation never reports
 anything. The agent MUST:
 
-1. write the pending result to `/var/lib/farrier/pending-results/<jobId>.json`, `fsync` it, and
+1. write the pending result to `/var/lib/hostseal/pending-results/<jobId>.json`, `fsync` it, and
    `fsync` the containing directory,
-2. **then** invoke `/usr/libexec/farrier/reboot-host`,
+2. **then** invoke `/usr/libexec/hostseal/reboot-host`,
 3. and on next start, before anything else, scan that directory and deliver everything in it.
 
 The same mechanism covers an agent restarted mid-upgrade, a control plane that was down when the job
@@ -630,10 +630,10 @@ The signed payload for a job is exactly:
 
 (keys shown in canonical order). Signature algorithms are named on the wire: `ed25519` or `ecdsa-p256`.
 
-**The signing request handed to `farrier sign` contains this full payload, not a digest of it.** That
+**The signing request handed to `hostseal sign` contains this full payload, not a digest of it.** That
 is a requirement on the wire format, not a nicety of the CLI: if the operator's signing tool signed an
 opaque digest supplied by the server, a compromised control plane could display one job in the browser
-and have a different one signed. `farrier sign` decodes and renders the request **offline, without
+and have a different one signed. `hostseal sign` decodes and renders the request **offline, without
 contacting the server**, and what it renders is what it signs.
 
 ## 9. Backoff and startup
@@ -651,8 +651,8 @@ able to absorb it.
 ## 10. Offline behaviour
 
 When the control plane is unreachable, the agent keeps running and the **host keeps patching from its
-local policy**, because `unattended-upgrades` runs on its own systemd timer and does not need Farrier
-to be reachable. Farrier's job is to observe and to schedule, not to be a dependency of the host
+local policy**, because `unattended-upgrades` runs on its own systemd timer and does not need HostSeal
+to be reachable. HostSeal's job is to observe and to schedule, not to be a dependency of the host
 staying patched.
 
 A control-plane outage must never mean an unpatched fleet. An agent that stopped patching when it

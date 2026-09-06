@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // migrationFiles holds the schema, embedded so the binary is self-contained.
@@ -33,7 +33,7 @@ var migrationFiles embed.FS
 // Its payload is the host id, so one listener connection can serve the whole fleet. That fan-out is not
 // a nicety: a design that opened a PostgreSQL connection per waiting agent would need five hundred
 // connections to hold five hundred long-polls, which is more than most instances allow in total.
-const jobChannel = "farrier_job"
+const jobChannel = "hostseal_job"
 
 // Postgres is the production Store.
 type Postgres struct {
@@ -150,7 +150,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	}()
 
 	if _, err := conn.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS farrier_schema_version (
+		CREATE TABLE IF NOT EXISTS hostseal_schema_version (
 			version    text PRIMARY KEY,
 			applied_at timestamptz NOT NULL DEFAULT now()
 		)`); err != nil {
@@ -164,7 +164,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	for _, name := range names {
 		var applied bool
 		if err := conn.QueryRow(ctx,
-			"SELECT EXISTS (SELECT 1 FROM farrier_schema_version WHERE version = $1)", name,
+			"SELECT EXISTS (SELECT 1 FROM hostseal_schema_version WHERE version = $1)", name,
 		).Scan(&applied); err != nil {
 			return fmt.Errorf("store: checking migration %s: %w", name, err)
 		}
@@ -180,7 +180,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			return fmt.Errorf("store: applying migration %s: %w", name, err)
 		}
 		if _, err := conn.Exec(ctx,
-			"INSERT INTO farrier_schema_version (version) VALUES ($1)", name,
+			"INSERT INTO hostseal_schema_version (version) VALUES ($1)", name,
 		); err != nil {
 			return fmt.Errorf("store: recording migration %s: %w", name, err)
 		}
@@ -257,7 +257,7 @@ func (s *scopedPostgres) withTenant(ctx context.Context, what string, fn func(pg
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		`SELECT set_config('farrier.tenant', $1, true)`, string(s.tenant),
+		`SELECT set_config('hostseal.tenant', $1, true)`, string(s.tenant),
 	); err != nil {
 		return wrap(err, "setting the tenant while "+what)
 	}
@@ -283,7 +283,7 @@ func (s *scopedPostgres) withTenant(ctx context.Context, what string, fn func(pg
 // not this transaction.
 //
 // Nothing but those four resolvers may use it. A method that reached for this instead of withTenant
-// would be asking the database for one row from any tenant at all, which is the thing farrier.tenant
+// would be asking the database for one row from any tenant at all, which is the thing hostseal.tenant
 // exists to prevent.
 func (p *Postgres) withResolveKey(ctx context.Context, what, key string, fn func(pgx.Tx) error) error {
 	tx, err := p.pool.Begin(ctx)
@@ -293,7 +293,7 @@ func (p *Postgres) withResolveKey(ctx context.Context, what, key string, fn func
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		`SELECT set_config('farrier.resolve_key', $1, true)`, key,
+		`SELECT set_config('hostseal.resolve_key', $1, true)`, key,
 	); err != nil {
 		return wrap(err, "naming the row while "+what)
 	}
@@ -306,7 +306,7 @@ func (p *Postgres) withResolveKey(ctx context.Context, what, key string, fn func
 // LookupCertificate returns a certificate by fingerprint, or ErrNotFound.
 //
 // This runs on every authenticated agent request, it is the revocation check, and it is where a
-// request finds out which tenant it belongs to — so it names the row through farrier.resolve_key
+// request finds out which tenant it belongs to — so it names the row through hostseal.resolve_key
 // rather than through a tenant it does not yet have. It is still a primary-key lookup; the transaction
 // around it is what the policy costs, and it is worth it for the one query that decides whose data the
 // rest of the request may touch.
@@ -396,7 +396,7 @@ func scanTenant(row pgx.Row) (Tenant, error) {
 // platform credential.
 //
 // An empty id is refused here rather than left to the schema, which would accept it. Once any
-// transaction on a connection has set farrier.tenant and let it lapse, current_setting reports the
+// transaction on a connection has set hostseal.tenant and let it lapse, current_setting reports the
 // empty string rather than NULL for the rest of that connection's life — so a tenant whose id was
 // empty would be the one tenant a statement that named no tenant at all could still reach, which is
 // the single row this boundary could not keep anybody out of.

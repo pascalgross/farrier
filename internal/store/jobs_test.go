@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // eachStore runs a test body against both implementations.
@@ -731,7 +731,7 @@ func TestGuaranteeBothStoresBoundAListingTheSameWay(t *testing.T) {
 // Delivering a job early does not delay it, it destroys it. The agent checks the validity window
 // against its own clock, finds it shut, and reports StatusExpired — which completes the job
 // permanently. So a maintenance window signed on Thursday for Sunday would be claimed on Thursday,
-// burned, and could never run, while `farrier sign --not-before` advertises exactly that use.
+// burned, and could never run, while `hostseal sign --not-before` advertises exactly that use.
 //
 // The scheduled job is created FIRST on purpose. The queue is in creation order, so this also pins that
 // a job waiting for next week does not hold up the one queued behind it for now — a claim that stopped

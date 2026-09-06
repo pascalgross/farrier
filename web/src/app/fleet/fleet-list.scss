@@ -5,8 +5,8 @@
 // A left edge rather than a row background. A fleet list where most rows are tinted is one whose reader
 // stops seeing the tint; a two-pixel edge stays legible when half the fleet has something outstanding,
 // and it survives both light and dark themes without a second colour.
-.farrier-attention td:first-child {
-  box-shadow: inset 3px 0 0 0 var(--color-farrier-warn);
+.hostseal-attention td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--color-hostseal-warn);
 }
 
 table {

@@ -5,7 +5,7 @@
 @if (error()) {
   <mat-card class="max-w-xl mx-auto mt-12">
     <mat-card-content class="!pt-6 flex items-start gap-3">
-      <mat-icon class="text-farrier-bad">error_outline</mat-icon>
+      <mat-icon class="text-hostseal-bad">error_outline</mat-icon>
       <p class="m-0">{{ error() }}</p>
     </mat-card-content>
   </mat-card>
@@ -20,18 +20,18 @@
       truncated, or because nothing is known about it, has reported no failure — so folding it into
       the failing count would make one failure and five unknowns read as trouble on six hosts.
     -->
-    <p class="m-0 text-sm opacity-80 farrier-numeric">
+    <p class="m-0 text-sm opacity-80 hostseal-numeric">
       @if (failedUnits() > 0) {
-        <span class="text-farrier-bad">{{ failedUnits() }} failed</span>
+        <span class="text-hostseal-bad">{{ failedUnits() }} failed</span>
         on {{ failingHosts() }} of {{ total() }} hosts
       } @else {
         Nothing failed across {{ total() }} hosts
       }
       @if (truncatedHosts() > 0) {
-        · <span class="text-farrier-warn">{{ truncatedHosts() }} with a truncated unit list</span>
+        · <span class="text-hostseal-warn">{{ truncatedHosts() }} with a truncated unit list</span>
       }
       @if (unknownHosts() > 0) {
-        · <span class="text-farrier-warn">{{ unknownHosts() }} with nothing reported</span>
+        · <span class="text-hostseal-warn">{{ unknownHosts() }} with nothing reported</span>
       }
     </p>
 
@@ -46,7 +46,7 @@
   @if (list.length === 0) {
     <mat-card class="max-w-2xl">
       <mat-card-content class="!pt-6 text-sm opacity-80 flex items-start gap-3">
-        <mat-icon class="text-farrier-ok">check_circle_outline</mat-icon>
+        <mat-icon class="text-hostseal-ok">check_circle_outline</mat-icon>
         <div>
           <p class="m-0">No host reports a failed unit.</p>
           <p class="m-0 mt-2">
@@ -68,7 +68,7 @@
               </a>
 
               @if (!host.online) {
-                <span class="text-xs text-farrier-warn"
+                <span class="text-xs text-hostseal-warn"
                       [matTooltip]="'This host has not been heard from recently, so what follows is its last report rather than its state now'">
                   offline
                 </span>
@@ -88,7 +88,7 @@
             }
 
             @if (host.factsUnknown) {
-              <p class="m-0 mt-3 text-sm text-farrier-warn flex items-start gap-2">
+              <p class="m-0 mt-3 text-sm text-hostseal-warn flex items-start gap-2">
                 <mat-icon class="!w-4 !h-4 !text-base" aria-hidden="true">help_outline</mat-icon>
                 <span>
                   Nothing is known about this host's units: it has never reported, or the facts it
@@ -99,7 +99,7 @@
             }
 
             @if (host.servicesTruncated) {
-              <p class="m-0 mt-3 text-sm text-farrier-warn flex items-start gap-2">
+              <p class="m-0 mt-3 text-sm text-hostseal-warn flex items-start gap-2">
                 <mat-icon class="!w-4 !h-4 !text-base" aria-hidden="true">more_horiz</mat-icon>
                 <span>
                   This host's unit list was cut at the protocol's cap, in sorted order. A failed unit

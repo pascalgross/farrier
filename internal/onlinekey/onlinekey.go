@@ -33,7 +33,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // KeyFile is the file the private key lives in, inside the CA directory.
@@ -179,15 +179,15 @@ func parse(raw []byte, path string) (*Key, error) {
 // identityFor derives the key id from the public key.
 //
 // Derived rather than configured, so that rotating the key changes the name it signs under. An audit
-// log in which two different keys both said "farrier-online-1" would answer "which key authorised
+// log in which two different keys both said "hostseal-online-1" would answer "which key authorised
 // this" with a name that had been true of two things, which is worse than answering with a fingerprint.
 func identityFor(public crypto.PublicKey) string {
 	encoded, ok := public.(ed25519.PublicKey)
 	if !ok {
-		return "farrier-online"
+		return "hostseal-online"
 	}
 	sum := sha256.Sum256(encoded)
-	return "farrier-online-" + hex.EncodeToString(sum[:4])
+	return "hostseal-online-" + hex.EncodeToString(sum[:4])
 }
 
 // KeyID returns the identity recorded in the audit log and in a job's signerKeyId.

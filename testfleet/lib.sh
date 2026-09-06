@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the Farrier test fleet.
+# Shared helpers for the HostSeal test fleet.
 #
 # Sourced by fleet.sh and by every scenario. Nothing here is clever: the value of this harness is that
 # it drives real machines running the real .deb, so the helpers exist to keep the scenarios readable
@@ -14,17 +14,17 @@ set -euo pipefail
 # the differences that matter between them — security-origin patterns, the reboot marker, whether
 # needrestart is present — produce silent wrong answers rather than errors, and a harness that tested
 # one release would confirm the wrong answer.
-FARRIER_RELEASES=${FARRIER_RELEASES:-"ubuntu/22.04 ubuntu/24.04 ubuntu/26.04 debian/12 debian/13"}
+HOSTSEAL_RELEASES=${HOSTSEAL_RELEASES:-"ubuntu/22.04 ubuntu/24.04 ubuntu/26.04 debian/12 debian/13"}
 
 # The prefix every instance name carries, so a stray instance is obviously ours.
-FARRIER_PREFIX=${FARRIER_PREFIX:-farrier-test}
+HOSTSEAL_PREFIX=${HOSTSEAL_PREFIX:-hostseal-test}
 
 # Whether to launch virtual machines or system containers.
 #
 # Virtual machines are the default and are what the reboot scenarios need: a container's "reboot" does
 # not exercise the thing being tested, which is that a job result fsynced before the machine goes down
 # is delivered after it comes back. Containers are faster and are offered for the local edit-run loop.
-FARRIER_VM=${FARRIER_VM:-1}
+HOSTSEAL_VM=${HOSTSEAL_VM:-1}
 
 # ANSI colours, disabled when the output is not a terminal so log files stay readable.
 if [ -t 1 ]; then
@@ -54,7 +54,7 @@ skip() { printf '%s  ↷%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 # instance_name renders the LXD instance name for a release.
 instance_name() {
 	local release=$1
-	printf '%s-%s' "$FARRIER_PREFIX" "${release//[\/.]/-}"
+	printf '%s-%s' "$HOSTSEAL_PREFIX" "${release//[\/.]/-}"
 }
 
 # lxd_image renders the image alias for a release, choosing the remote by distribution.
@@ -91,12 +91,12 @@ run_sh() {
 wait_for_agent() {
 	local instance=$1 deadline=$((SECONDS + 120))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		if run "$instance" systemctl is-active --quiet farrier-agent.service; then
+		if run "$instance" systemctl is-active --quiet hostseal-agent.service; then
 			return 0
 		fi
 		sleep 2
 	done
-	fail "farrier-agent did not become active on $instance"
+	fail "hostseal-agent did not become active on $instance"
 }
 
 # wait_for_boot blocks until an instance has finished booting.
@@ -117,8 +117,8 @@ wait_for_boot() {
 	fail "$instance did not finish booting"
 }
 
-# journal prints an instance's Farrier journal, for a failing scenario's output.
+# journal prints an instance's HostSeal journal, for a failing scenario's output.
 journal() {
 	local instance=$1
-	run "$instance" journalctl -u farrier-agent.service --no-pager -n 60 2>/dev/null || true
+	run "$instance" journalctl -u hostseal-agent.service --no-pager -n 60 2>/dev/null || true
 }

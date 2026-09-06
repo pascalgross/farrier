@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // alertHarness is the smallest control plane an evaluator pass needs: a memory store with one tenant.

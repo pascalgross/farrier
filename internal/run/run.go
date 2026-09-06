@@ -1,7 +1,7 @@
-// Package run is the only place in Farrier that starts an external process.
+// Package run is the only place in HostSeal that starts an external process.
 //
 // It exists so that "no code path leads from a network message to a shell" is enforced at run time and
-// not only asserted by a source-level test. Every external program Farrier may execute is a member of a
+// not only asserted by a source-level test. Every external program HostSeal may execute is a member of a
 // closed allowlist in this file, given as an absolute path; Command refuses anything else before
 // reaching exec, so a future caller cannot introduce a new program without editing this list and having
 // a reviewer see it in the diff.
@@ -28,14 +28,14 @@ import (
 	"time"
 )
 
-// Program is one of the fixed set of external programs Farrier may execute.
+// Program is one of the fixed set of external programs HostSeal may execute.
 //
 // It is a distinct type so that a string arriving from anywhere else cannot be passed where a program
 // is expected. Combined with the allowlist below, that means the set of processes this software can
 // start is visible in one screen of code.
 type Program string
 
-// The complete set of programs Farrier may execute.
+// The complete set of programs HostSeal may execute.
 //
 // Each is an absolute path: resolving a program through PATH would let whoever controls the environment
 // choose it, which is the same weakness as accepting the name over the network with extra steps. None
@@ -51,7 +51,7 @@ const (
 
 	// UnattendedUpgrade applies updates with the distribution's own origin filtering.
 	//
-	// Farrier wraps it rather than reimplementing origin filtering, because unattended-upgrades already
+	// HostSeal wraps it rather than reimplementing origin filtering, because unattended-upgrades already
 	// gets that right on both distribution families and a second implementation would be wrong on
 	// exactly the release nobody tested.
 	UnattendedUpgrade Program = "/usr/bin/unattended-upgrade"
@@ -72,7 +72,7 @@ const (
 	// CloudInit applies a verified bootstrap template at enrolment, exactly once.
 	//
 	// This is guardrail 5 of docs/SECURITY.md §7 in one line: cloud-init does the applying, so
-	// Farrier never grows a hand-written YAML-to-shell engine — which would be the exec channel
+	// HostSeal never grows a hand-written YAML-to-shell engine — which would be the exec channel
 	// wearing a hat. The argument vector is fully fixed by the agent; nothing from a template body
 	// ever reaches a command line, because the body is a *file* cloud-init reads from its seed
 	// directory, not an argument.
@@ -80,7 +80,7 @@ const (
 
 	// UpdateScan reports the updates pending on a Windows host. It does not exist on Linux.
 	//
-	// It is Farrier's own binary, shipped in the same package as the agent, and it is here for the same
+	// It is HostSeal's own binary, shipped in the same package as the agent, and it is here for the same
 	// reason apt-get is: the agent asks a program the question rather than reading the platform's update
 	// state itself. On Windows that separation carries more weight than convenience. Enumerating updates
 	// means loading wuapi.dll, and docs/SECURITY.md §3 refuses a runtime code loader in the agent — the
@@ -90,7 +90,7 @@ const (
 	// The path is under Program Files rather than beside the state directory because it must be a
 	// location the agent's own service account cannot write. An agent that could rewrite the program it
 	// then executes would have turned this allowlist into a formality.
-	UpdateScan Program = `C:\Program Files\Farrier\farrier-update-scan.exe`
+	UpdateScan Program = `C:\Program Files\HostSeal\hostseal-update-scan.exe`
 )
 
 // allowed is the run-time allowlist.
@@ -247,10 +247,10 @@ func CommandWith(ctx context.Context, opts Options, p Program, args ...string) (
 	return res, nil
 }
 
-// Allowlist returns the programs Farrier may execute, for tests and for `farrier-agent doctor`.
+// Allowlist returns the programs HostSeal may execute, for tests and for `hostseal-agent doctor`.
 //
 // It exists so the set can be asserted and displayed rather than only read. An operator auditing what
-// Farrier can start on their host should be able to ask the binary.
+// HostSeal can start on their host should be able to ask the binary.
 func Allowlist() []Program {
 	out := make([]Program, 0, len(allowed))
 	for p := range allowed {

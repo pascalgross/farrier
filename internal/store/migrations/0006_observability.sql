@@ -31,8 +31,8 @@ ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS events_tenant_isolation ON events;
 CREATE POLICY events_tenant_isolation ON events
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 -- Unit-state history, at heartbeat resolution. A unit that fails and recovers between two beats is
 -- invisible here, which is a stated property of the digest-first design rather than a bug.
@@ -56,8 +56,8 @@ ALTER TABLE unit_transitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unit_transitions FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS unit_transitions_tenant_isolation ON unit_transitions;
 CREATE POLICY unit_transitions_tenant_isolation ON unit_transitions
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 -- Alerting rules. They live here and not in policy.toml, deliberately: that file is the host's
 -- authority over what may be done to it, and an alerting rule is the control plane's business.
@@ -81,8 +81,8 @@ ALTER TABLE alert_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alert_rules FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS alert_rules_tenant_isolation ON alert_rules;
 CREATE POLICY alert_rules_tenant_isolation ON alert_rules
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));
 
 -- The evaluator's memory of one (rule, host) pair: firing or not, since when, and when it last
 -- notified. Persisted so that a control plane deploy at 09:00 does not re-page everybody about the
@@ -106,5 +106,5 @@ ALTER TABLE alert_states ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alert_states FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS alert_states_tenant_isolation ON alert_states;
 CREATE POLICY alert_states_tenant_isolation ON alert_states
-    USING      (tenant_id = current_setting('farrier.tenant', true))
-    WITH CHECK (tenant_id = current_setting('farrier.tenant', true));
+    USING      (tenant_id = current_setting('hostseal.tenant', true))
+    WITH CHECK (tenant_id = current_setting('hostseal.tenant', true));

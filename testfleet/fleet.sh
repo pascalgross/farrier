@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drive a real fleet of Ubuntu and Debian machines against the real .deb.
 #
-# This exists because the failures Farrier most needs to avoid do not reproduce against mocks. A
+# This exists because the failures HostSeal most needs to avoid do not reproduce against mocks. A
 # conffile prompt that hangs, a reboot marker that is an Ubuntu convention rather than a standard, a
 # package upgrade that quietly replaces a trust anchor, a job result lost because the machine went away
 # before it was sent — every one of those is a property of a real machine running a real package
@@ -15,8 +15,8 @@
 #   ./fleet.sh ci                 up, test, down — what the integration workflow runs
 #
 # Environment:
-#   FARRIER_RELEASES   which releases to cover, space-separated
-#   FARRIER_VM=0       use system containers instead of virtual machines; faster, and the reboot
+#   HOSTSEAL_RELEASES   which releases to cover, space-separated
+#   HOSTSEAL_VM=0       use system containers instead of virtual machines; faster, and the reboot
 #                      scenarios then test rather less than they claim to
 set -euo pipefail
 
@@ -39,7 +39,7 @@ require_lxd() {
 # differently would be testing a build nobody ships.
 build_package() {
 	say "building the package"
-	local version=${FARRIER_TEST_VERSION:-0.0.0-testfleet}
+	local version=${HOSTSEAL_TEST_VERSION:-0.0.0-testfleet}
 	make -C "$REPO" deb VERSION="$version" >/dev/null
 	# The path comes from the Makefile rather than a glob: `make deb` never empties dist/packages, so a
 	# glob would happily install whichever package happened to sort first from an earlier run.
@@ -54,7 +54,7 @@ up() {
 	[ -f "$deb" ] || { echo "the package was not built at $deb" >&2; exit 1; }
 	say "built $deb"
 
-	for release in $FARRIER_RELEASES; do
+	for release in $HOSTSEAL_RELEASES; do
 		local instance
 		instance=$(instance_name "$release")
 
@@ -62,7 +62,7 @@ up() {
 			say "$instance already exists"
 		else
 			say "launching $instance from $(lxd_image "$release")"
-			if [ "$FARRIER_VM" = "1" ]; then
+			if [ "$HOSTSEAL_VM" = "1" ]; then
 				lxc launch "$(lxd_image "$release")" "$instance" --vm -c limits.memory=1GiB
 			else
 				lxc launch "$(lxd_image "$release")" "$instance"
@@ -72,23 +72,23 @@ up() {
 		wait_for_boot "$instance"
 
 		say "installing on $instance"
-		lxc file push "$deb" "$instance/tmp/farrier-agent.deb"
+		lxc file push "$deb" "$instance/tmp/hostseal-agent.deb"
 		# unattended-upgrades and needrestart are Recommends and are installed here deliberately: the
-		# scenarios test what Farrier does with them present, and a fleet that skipped them would be
+		# scenarios test what HostSeal does with them present, and a fleet that skipped them would be
 		# testing the degraded path only.
 		run_sh "$instance" 'export DEBIAN_FRONTEND=noninteractive
 			apt-get update -qq
 			apt-get install -y -qq unattended-upgrades needrestart
-			apt-get install -y -qq /tmp/farrier-agent.deb'
+			apt-get install -y -qq /tmp/hostseal-agent.deb'
 		wait_for_agent "$instance"
-		pass "$instance is up with $(run "$instance" farrier-agent version)"
+		pass "$instance is up with $(run "$instance" hostseal-agent version)"
 	done
 }
 
 # down destroys every machine.
 down() {
 	require_lxd
-	for release in $FARRIER_RELEASES; do
+	for release in $HOSTSEAL_RELEASES; do
 		local instance
 		instance=$(instance_name "$release")
 		if lxc info "$instance" >/dev/null 2>&1; then
@@ -111,7 +111,7 @@ test_fleet() {
 		local script="$HERE/scenarios/${scenario}.sh"
 		[ -f "$script" ] || { echo "no such scenario: $scenario" >&2; exit 1; }
 
-		for release in $FARRIER_RELEASES; do
+		for release in $HOSTSEAL_RELEASES; do
 			local instance
 			instance=$(instance_name "$release")
 			say "$scenario on $release"

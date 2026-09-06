@@ -142,7 +142,7 @@ const UNRECOGNISED: ReasonStyle = { word: 'needs attention', icon: 'help_outline
  * more than a hyperlink, and an operator who wants the host page is one click away in the toolbar.
  */
 @Component({
-  selector: 'farrier-wallboard',
+  selector: 'hostseal-wallboard',
   imports: [
     FormsModule,
     MatButtonModule,
@@ -154,7 +154,7 @@ const UNRECOGNISED: ReasonStyle = { word: 'needs attention', icon: 'help_outline
   host: {
     // Inside the shell the board shares a page with a toolbar and with the share panel below it, so
     // it takes a screen-shaped block rather than the screen. See the stylesheet.
-    '[class.farrier-wallboard--framed]': "mode === 'operator'",
+    '[class.hostseal-wallboard--framed]': "mode === 'operator'",
   },
   templateUrl: './wallboard.html',
   styleUrl: './wallboard.scss',
@@ -316,7 +316,7 @@ export class Wallboard {
 
     if (this.mode === 'public' && !this.key) {
       this.refusal.set(
-        'This address carries no key. A board link ends in "#frb_…" — the part after the "#" is the ' +
+        'This address carries no key. A board link ends in "#hsb_…" — the part after the "#" is the ' +
           'credential, and some ways of sharing a link drop it.',
       );
     } else {

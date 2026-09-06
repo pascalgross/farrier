@@ -9,7 +9,7 @@ package wua
 // every machine the author is likely to test on.
 const securityCategoryID = "0FA1201D-4330-4FA8-8AE9-B877473B6441"
 
-// classify decides whether an update is a security update, and is the weakest claim Farrier makes.
+// classify decides whether an update is a security update, and is the weakest claim HostSeal makes.
 //
 // On Linux the equivalent is exact: apt states the origin of every candidate, the platform knows its
 // family's security origins, and the answer is a property of the archive the package comes from.

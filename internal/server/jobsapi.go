@@ -11,11 +11,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/intent"
-	"github.com/pascalgross/farrier/internal/notify"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/store"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/intent"
+	"github.com/pascalgross/hostseal/internal/notify"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/store"
 )
 
 // ReadJobValidity is how long an unsigned job stays executable after it is created.

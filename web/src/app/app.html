@@ -1,6 +1,6 @@
 <!--
   The toolbar is rendered only when there is something in it. Signed out, it held the mark and the
-  word "Farrier" above a sign-in screen that says both again, larger — a header bar whose only content
+  word "HostSeal" above a sign-in screen that says both again, larger — a header bar whose only content
   is a second copy of the heading underneath it.
 
   A public route has nothing in it either, and for a stronger reason: the published board is read by a
@@ -19,7 +19,7 @@
     <a [routerLink]="session.isPlatform() ? '/fleets' : '/'"
        class="flex items-center gap-2 no-underline text-inherit">
       <img src="mark.svg" alt="" width="24" height="24" class="h-6 w-6">
-      <span class="font-medium">Farrier</span>
+      <span class="font-medium">HostSeal</span>
     </a>
 
     <!--
@@ -65,7 +65,7 @@
       toolbar that spends its width on them has less for the navigation that is pressed constantly.
     -->
     @if (session.identity(); as identity) {
-      <button mat-button [matMenuTriggerFor]="accountMenu" class="farrier-account-button">
+      <button mat-button [matMenuTriggerFor]="accountMenu" class="hostseal-account-button">
         <mat-icon>account_circle</mat-icon>
         <span class="hidden sm:inline">
           {{ identity.tenant ? identity.tenant.displayName : 'Platform' }}
@@ -73,9 +73,9 @@
       </button>
 
       <mat-menu #accountMenu="matMenu">
-        <div class="farrier-account-menu__who">
-          <span class="farrier-account-menu__display">{{ identity.display }}</span>
-          <span class="farrier-account-menu__principal farrier-numeric">{{ identity.principal }}</span>
+        <div class="hostseal-account-menu__who">
+          <span class="hostseal-account-menu__display">{{ identity.display }}</span>
+          <span class="hostseal-account-menu__principal hostseal-numeric">{{ identity.principal }}</span>
         </div>
 
         <mat-divider />
@@ -98,7 +98,7 @@
   a centred column with six rems of padding around it is not one screen, it is a screen with a border
   drawn on it.
 -->
-<main [class]="publicRoute() ? 'farrier-shell__bare' : 'p-6 max-w-7xl mx-auto'">
+<main [class]="publicRoute() ? 'hostseal-shell__bare' : 'p-6 max-w-7xl mx-auto'">
   @if (publicRoute()) {
     <!--
       Rendered before the identity is known and without consulting it. The credential this route
@@ -120,22 +120,22 @@
       The sign-in screen. One credential, one form, and the explanation underneath rather than above:
       somebody who is here to sign in should meet two fields and a button, not four paragraphs.
     -->
-    <div class="farrier-signin">
-      <div class="farrier-signin__brand">
+    <div class="hostseal-signin">
+      <div class="hostseal-signin__brand">
         <img src="mark.svg" alt="" width="48" height="48">
-        <h1>Farrier</h1>
+        <h1>HostSeal</h1>
         <p>Fleet management with no remote execution channel.</p>
       </div>
 
-      <mat-card class="farrier-signin__card" appearance="outlined">
-        <mat-card-content class="farrier-signin__fields !py-6">
+      <mat-card class="hostseal-signin__card" appearance="outlined">
+        <mat-card-content class="hostseal-signin__fields !py-6">
           <!--
             The control plane could not answer, which is not the same as refusing. Shown above the
             fields because it changes what the fields are for: a password will not help, and somebody
             who is not told that will type theirs three times into a rate limit.
           -->
           @if (session.unavailable(); as note) {
-            <p class="farrier-signin__note farrier-signin__note--warn">{{ note }}</p>
+            <p class="hostseal-signin__note hostseal-signin__note--warn">{{ note }}</p>
           }
 
           <mat-form-field appearance="outline">
@@ -164,25 +164,25 @@
           </mat-form-field>
 
           @if (session.error(); as failure) {
-            <p class="farrier-signin__note farrier-signin__note--bad">{{ failure }}</p>
+            <p class="hostseal-signin__note hostseal-signin__note--bad">{{ failure }}</p>
           }
 
-          <button mat-flat-button class="farrier-signin__submit" [disabled]="!canSignIn()"
+          <button mat-flat-button class="hostseal-signin__submit" [disabled]="!canSignIn()"
                   (click)="signIn()">
             {{ session.working() ? 'Signing in…' : 'Sign in' }}
           </button>
         </mat-card-content>
       </mat-card>
 
-      <div class="farrier-signin__aside">
+      <div class="hostseal-signin__aside">
         <p>
           Accounts are made on the control plane with
-          <code>farrier-server accounts add</code>. There is no sign-up form: an account reaches one
+          <code>hostseal-server accounts add</code>. There is no sign-up form: an account reaches one
           fleet, and who is in that fleet is a decision rather than a field. A script does not sign in
           at all — it carries an API token issued from the account page.
         </p>
         <p>
-          An administrator account is inside Farrier's threat model. Somebody signed in here can read
+          An administrator account is inside HostSeal's threat model. Somebody signed in here can read
           the fleet and revoke hosts, and still cannot run code on any enrolled machine: what protects
           the hosts is each one's own <code>policy.toml</code> and a signing key this control plane
           does not hold.
@@ -198,5 +198,5 @@
   sitting over the one thing the screen exists to show.
 -->
 @if (!publicRoute() && session.signedIn() && !session.isPlatform()) {
-  <farrier-toast-stack />
+  <hostseal-toast-stack />
 }

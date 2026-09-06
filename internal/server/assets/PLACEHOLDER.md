@@ -1,7 +1,7 @@
 # Embedded web assets
 
 `make web` builds the Angular application and copies its output here, where `embed.FS` picks it up so
-that `farrier-server` is a single binary with the UI inside it. That is the whole deployment: one
+that `hostseal-server` is a single binary with the UI inside it. That is the whole deployment: one
 binary and PostgreSQL.
 
 This file is committed so the directory always exists — `go:embed` fails to compile against an empty or

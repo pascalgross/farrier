@@ -1,4 +1,4 @@
-// Package agent is the Farrier agent's protocol client and main loop.
+// Package agent is the HostSeal agent's protocol client and main loop.
 //
 // It connects outbound and never listens. There is no server-to-agent direction in the protocol at all:
 // every byte moves on a connection this process opened, which is why a managed host needs no inbound
@@ -29,16 +29,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/buildinfo"
-	"github.com/pascalgross/farrier/internal/ca"
-	"github.com/pascalgross/farrier/internal/canonical"
-	"github.com/pascalgross/farrier/internal/collect"
-	"github.com/pascalgross/farrier/internal/collect/collector"
-	"github.com/pascalgross/farrier/internal/collect/platform"
-	"github.com/pascalgross/farrier/internal/policy"
-	"github.com/pascalgross/farrier/internal/privsep"
-	"github.com/pascalgross/farrier/internal/protocol"
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/buildinfo"
+	"github.com/pascalgross/hostseal/internal/ca"
+	"github.com/pascalgross/hostseal/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/collect"
+	"github.com/pascalgross/hostseal/internal/collect/collector"
+	"github.com/pascalgross/hostseal/internal/collect/platform"
+	"github.com/pascalgross/hostseal/internal/policy"
+	"github.com/pascalgross/hostseal/internal/privsep"
+	"github.com/pascalgross/hostseal/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // BootIDPath is the kernel's identifier for the current boot.
@@ -47,7 +47,7 @@ import (
 // backwards can also mean a clock adjustment, and the two want different responses.
 const BootIDPath = "/proc/sys/kernel/random/boot_id"
 
-// Agent is a running Farrier agent.
+// Agent is a running HostSeal agent.
 type Agent struct {
 	// state is what was learned at enrolment.
 	state *State
@@ -61,7 +61,7 @@ type Agent struct {
 	// nonces refuses replayed signatures across restarts.
 	nonces *NonceStore
 
-	// elevate is the route to the three root helpers, over the sockets in /run/farrier.
+	// elevate is the route to the three root helpers, over the sockets in /run/hostseal.
 	//
 	// It is the agent's entire relationship with privilege: it names an intent and forwards the
 	// parameter bytes it received, and it is told what happened. There is deliberately nothing here
@@ -107,7 +107,7 @@ type Options struct {
 // New builds an agent from persisted enrolment state.
 func New(opts Options) (*Agent, error) {
 	if opts.StateDir == "" {
-		opts.StateDir = "/var/lib/farrier"
+		opts.StateDir = "/var/lib/hostseal"
 	}
 	if opts.PolicyPath == "" {
 		opts.PolicyPath = policy.Path
@@ -128,7 +128,7 @@ func New(opts Options) (*Agent, error) {
 	if !dist.Supported {
 		// Reported rather than refused. A host on an unsupported release is exactly the host somebody
 		// most needs to see in a fleet list, and refusing to run on it would remove it from view.
-		slog.Warn("this release is not in Farrier's supported set",
+		slog.Warn("this release is not in HostSeal's supported set",
 			"distribution", dist.String(), "codename", dist.Codename)
 	}
 	nonces, err := LoadNonceStore(opts.StateDir)
@@ -179,7 +179,7 @@ func (a *Agent) Run(ctx context.Context, opts Options) error {
 		// and expects the process to exit cleanly, so this returns nil.
 		select {
 		case <-ctx.Done():
-			slog.Info("farrier agent stopping")
+			slog.Info("hostseal agent stopping")
 			return nil
 		default:
 		}

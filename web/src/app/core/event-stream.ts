@@ -7,10 +7,10 @@ import { ApiService, SESSION_HEADER } from './api.service';
 const FEED_LIMIT = 200;
 
 /** Where the browser-notification opt-in is remembered between page loads. */
-const NOTIFY_KEY = 'farrier.desktopNotifications';
+const NOTIFY_KEY = 'hostseal.desktopNotifications';
 
 /** Where the id of the newest event the operator has seen is remembered. */
-const SEEN_KEY = 'farrier.lastSeenEvent';
+const SEEN_KEY = 'hostseal.lastSeenEvent';
 
 /**
  * How many toasts are on screen at once before the oldest is dropped.
@@ -477,7 +477,7 @@ export class EventStream {
       return;
     }
     try {
-      const notification = new Notification(event.hostname || 'Farrier', {
+      const notification = new Notification(event.hostname || 'HostSeal', {
         body: event.summary,
         tag: event.id,
       });

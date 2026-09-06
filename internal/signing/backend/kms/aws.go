@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/signing"
+	"github.com/pascalgross/hostseal/internal/signing"
 )
 
 // awsScheme selects this provider.
@@ -21,7 +21,7 @@ const awsScheme = "awskms"
 //
 // Four kilobytes, and it matters: pure Ed25519 needs RAW, because the alternative — ED25519_PH_SHA_512
 // — is Ed25519ph, which prehashes on top of what it is given and produces a signature crypto/ed25519
-// will not accept. So an Ed25519 key in AWS KMS cannot sign a payload above this, and Farrier's own
+// will not accept. So an Ed25519 key in AWS KMS cannot sign a payload above this, and HostSeal's own
 // parameter object is bounded at 8 KiB, which means the case is reachable. It is refused here, by
 // name, rather than as a 400 from a service.
 const awsMaxRawMessage = 4096

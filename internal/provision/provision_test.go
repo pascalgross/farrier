@@ -8,17 +8,17 @@ import (
 // TestRenderSubstitutes proves the whole of what rendering does: values into placeholders.
 func TestRenderSubstitutes(t *testing.T) {
 	body := "#cloud-config\nhostname: {{hostname}}\nruncmd:\n" +
-		"  - farrier enroll --token {{ enrollmentToken }} --server {{server}}\n"
+		"  - hostseal enroll --token {{ enrollmentToken }} --server {{server}}\n"
 	out, err := Render(body, map[string]string{
 		"hostname":        "web-01",
 		"enrollmentToken": "tok-123",
-		"server":          "https://farrier.example.org",
+		"server":          "https://hostseal.example.org",
 	})
 	if err != nil {
 		t.Fatalf("rendering: %v", err)
 	}
 	want := "#cloud-config\nhostname: web-01\nruncmd:\n" +
-		"  - farrier enroll --token tok-123 --server https://farrier.example.org\n"
+		"  - hostseal enroll --token tok-123 --server https://hostseal.example.org\n"
 	if out != want {
 		t.Fatalf("rendered:\n%q\nwant:\n%q", out, want)
 	}
@@ -169,7 +169,7 @@ func TestWarningsStayQuietOnLegitimateUserData(t *testing.T) {
 		// A 32-character hex string is not a token shape worth crying wolf over.
 		"digest: 9e107d9d372bb6826bd81d3542a419d6a1b2c3d4\n",
 		// An enrolment command with its token placeholder still unsubstituted.
-		"runcmd:\n  - farrier enroll --token {{enrollmentToken}}\n",
+		"runcmd:\n  - hostseal enroll --token {{enrollmentToken}}\n",
 	} {
 		if warnings := Warnings(body); len(warnings) != 0 {
 			t.Errorf("false positive on %q: %v", body, warnings)

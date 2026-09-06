@@ -16,12 +16,12 @@ package policy
 // ordinary accounts read and execute only, which is the property that makes local policy sovereign.
 //
 // The installer sets the ACL explicitly rather than relying on that inheritance, because an inherited
-// permission is one somebody can change without meaning to. See packaging/windows/Install-FarrierAgent.ps1.
-const Path = `C:\Program Files\Farrier\policy.toml`
+// permission is one somebody can change without meaning to. See packaging/windows/Install-HostSealAgent.ps1.
+const Path = `C:\Program Files\HostSeal\policy.toml`
 
 // PausedPath is the kill-switch marker a local administrator can create.
 //
-// Together with `Stop-Service farrier-agent` it is a stop the control plane cannot override, which is
+// Together with `Stop-Service hostseal-agent` it is a stop the control plane cannot override, which is
 // why there is deliberately no agent.resume intent: an off switch that something else can flip back on
 // is not an off switch.
-const PausedPath = `C:\Program Files\Farrier\paused`
+const PausedPath = `C:\Program Files\HostSeal\paused`

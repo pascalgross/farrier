@@ -27,7 +27,7 @@ type Profile string
 // strings around instead.
 func (p Profile) String() string { return string(p) }
 
-// The profiles Farrier builds an agent for.
+// The profiles HostSeal builds an agent for.
 const (
 	// ProfileLinux is every member of the catalogue, which is what an Ubuntu or Debian host runs.
 	ProfileLinux Profile = "linux"

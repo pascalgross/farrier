@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/intent"
+	"github.com/pascalgross/hostseal/internal/intent"
 )
 
 // Request is what the control plane asked a host to do.
@@ -33,7 +33,7 @@ type Env struct {
 	// Now is the local clock reading. It is never server-supplied; see docs/SECURITY.md §4.3.
 	Now time.Time
 
-	// Paused reports whether /etc/farrier/paused exists.
+	// Paused reports whether /etc/hostseal/paused exists.
 	Paused bool
 }
 
@@ -70,7 +70,7 @@ func (d Decision) Error() error {
 // Refusal codes. They are stable strings because they end up in job results, in the UI and in
 // operators' alerting rules, and renaming one silently breaks somebody's dashboard.
 const (
-	// CodePaused means /etc/farrier/paused exists.
+	// CodePaused means /etc/hostseal/paused exists.
 	CodePaused = "paused"
 
 	// CodeExpired means the job is older than limits.max_job_age_seconds.
@@ -144,7 +144,7 @@ func Decide(p Policy, req Request, env Env) Decision {
 		}
 	}
 
-	// Read-only intents are unprivileged and are not gated by policy. They run as the farrier user
+	// Read-only intents are unprivileged and are not gated by policy. They run as the hostseal user
 	// with no capabilities and read nothing an unprivileged local user could not read; refusing them
 	// would blind the operator to the state of a host without protecting anything.
 	if !spec.Class.Privileged() {

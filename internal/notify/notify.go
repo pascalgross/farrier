@@ -59,7 +59,7 @@ type Event struct {
 	Detail map[string]any `json:"detail,omitempty"`
 }
 
-// Sink delivers an event to something outside Farrier.
+// Sink delivers an event to something outside HostSeal.
 type Sink interface {
 	// Name identifies the sink in logs and in the UI.
 	Name() string

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pascalgross/farrier/internal/canonical"
+	"github.com/pascalgross/hostseal/internal/canonical"
 )
 
 // TrustedSignersPath is where the trust anchor lives on a managed host.
@@ -22,12 +22,12 @@ import (
 // APT signing key -> package -> job signing key, quietly promoting whoever controls APT signing to
 // ultimate authority over every host — and in a hosted deployment it would hand the provider a route
 // around the customer's own control plane.
-const TrustedSignersPath = "/etc/farrier/trusted-signers"
+const TrustedSignersPath = "/etc/hostseal/trusted-signers"
 
 // SignerSet is a parsed trusted-signers file.
 //
 // It is immutable once parsed and carries no method that adds a key, because there is no code path by
-// which Farrier should ever add one: the file is edited by an administrator and read by the agent, and
+// which HostSeal should ever add one: the file is edited by an administrator and read by the agent, and
 // anything else is the control plane reaching into the trust anchor.
 type SignerSet struct {
 	// keys are the parsed entries, in file order.
@@ -53,7 +53,7 @@ func LoadTrustedSigners() (*SignerSet, error) { return LoadSignersFrom(TrustedSi
 
 // LoadSignersFrom reads and parses a trusted-signers file at an explicit path.
 //
-// It exists so that tests, `farrier enroll --signers` and the control plane's own copy all go through
+// It exists so that tests, `hostseal enroll --signers` and the control plane's own copy all go through
 // the same parser as the agent, rather than through a second implementation that agrees today.
 func LoadSignersFrom(path string) (*SignerSet, error) {
 	f, err := os.Open(path)
@@ -127,7 +127,7 @@ func ParseSigners(r io.Reader, source string) (*SignerSet, error) {
 // Empty reports whether the set contains no keys.
 //
 // The agent checks this before doing anything destructive and before applying a bootstrap template.
-// Without keys present, `farrier enroll --bootstrap` refuses rather than falling back to trusting the
+// Without keys present, `hostseal enroll --bootstrap` refuses rather than falling back to trusting the
 // server, which is the whole reason the anchor is established from a local file first.
 func (s *SignerSet) Empty() bool { return s == nil || len(s.keys) == 0 }
 

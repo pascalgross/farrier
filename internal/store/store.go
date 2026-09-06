@@ -5,7 +5,7 @@
 // this comment says so again, because the interface's existence is the thing that invites the
 // misunderstanding.
 //
-// Farrier depends on PostgreSQL features that are load-bearing rather than incidental: JSONB with GIN
+// HostSeal depends on PostgreSQL features that are load-bearing rather than incidental: JSONB with GIN
 // indexes for facts that gain fields constantly, partial indexes for the job claim, LISTEN/NOTIFY to
 // wake long-polls without Redis, and SELECT … FOR UPDATE SKIP LOCKED for atomic claiming. Abstracting
 // those away would mean reimplementing a job queue and a pub/sub system badly, and then shipping a
@@ -18,7 +18,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/pascalgross/farrier/internal/protocol"
+	"github.com/pascalgross/hostseal/internal/protocol"
 )
 
 // Sentinel errors every implementation returns for the same conditions.
@@ -119,7 +119,7 @@ type Host struct {
 	// stored for display; nothing on the server adjusts anything because of it.
 	ClockOffsetSeconds int64
 
-	// Paused reports whether /etc/farrier/paused exists on the host.
+	// Paused reports whether /etc/hostseal/paused exists on the host.
 	Paused bool
 
 	// FactsDigest, PolicyDigest and SignersDigest are what the host last reported.
@@ -405,7 +405,7 @@ type TemplateVersion struct {
 	// Signature is a detached signature over the canonical {name, body} payload, base64, empty for an
 	// unsigned version.
 	//
-	// It is produced offline by `farrier sign-template`, with a key this control plane does not hold,
+	// It is produced offline by `hostseal sign-template`, with a key this control plane does not hold,
 	// and is stored and handed over verbatim. An unsigned version can be rendered for Terraform; only a
 	// signed one can be issued to an enrolling host, because the agent verifies it against the host's
 	// own trusted-signers and a control plane cannot make that check pass.
@@ -656,7 +656,7 @@ type Session struct {
 // Valid reports whether a session still authenticates at the given instant.
 //
 // Against the caller's clock rather than the database's, matching every other validity window in
-// Farrier: docs/SECURITY.md treats clock skew as a boundary, and a credential that outlived its window
+// HostSeal: docs/SECURITY.md treats clock skew as a boundary, and a credential that outlived its window
 // because two machines disagreed would be the least visible way for that to matter.
 func (s Session) Valid(now time.Time) bool { return now.Before(s.ExpiresAt) }
 
@@ -1125,7 +1125,7 @@ type Store interface {
 	// only latency, which is exactly why it would never be diagnosed.
 	//
 	// This is what makes the long-poll a long-poll rather than a sleep. In PostgreSQL it is LISTEN on a
-	// channel the job insert NOTIFYs, which is why Farrier needs no Redis. The channel may be closed
+	// channel the job insert NOTIFYs, which is why HostSeal needs no Redis. The channel may be closed
 	// spuriously — the caller re-checks the queue — but a wake-up must not be missed indefinitely.
 	//
 	// It is not tenant-scoped, and that is a decision rather than an omission. A wake-up carries no

@@ -1,4 +1,4 @@
-// Command doccheck enforces Farrier's rule that every type and every function carries a doc comment.
+// Command doccheck enforces HostSeal's rule that every type and every function carries a doc comment.
 //
 // It exists because no off-the-shelf Go linter does this. revive's exported rule stops at exported
 // declarations, which is the opposite of what this project needs: the code a reviewer most needs
@@ -117,7 +117,7 @@ func main() {
 	}
 	if len(findings) > 0 {
 		fmt.Fprintf(os.Stderr, "\ndoccheck: %d undocumented declaration(s).\n"+
-			"Farrier requires a doc comment on every type and every function, exported or not, saying "+
+			"HostSeal requires a doc comment on every type and every function, exported or not, saying "+
 			"what it does and why it exists. See CONTRIBUTING.md.\n", len(findings))
 		os.Exit(1)
 	}

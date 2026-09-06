@@ -33,11 +33,11 @@ if run_sh "$INSTANCE" 'grep -q "^Inst " /tmp/simulation.txt'; then
 	pass "every pending package names its release"
 
 	# And the agent's own classification must agree with the archive names in that output. This is the
-	# assertion that matters: it compares what Farrier reports against what apt said, on this family.
+	# assertion that matters: it compares what HostSeal reports against what apt said, on this family.
 	security_lines=$(run_sh "$INSTANCE" \
 		'grep "^Inst " /tmp/simulation.txt | grep -cE "Debian-Security|-security" || true')
 	agent_security=$(run_sh "$INSTANCE" \
-		'farrier-agent facts --json 2>/dev/null | grep -o "\"upgradableSecurity\":[0-9]*" | cut -d: -f2' \
+		'hostseal-agent facts --json 2>/dev/null | grep -o "\"upgradableSecurity\":[0-9]*" | cut -d: -f2' \
 		|| echo "")
 
 	if [ -n "$agent_security" ]; then

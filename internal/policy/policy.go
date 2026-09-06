@@ -1,4 +1,4 @@
-// Package policy parses and evaluates /etc/farrier/policy.toml, the file a host uses to bound what the
+// Package policy parses and evaluates /etc/hostseal/policy.toml, the file a host uses to bound what the
 // control plane may ask of it.
 //
 // It is the second of the three mechanisms behind docs/SECURITY.md §1. The rule it implements is one
@@ -107,14 +107,14 @@ type Updates struct {
 	// control plane may ask for; AutoApply decides whether the host also does it unprompted, which is
 	// what keeps a fleet patched through a control-plane outage.
 	//
-	// **Farrier still does not implement it.** The timer that applies updates unprompted is
-	// unattended-upgrades', configured by the distribution and not by Farrier, so this setting is
+	// **HostSeal still does not implement it.** The timer that applies updates unprompted is
+	// unattended-upgrades', configured by the distribution and not by HostSeal, so this setting is
 	// reported to the control plane and acted on by nothing. It is in the file from the first release
 	// because it belongs there, and because adding a policy key later means every host in a fleet has a
 	// policy file older than the software reading it.
 	//
 	// Making it real means writing /etc/apt/apt.conf.d on the host, and that is a larger decision than
-	// it looks. Farrier deliberately configures nothing about the host's own apt — the fragment the
+	// it looks. HostSeal deliberately configures nothing about the host's own apt — the fragment the
 	// update helper uses is named by APT_CONFIG for one invocation, precisely so that it changes
 	// nothing for anything else — and there is no intent that writes a file, no helper that could own
 	// one, and docs/EXTENDING.md rules out a fourth. So it waits for a design rather than for an
@@ -165,7 +165,7 @@ type Services struct {
 	// Restartable lists the units this host will start, stop or restart on request.
 	//
 	// Entries are matched with shell-style globbing so that a fleet-wide policy can name
-	// "farrier-*.service" without enumerating instances. The list is empty in the shipped default:
+	// "hostseal-*.service" without enumerating instances. The list is empty in the shipped default:
 	// like trusted-signers, a fresh host permits nothing until an administrator says otherwise.
 	Restartable []string `toml:"restartable"`
 
@@ -190,7 +190,7 @@ type Containers struct {
 	// least revealing thing until an administrator decides otherwise. Container state is a genuinely
 	// different disclosure from a unit list — names describe what a business runs, image tags leak
 	// internal registry hostnames, and command lines have a long history of carrying credentials — and
-	// a host that agreed to report its package state has not thereby agreed to report that. Farrier's
+	// a host that agreed to report its package state has not thereby agreed to report that. HostSeal's
 	// own collector reports an executable name rather than a command line for exactly that reason, but
 	// the host still gets to say no.
 	//
@@ -211,7 +211,7 @@ type Limits struct {
 	MaxJobAgeSeconds int `toml:"max_job_age_seconds"`
 }
 
-// Policy is a parsed and validated /etc/farrier/policy.toml.
+// Policy is a parsed and validated /etc/hostseal/policy.toml.
 //
 // It is a value type with no pointers into the file it came from, so a helper can load it, use it and
 // let it go without worrying about aliasing. Loading is cheap and happens per invocation on purpose:
@@ -317,12 +317,12 @@ func Load() (Policy, error) { return LoadFrom(Path) }
 
 // LoadFrom reads and validates a policy from an explicit path.
 //
-// It exists so that tests and `farrier-agent policy check` exercise the same code as production rather
+// It exists so that tests and `hostseal-agent policy check` exercise the same code as production rather
 // than a parallel implementation that happens to agree today.
 //
 // The root helpers deliberately do not expose it. A helper that took a policy path from its command
 // line would be one a compromised agent could point at a file it had just written — the sudoers entry
-// pins the program and not its arguments, and the agent can write /var/lib/farrier — so the enforcement
+// pins the program and not its arguments, and the agent can write /var/lib/hostseal — so the enforcement
 // would still run as root, against exactly the policy the attacker chose.
 func LoadFrom(path string) (Policy, error) {
 	raw, err := os.ReadFile(path)
@@ -429,7 +429,7 @@ func pausedAt(path string) bool {
 
 // RestartableAllows reports whether a unit name is on the restartable list.
 //
-// Matching is by shell-style glob so a policy can name "farrier-*.service" without enumerating
+// Matching is by shell-style glob so a policy can name "hostseal-*.service" without enumerating
 // instances. An empty list matches nothing, which is the shipped default: a host permits no service
 // operations at all until an administrator writes down which ones it permits.
 func (p Policy) RestartableAllows(unit string) bool {
