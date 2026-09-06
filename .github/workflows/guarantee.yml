@@ -54,11 +54,15 @@ jobs:
       HOSTSEAL_TEST_DATABASE_URL: postgres://hostseal_app:hostseal_app@127.0.0.1:5432/hostseal_app?sslmode=disable
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+          # Named explicitly because setup-go v6 changed the default from go.sum to go.mod. go.mod
+          # lists the direct requirements; go.sum carries every transitive hash, which is what an
+          # indirect bump moves — so the default would reuse a cache entry built before it.
+          cache-dependency-path: go.sum
 
       - name: Create a database role that row-level security applies to
         # The postgres image's POSTGRES_USER is the cluster's bootstrap superuser, and a superuser is
