@@ -35,7 +35,7 @@ if [ -n "$unpinned" ]; then
   printf '  %s\n' $unpinned >&2
   echo >&2
   echo "Pin each to the full 40-character commit SHA, with the version in a trailing comment:" >&2
-  echo "  uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0" >&2
+  echo "  uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1" >&2
   exit 1
 fi
 

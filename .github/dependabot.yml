@@ -19,12 +19,27 @@ updates:
     directory: "/web"
     schedule:
       interval: weekly
+    # The angular group is not "packages whose name starts with @angular". It is every package whose
+    # supported version Angular decides, which is a larger set: the compiler checks the TypeScript
+    # version at startup and refuses anything outside a narrow range, angular-eslint's major tracks
+    # the framework's, and zone.js is a peer of the framework. Grouping those under "other" split one
+    # coupled upgrade across two pull requests that each broke on their own — one moved Angular and
+    # left TypeScript behind, the other moved TypeScript and left Angular behind — and merging both
+    # would not have helped, because neither TypeScript was the one Angular wanted. They travel
+    # together or not at all.
     groups:
       angular:
-        patterns: ["@angular*"]
+        patterns: ["@angular*", "angular-eslint", "typescript", "typescript-eslint", "zone.js"]
       other:
         patterns: ["*"]
-        exclude-patterns: ["@angular*"]
+        exclude-patterns: ["@angular*", "angular-eslint", "typescript", "typescript-eslint", "zone.js"]
+    ignore:
+      # Angular's compiler accepts TypeScript >=6.0.0 <6.1.0 and checks it at startup, and
+      # typescript-eslint rejects TS 7 outright with no released support to move to. Until the
+      # framework and the linter both arrive, a TypeScript 7 proposal is a weekly pull request that
+      # cannot be merged. Drop this the moment Angular ships support; it is a wait, not a policy.
+      - dependency-name: typescript
+        versions: [">=7"]
 
   - package-ecosystem: github-actions
     directory: "/"
