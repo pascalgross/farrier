@@ -377,12 +377,13 @@ func (p *Postgres) TenantForEnrollmentToken(ctx context.Context, hash string) (T
 // One list rather than three, so that a column added to the table cannot arrive on the tenant page and
 // be missing from the tenant list, which reads as a bug in the interface rather than as the omission
 // it is.
-const tenantColumns = `id, slug, display_name, created_at, approval_mode, webhook_url`
+const tenantColumns = `id, slug, display_name, created_at, approval_mode, webhook_url, host_limit, suspended`
 
 // scanTenant reads one tenant row, translating an absent one into ErrNotFound.
 func scanTenant(row pgx.Row) (Tenant, error) {
 	var t Tenant
-	err := row.Scan(&t.ID, &t.Slug, &t.DisplayName, &t.CreatedAt, &t.ApprovalMode, &t.WebhookURL)
+	err := row.Scan(&t.ID, &t.Slug, &t.DisplayName, &t.CreatedAt, &t.ApprovalMode, &t.WebhookURL,
+		&t.HostLimit, &t.Suspended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Tenant{}, ErrNotFound
 	}
@@ -412,9 +413,11 @@ func (p *Postgres) CreateTenant(ctx context.Context, t Tenant) error {
 		createdAt = &t.CreatedAt
 	}
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO tenants (id, slug, display_name, created_at, approval_mode, webhook_url)
-		VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5, $6)`,
-		string(t.ID), t.Slug, t.DisplayName, createdAt, string(t.ApprovalMode), t.WebhookURL)
+		INSERT INTO tenants (id, slug, display_name, created_at, approval_mode, webhook_url,
+		                     host_limit, suspended)
+		VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5, $6, $7, $8)`,
+		string(t.ID), t.Slug, t.DisplayName, createdAt, string(t.ApprovalMode), t.WebhookURL,
+		t.HostLimit, t.Suspended)
 	// wrap turns a unique violation into ErrConflict, which here is a slug somebody else already has —
 	// or, for a caller that generates its own ids, an id that is already taken.
 	return wrap(err, "creating a tenant")
@@ -449,7 +452,7 @@ func (p *Postgres) ListTenants(ctx context.Context) ([]Tenant, error) {
 	return out, wrap(rows.Err(), "listing tenants")
 }
 
-// UpdateTenant applies a tenant's display name, approval mode and webhook.
+// UpdateTenant applies a tenant's display name, approval mode, webhook, host limit and suspension.
 //
 // The slug is deliberately not among the columns. It is what logs, support tickets and anything
 // external refer to this tenant by, so a rename is refused by the API rather than half-applied here.
@@ -460,9 +463,9 @@ func (p *Postgres) ListTenants(ctx context.Context) ([]Tenant, error) {
 func (p *Postgres) UpdateTenant(ctx context.Context, t Tenant) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE tenants
-		   SET display_name = $2, approval_mode = $3, webhook_url = $4
+		   SET display_name = $2, approval_mode = $3, webhook_url = $4, host_limit = $5, suspended = $6
 		 WHERE id = $1`,
-		string(t.ID), t.DisplayName, string(t.ApprovalMode), t.WebhookURL)
+		string(t.ID), t.DisplayName, string(t.ApprovalMode), t.WebhookURL, t.HostLimit, t.Suspended)
 	if err != nil {
 		return wrap(err, "updating a tenant")
 	}
@@ -673,6 +676,31 @@ func (s *scopedPostgres) GetHostByMachineID(ctx context.Context, hash string) (H
 		return Host{}, err
 	}
 	return h, nil
+}
+
+// CountHosts returns how many hosts this tenant has, without returning any of them.
+//
+// One statement and two integers. It is scoped through withTenant like every other read of a
+// tenant-owned table, so the row-level security policy answers it rather than being worked around — a
+// count taken outside the boundary would be the one query in this file that could see across it.
+//
+// `revoked` is counted rather than filtered so that both numbers come from one pass. The distinction
+// matters to both callers: a host limit is checked against the active count, because revoking a host is
+// how an operator makes room for another one, and a hosting provider bills the active count for the
+// same reason.
+func (s *scopedPostgres) CountHosts(ctx context.Context) (HostCounts, error) {
+	var counts HostCounts
+	err := s.withTenant(ctx, "counting hosts", func(tx pgx.Tx) error {
+		return wrap(tx.QueryRow(ctx, `
+			SELECT count(*), count(*) FILTER (WHERE NOT revoked)
+			  FROM hosts
+			 WHERE tenant_id = $1`,
+			string(s.tenant)).Scan(&counts.Total, &counts.Active), "counting hosts")
+	})
+	if err != nil {
+		return HostCounts{}, err
+	}
+	return counts, nil
 }
 
 // ListHosts returns every host in this tenant, ordered by hostname then id.

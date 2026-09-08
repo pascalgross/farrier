@@ -1010,6 +1010,42 @@ type Tenant struct {
 	// feature but a leak: one list of sinks for the whole installation delivers one customer's
 	// hostnames and operator names to another customer's endpoint.
 	WebhookURL string
+
+	// HostLimit is how many hosts may be enrolled into this fleet, or nil for no limit.
+	//
+	// A pointer rather than an int, because zero is a limit somebody means — a fleet that may hold no
+	// hosts yet — and "no limit" has to be a different value from "none allowed". Every installation
+	// that is not selling this leaves it nil, which is what `hostseal-server serve` creates.
+	//
+	// It gates enrolment and nothing else. Lowering it below a fleet's current size revokes nothing and
+	// reaches no machine: the hosts that are enrolled stay enrolled, and the next machine to present a
+	// token is refused. A setting that could take a running host away from its operator would be a
+	// lever on an enrolled host, which is the one thing this control plane does not build.
+	HostLimit *int
+
+	// Suspended is whether the control plane refuses this fleet's agent requests.
+	//
+	// It is refusal rather than reach: a suspended fleet's agents keep running, keep applying the
+	// host's own local policy and keep installing security updates on their own timer, exactly as they
+	// do when the control plane is unreachable for any other reason. Nothing is uninstalled and nothing
+	// is deleted.
+	Suspended bool
+}
+
+// HostCounts is how large a fleet is, and nothing else about it.
+//
+// It exists so that the platform role can be told a number without being given a fleet. Whoever runs an
+// installation for other people has to be able to count what they are charging for; letting them read
+// a host list to do it would mean hostnames, facts and jobs for a question whose answer is an integer.
+type HostCounts struct {
+	// Total is every host row this fleet holds, revoked ones included.
+	Total int
+
+	// Active is the hosts whose certificates the control plane still accepts.
+	//
+	// This is the number a host limit is checked against and the number a hosting provider bills for.
+	// A revoked host keeps its row for the audit trail and stops counting the moment it is revoked.
+	Active int
 }
 
 // Store is the control plane's persistence.
@@ -1215,6 +1251,15 @@ type Scoped interface {
 
 	// ListHosts returns every host in this tenant, ordered by hostname.
 	ListHosts(ctx context.Context) ([]Host, error)
+
+	// CountHosts returns how many hosts this tenant has, without returning any of them.
+	//
+	// A separate method rather than len(ListHosts(...)) for two reasons that are not about speed. The
+	// platform API answers a usage question with it, and a method that returns two integers cannot be
+	// made to leak a hostname by a later refactor; and the enrolment path calls it on every enrolment
+	// into a limited fleet, where loading a fleet to count it would be work proportional to the fleet
+	// for an answer that is not.
+	CountHosts(ctx context.Context) (HostCounts, error)
 
 	// RecordHeartbeat applies a heartbeat's fields to a host.
 	RecordHeartbeat(ctx context.Context, hostID string, u HeartbeatUpdate) error

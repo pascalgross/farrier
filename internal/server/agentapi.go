@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -83,6 +84,46 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		case !errors.Is(err, store.ErrNotFound):
 			slog.Error("machine id lookup failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "could not check for an existing host")
+			return
+		}
+	}
+
+	// Suspension and the host limit are checked here: after the machine-id claim and before the token
+	// is consumed, so that a refusal leaves the token usable and the operator can retry once whatever
+	// it names has been dealt with. Burning a token to say "not right now" would turn a billing
+	// question into a support ticket about a spent credential.
+	//
+	// Both settings belong to the tenant and are administered by the platform role. Neither reaches a
+	// host: this is the control plane declining to enrol a new machine, which it may always do, and not
+	// an instruction to a machine that is already enrolled.
+	tenantRow, err := s.cfg.Store.GetTenant(r.Context(), tenantID)
+	if err != nil {
+		slog.Error("could not read the enrolling tenant", "error", err, "tenant", tenantID)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read the fleet")
+		return
+	}
+	if tenantRow.Suspended {
+		writeError(w, http.StatusForbidden, "tenant_suspended",
+			"this fleet is suspended; its agents are not being answered. Nothing on this machine has "+
+				"been changed and nothing needs to be undone.")
+		return
+	}
+	if tenantRow.HostLimit != nil {
+		counts, err := tenant.CountHosts(r.Context())
+		if err != nil {
+			slog.Error("could not count a fleet's hosts", "error", err, "tenant", tenantID)
+			writeError(w, http.StatusInternalServerError, "internal", "could not count the fleet")
+			return
+		}
+		if counts.Active >= *tenantRow.HostLimit {
+			// The active count, not the total: revoking a host is how an operator makes room for
+			// another one, and a limit measured against rows kept for the audit trail would make that
+			// impossible for a reason nobody could see.
+			slog.Info("enrolment refused by the fleet's host limit",
+				"tenant", tenantID, "limit", *tenantRow.HostLimit, "active", counts.Active)
+			writeError(w, http.StatusForbidden, "host_limit_reached",
+				fmt.Sprintf("this fleet may hold %d host(s) and already has %d. Revoke one to make "+
+					"room, or raise the limit.", *tenantRow.HostLimit, counts.Active))
 			return
 		}
 	}

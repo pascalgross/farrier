@@ -326,7 +326,7 @@ func (m *Memory) ListTenants(_ context.Context) ([]Tenant, error) {
 	return out, nil
 }
 
-// UpdateTenant applies a tenant's display name, approval mode and webhook URL.
+// UpdateTenant applies a tenant's display name, approval mode, webhook URL, host limit and suspension.
 //
 // The id, the slug and the creation time are not editable: they are what other rows, URLs and support
 // tickets refer to, and a customer changing what they are called must not change what they are.
@@ -349,6 +349,8 @@ func (m *Memory) UpdateTenant(_ context.Context, t Tenant) error {
 	existing.DisplayName = t.DisplayName
 	existing.ApprovalMode = mode
 	existing.WebhookURL = t.WebhookURL
+	existing.HostLimit = t.HostLimit
+	existing.Suspended = t.Suspended
 	m.tenants[t.ID] = existing
 	return nil
 }
@@ -820,6 +822,29 @@ func (s *scopedMemory) GetHostByMachineID(_ context.Context, hash string) (Host,
 		}
 	}
 	return Host{}, ErrNotFound
+}
+
+// CountHosts returns how many hosts this tenant has, without returning any of them.
+//
+// Written out rather than delegating to ListHosts, for the reason every method in this file is: this
+// stands in for a statement the database runs, and a stand-in that reached its answer differently would
+// let a test pass here and fail there. The tenant filter is the same one, applied the same way.
+func (s *scopedMemory) CountHosts(_ context.Context) (HostCounts, error) {
+	m := s.store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var counts HostCounts
+	for _, row := range m.hosts {
+		if row.tenant != s.tenant {
+			continue
+		}
+		counts.Total++
+		if !row.host.Revoked {
+			counts.Active++
+		}
+	}
+	return counts, nil
 }
 
 // ListHosts returns this tenant's hosts, ordered by hostname then id.
