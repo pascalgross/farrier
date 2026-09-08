@@ -725,13 +725,30 @@ func (s *scopedMemory) ListEnrollmentTokens(_ context.Context) ([]EnrollmentToke
 // tenant, because 0004 narrowed that index to (tenant_id, machine_id_hash) so that enrolling a machine
 // somebody else already has does not tell you that they have it; and the certificate must name the host
 // being enrolled, because the composite foreign key refuses one that points anywhere else.
+//
+// The host limit is checked here too, under the same lock the writes happen under, because that is what
+// the PostgreSQL store does with its row lock and a test that passed against one implementation and not
+// the other would be worse than no test.
 func (s *scopedMemory) CreateEnrolledHost(_ context.Context, h Host, c Certificate) error {
 	m := s.store
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.tenants[s.tenant]; !ok {
+	tenant, ok := m.tenants[s.tenant]
+	if !ok {
 		return errUnknownTenant(s.tenant)
+	}
+	if tenant.HostLimit != nil {
+		// Active, not total: revoking a host is how an operator makes room for another one.
+		active := 0
+		for _, row := range m.hosts {
+			if row.tenant == s.tenant && !row.host.Revoked {
+				active++
+			}
+		}
+		if active >= *tenant.HostLimit {
+			return ErrHostLimitReached
+		}
 	}
 	if c.HostID != h.ID {
 		return fmt.Errorf("store: certificate %q names host %q, not the host being enrolled %q",

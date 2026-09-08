@@ -45,6 +45,14 @@ var (
 	// reconnaissance, so the distinction is not carried out of the store at all rather than being
 	// carried and then remembered not to reveal.
 	ErrTokenUnusable = errors.New("store: token unusable")
+
+	// ErrHostLimitReached reports a fleet that already holds as many active hosts as it may.
+	//
+	// It comes from CreateEnrolledHost rather than from a check the caller makes, because a caller's
+	// check cannot be atomic with the insert: two machines enrolling at once with two valid tokens
+	// would both read a count with room in it and both write. The server checks the limit early too,
+	// to refuse before it spends a token, and this is the one that decides.
+	ErrHostLimitReached = errors.New("store: fleet is at its host limit")
 )
 
 // EnrollmentToken authorises exactly one enrolment.
@@ -1229,12 +1237,20 @@ type Scoped interface {
 	// Unknown, expired and consumed are one error here for the same reason they are everywhere else.
 	GetEnrollmentToken(ctx context.Context, hash string) (EnrollmentToken, error)
 
-	// CreateEnrolledHost records a newly enrolled host and its first certificate together.
+	// CreateEnrolledHost records a newly enrolled host and its first certificate together, if the
+	// fleet's host limit leaves room. It answers ErrHostLimitReached when it does not.
 	//
-	// The two are one operation because half of it is worse than neither. A host row without its
+	// The two writes are one operation because half of it is worse than neither. A host row without its
 	// certificate is a machine that cannot authenticate and, because its machine-id hash is taken,
 	// cannot enrol again either — permanently stuck on a failure that happened once, in a fraction of a
 	// second, on the server.
+	//
+	// The limit is enforced *here*, inside that same transaction, rather than being left to the caller.
+	// A caller can only count and then write, and between those two statements another enrolment fits:
+	// two machines presenting two valid tokens into a fleet with one slot left both see room and both
+	// take it. Autoscaling and batch provisioning make that the ordinary case rather than the unlucky
+	// one. The limit read here is the one current at the moment of the write, so raising a limit takes
+	// effect immediately and lowering one still revokes nothing.
 	CreateEnrolledHost(ctx context.Context, h Host, c Certificate) error
 
 	// GetHost returns one host by id, or ErrNotFound.

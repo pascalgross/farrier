@@ -701,8 +701,16 @@ route through which it learns something about a fleet's contents. Both are new, 
 what they replace, and both are worth stating plainly rather than leaving to be discovered.
 
 **`hostLimit` — how many hosts may enrol.** `NULL` for no limit, which is the default and what
-`hostseal-server serve` creates. It is checked in the enrolment handler, after the machine-id claim and
-before the token is consumed, so a refusal leaves the token usable. What makes it safe to exist is
+`hostseal-server serve` creates. It is checked twice, and the two checks answer different questions.
+The enrolment handler checks it after the machine-id claim and before the token is consumed, so that
+the ordinary refusal leaves the token usable. That check is a courtesy and not the boundary: it reads a
+count and writes the host several statements later, so two machines presenting two valid tokens into a
+fleet with one slot left both pass it. `Scoped.CreateEnrolledHost` is where the limit is *enforced* —
+it locks the fleet's row, counts and writes inside one transaction, and answers `ErrHostLimitReached`
+when there is no room, which the handler renders as the same `403 host_limit_reached`.
+`TestGuaranteeAHostLimitHoldsAgainstSimultaneousEnrolments` enrols twelve machines at once into a fleet
+of three and is the test for that; without the row lock, six get in. What makes the setting safe to
+exist is
 the asymmetry: **lowering a limit below a fleet's current size revokes nothing, pauses nothing and
 reaches no machine.** Hosts that are enrolled stay enrolled and stay accepted; what changes is the
 answer the next machine gets. A setting that could take a running host away from its operator would be

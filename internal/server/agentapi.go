@@ -93,6 +93,12 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// it names has been dealt with. Burning a token to say "not right now" would turn a billing
 	// question into a support ticket about a spent credential.
 	//
+	// This check is for the message, not for the guarantee. It reads a count and then, several
+	// statements later, a row is written, and two machines enrolling together with two valid tokens
+	// both pass it. What actually enforces the limit is CreateEnrolledHost, which counts and writes
+	// inside one transaction with the fleet's row locked. Both exist because they answer different
+	// questions: this one refuses cheaply and without spending anything, that one refuses correctly.
+	//
 	// Both settings belong to the tenant and are administered by the platform role. Neither reaches a
 	// host: this is the control plane declining to enrol a new machine, which it may always do, and not
 	// an instruction to a machine that is already enrolled.
@@ -194,6 +200,19 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "already_enrolled", "this host is already enrolled")
+			return
+		}
+		if errors.Is(err, store.ErrHostLimitReached) {
+			// The check above passed and this one did not, which means another machine took the last
+			// slot in between. The token is spent by now — it had to be, since consuming it is what
+			// proves this enrolment is the one that redeemed it — so the message says so rather than
+			// leaving an operator to discover it on the retry. Same status and code as the early
+			// refusal, because to the agent it is the same answer: the fleet is full, back off.
+			slog.Info("enrolment lost the race for a fleet's last slot", "tenant", tenantID, "host", hostID)
+			writeError(w, http.StatusForbidden, "host_limit_reached",
+				"this fleet filled up while this enrolment was in flight. Nothing on this machine has "+
+					"been changed. The enrolment token has been spent, so issue a new one after "+
+					"revoking a host or raising the limit.")
 			return
 		}
 		slog.Error("could not record an enrolment", "error", err, "host", hostID)

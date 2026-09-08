@@ -584,11 +584,46 @@ func (s *scopedPostgres) ListEnrollmentTokens(ctx context.Context) ([]Enrollment
 // transaction that carries the tenant setting, which is why the two inserts and the isolation are one
 // mechanism rather than two.
 //
+// The fleet's row is locked first and its host limit is checked inside that lock, which is the same
+// shape as RenewCertificate's live-certificate cap and exists for the same reason: a limit checked in
+// one statement and enforced in another is not a limit. Two machines with two valid tokens enrolling
+// into a fleet with one slot left would otherwise both count three, both see room, and both write —
+// and batch provisioning is exactly the situation that produces simultaneous enrolments. The lock is
+// taken whether or not a limit is set, because enrolment happens once per machine in its lifetime and
+// serialising it per fleet costs nothing worth a second code path.
+//
+// Locking the fleet before writing the host is also the only order used anywhere: nothing takes a host
+// or certificate lock and then reaches for its tenant, so there is no cycle to deadlock on.
+//
 // Both rows are written with this handle's tenant rather than with whatever the Certificate carries.
 // The handle is the authority on whose fleet is being joined; a certificate is a value the caller
 // assembled, and the composite foreign key would refuse it anyway if the two disagreed.
 func (s *scopedPostgres) CreateEnrolledHost(ctx context.Context, h Host, c Certificate) error {
 	return s.withTenant(ctx, "recording an enrolment", func(tx pgx.Tx) error {
+		var limit *int
+		if err := tx.QueryRow(ctx,
+			`SELECT host_limit FROM tenants WHERE id = $1 FOR UPDATE`,
+			string(s.tenant)).Scan(&limit); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return wrap(err, "locking the fleet to enrol into it")
+		}
+		if limit != nil {
+			// Active, not total: revoking a host is how an operator makes room for another, and a
+			// limit measured against rows kept for the audit trail would make that impossible for a
+			// reason nobody could see.
+			var active int
+			if err := tx.QueryRow(ctx, `
+				SELECT count(*) FROM hosts WHERE tenant_id = $1 AND NOT revoked`,
+				string(s.tenant)).Scan(&active); err != nil {
+				return wrap(err, "counting a fleet before enrolling into it")
+			}
+			if active >= *limit {
+				return ErrHostLimitReached
+			}
+		}
+
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO hosts (id, tenant_id, hostname, machine_id_hash, fleet_group, agent_version,
 			                   enrolled_at)

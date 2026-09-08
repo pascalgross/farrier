@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -707,5 +708,114 @@ func TestDeleteHostTakesItsDependentRowsWithIt(t *testing.T) {
 	}
 	if err := tenant.DeleteHost(ctx, "01JNOSUCHHOST"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleting an unknown host produced %v, want ErrNotFound", err)
+	}
+}
+
+// TestGuaranteeAHostLimitHoldsAgainstSimultaneousEnrolments enrols more machines at once than the
+// fleet may hold, and asserts the fleet does not exceed its limit.
+//
+// This is the test for a race a code review found and the earlier tests did not: the server counted a
+// fleet's hosts in one statement and wrote the new host in another, so two machines presenting two
+// valid tokens into a fleet with one slot left both read a count with room in it and both wrote. The
+// limit is the entitlement a customer is billed against, and batch provisioning — a autoscaling group
+// coming up, a rack being enrolled from a loop — makes simultaneous enrolment the ordinary case rather
+// than the unlucky one.
+//
+// It runs against PostgreSQL only, deliberately. The in-memory store takes one lock around the whole
+// operation, so it cannot exhibit this bug and cannot prove its absence either; what is being tested is
+// that the row lock and the transaction do their job against a real database with real concurrency.
+func TestGuaranteeAHostLimitHoldsAgainstSimultaneousEnrolments(t *testing.T) {
+	pg := newPostgres(t)
+	ctx := context.Background()
+
+	const limit = 3
+	const racers = 12
+
+	scoped := testTenant(t, pg, "crowded", ApprovalNone)
+	row, err := pg.GetTenant(ctx, scoped.Tenant())
+	if err != nil {
+		t.Fatalf("reading the tenant: %v", err)
+	}
+	allowed := limit
+	row.HostLimit = &allowed
+	if err := pg.UpdateTenant(ctx, row); err != nil {
+		t.Fatalf("setting the host limit: %v", err)
+	}
+
+	// All of them wait on one channel and are released together, which is what makes this a race rather
+	// than twelve sequential enrolments that happen to use goroutines.
+	start := make(chan struct{})
+	results := make(chan error, racers)
+	for i := range racers {
+		go func() {
+			id := fmt.Sprintf("01JRACER%04d", i)
+			host := Host{
+				ID:            id,
+				Hostname:      id + ".example",
+				MachineIDHash: "sha256:" + id,
+				Group:         "web-prod",
+				AgentVersion:  "0.0.0-test",
+				EnrolledAt:    time.Now().UTC().Truncate(time.Microsecond),
+			}
+			<-start
+			results <- scoped.CreateEnrolledHost(ctx, host, Certificate{
+				Fingerprint: "fp-race-" + id,
+				HostID:      id,
+				TenantID:    scoped.Tenant(),
+				Serial:      "01",
+				IssuedAt:    time.Now(), NotAfter: time.Now().Add(90 * 24 * time.Hour),
+			})
+		}()
+	}
+	close(start)
+
+	enrolled, refused := 0, 0
+	for range racers {
+		switch err := <-results; {
+		case err == nil:
+			enrolled++
+		case errors.Is(err, ErrHostLimitReached):
+			refused++
+		default:
+			t.Fatalf("enrolling: unexpected error %v", err)
+		}
+	}
+
+	if enrolled != limit || refused != racers-limit {
+		t.Fatalf("with a limit of %d and %d simultaneous enrolments: %d enrolled and %d refused; want %d and %d",
+			limit, racers, enrolled, refused, limit, racers-limit)
+	}
+
+	// The database is the authority on what happened, not the return values: a store that answered nil
+	// and wrote nothing would pass the count above.
+	counts, err := scoped.CountHosts(ctx)
+	if err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if counts.Active != limit {
+		t.Fatalf("the fleet holds %d active hosts, over a limit of %d", counts.Active, limit)
+	}
+}
+
+// TestAFleetWithNoLimitTakesEveryHostOfferedToIt asserts the lock added for the limit did not turn a
+// nil limit into a small one.
+//
+// The check and the row lock run on every enrolment, limit or no limit. A bug there — reading NULL as
+// zero, say — would refuse every enrolment on every unlimited fleet, which is every fleet on an
+// ordinary installation.
+func TestAFleetWithNoLimitTakesEveryHostOfferedToIt(t *testing.T) {
+	pg := newPostgres(t)
+	scoped := testTenant(t, pg, "unlimited", ApprovalNone)
+
+	for i := range 5 {
+		enrolTestHost(t, scoped, fmt.Sprintf("01JOPEN%05d", i), "open.example")
+	}
+
+	counts, err := scoped.CountHosts(context.Background())
+	if err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if counts.Active != 5 {
+		t.Fatalf("a fleet with no limit holds %d of 5 hosts offered", counts.Active)
 	}
 }
