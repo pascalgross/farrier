@@ -269,14 +269,13 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, who 
 			"a tenant's slug cannot be changed: it is what logs and support tickets refer to")
 		return
 	}
-	if req.DisplayName != nil {
-		tenant.DisplayName = *req.DisplayName
-	}
-	if req.WebhookURL != nil {
-		if !checkWebhookURL(w, *req.WebhookURL) {
-			return
-		}
-		tenant.WebhookURL = *req.WebhookURL
+	// A patch of exactly what this request asked to change, rather than the whole row read a moment
+	// ago. Writing back every field would mean two concurrent edits each restoring the other's stale
+	// values — and the hosting layer sets the host limit and the suspension in two separate requests,
+	// so a fleet could come out of suspension because somebody renamed it at the wrong moment.
+	patch := store.TenantPatch{DisplayName: req.DisplayName, WebhookURL: req.WebhookURL}
+	if req.WebhookURL != nil && !checkWebhookURL(w, *req.WebhookURL) {
+		return
 	}
 	if req.ApprovalMode != nil {
 		mode := store.ApprovalMode(*req.ApprovalMode)
@@ -285,7 +284,7 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, who 
 				`approvalMode is one of "none", "self" or "second_person"; see docs/SECURITY.md §3`)
 			return
 		}
-		tenant.ApprovalMode = mode
+		patch.ApprovalMode = &mode
 	}
 	if req.HostLimit.Set {
 		if !checkHostLimit(w, req.HostLimit) {
@@ -296,13 +295,13 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, who 
 		// excess: a setting that could take a running host away from its operator would be a lever on
 		// an enrolled host, and there are none of those in this control plane. What it changes is the
 		// answer the enrolment endpoint gives the next machine.
-		tenant.HostLimit = req.HostLimit.Value
+		patch.SetHostLimit = true
+		patch.HostLimit = req.HostLimit.Value
 	}
-	if req.Suspended != nil {
-		tenant.Suspended = *req.Suspended
-	}
+	patch.Suspended = req.Suspended
 
-	if err := s.cfg.Store.UpdateTenant(r.Context(), tenant); err != nil {
+	tenant, err = s.cfg.Store.UpdateTenant(r.Context(), id, patch)
+	if err != nil {
 		slog.Error("could not update a tenant", "error", err, "tenant", id)
 		writeError(w, http.StatusInternalServerError, "internal", "could not update the tenant")
 		return

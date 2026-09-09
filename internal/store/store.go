@@ -1040,6 +1040,32 @@ type Tenant struct {
 	Suspended bool
 }
 
+// TenantPatch is the subset of a tenant's settings a caller is changing.
+//
+// A pointer per field, because "leave this alone" and "set this to its zero value" are different
+// requests and a plain struct cannot tell them apart: an empty display name, an empty webhook URL and
+// `suspended = false` are all things somebody legitimately asks for.
+//
+// It exists so that a tenant update is one statement rather than a read, a change and a write. The
+// read-modify-write it replaced lost concurrent edits by construction — each caller wrote back every
+// field from the row it had read, so whichever committed last silently restored the other's stale
+// values. With the hosting layer setting the host limit and the suspension through two separate
+// requests, that was a fleet coming out of suspension because somebody renamed it at the wrong moment.
+type TenantPatch struct {
+	// DisplayName, ApprovalMode and WebhookURL are written when non-nil.
+	DisplayName  *string
+	ApprovalMode *ApprovalMode
+	WebhookURL   *string
+
+	// HostLimit needs two fields rather than one, because nil is a value here: it means "no limit".
+	// SetHostLimit is what says the caller is writing the column at all.
+	HostLimit    *int
+	SetHostLimit bool
+
+	// Suspended is written when non-nil.
+	Suspended *bool
+}
+
 // HostCounts is how large a fleet is, and nothing else about it.
 //
 // It exists so that the platform role can be told a number without being given a fleet. Whoever runs an
@@ -1155,7 +1181,14 @@ type Store interface {
 	// deliberate and it is the same rule migration 0002 wrote down for approval_required: a job records
 	// what it required, so relaxing the setting cannot release work that was queued under a stricter
 	// one.
-	UpdateTenant(ctx context.Context, t Tenant) error
+	//
+	// It takes a patch rather than a whole tenant because a whole tenant is a lost update waiting to
+	// happen: two callers that each read the row, change one field and write all of them will each
+	// restore the other's stale values. That is not hypothetical here — the hosting layer sets the host
+	// limit and the suspension in two separate requests, so an administrator editing the approval mode
+	// in between could put a suspended fleet back into service. Only the fields the patch carries are
+	// written, in one statement, so there is no window between the read and the write to lose.
+	UpdateTenant(ctx context.Context, id TenantID, patch TenantPatch) (Tenant, error)
 
 	// DeleteTenant removes a tenant and everything belonging to it.
 	DeleteTenant(ctx context.Context, id TenantID) error

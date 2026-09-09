@@ -732,13 +732,10 @@ func TestGuaranteeAHostLimitHoldsAgainstSimultaneousEnrolments(t *testing.T) {
 	const racers = 12
 
 	scoped := testTenant(t, pg, "crowded", ApprovalNone)
-	row, err := pg.GetTenant(ctx, scoped.Tenant())
-	if err != nil {
-		t.Fatalf("reading the tenant: %v", err)
-	}
 	allowed := limit
-	row.HostLimit = &allowed
-	if err := pg.UpdateTenant(ctx, row); err != nil {
+	if _, err := pg.UpdateTenant(ctx, scoped.Tenant(), TenantPatch{
+		SetHostLimit: true, HostLimit: &allowed,
+	}); err != nil {
 		t.Fatalf("setting the host limit: %v", err)
 	}
 
@@ -817,5 +814,81 @@ func TestAFleetWithNoLimitTakesEveryHostOfferedToIt(t *testing.T) {
 	}
 	if counts.Active != 5 {
 		t.Fatalf("a fleet with no limit holds %d of 5 hosts offered", counts.Active)
+	}
+}
+
+// TestConcurrentTenantEditsDoNotOverwriteEachOther changes two settings at once and asserts both stick.
+//
+// The test for a lost update that review found. `UpdateTenant` used to take a whole `Tenant`, so every
+// caller read the row, changed one field and wrote back all of them — and whichever committed last
+// silently restored the other's stale values. The hosting layer sets a fleet's host limit and its
+// suspension through two separate requests, which made this the shape of a fleet coming back out of
+// suspension because something else touched the row in between.
+//
+// Sequential rather than parallel on purpose: the interleaving that loses an update is read-read-write-
+// write, and doing it by hand is deterministic where two goroutines would be a test that passes on a
+// fast machine.
+func TestConcurrentTenantEditsDoNotOverwriteEachOther(t *testing.T) {
+	pg := newPostgres(t)
+	ctx := context.Background()
+	scoped := testTenant(t, pg, "contended", ApprovalNone)
+
+	// Both editors read the same starting row, as two handlers serving two requests would.
+	before, err := pg.GetTenant(ctx, scoped.Tenant())
+	if err != nil {
+		t.Fatalf("reading the tenant: %v", err)
+	}
+	if before.Suspended || before.HostLimit != nil {
+		t.Fatalf("a new tenant should start unsuspended and unlimited, got %+v", before)
+	}
+
+	// One suspends the fleet. The other, holding the row it read *before* that, sets a host limit.
+	suspended := true
+	if _, err := pg.UpdateTenant(ctx, scoped.Tenant(), TenantPatch{Suspended: &suspended}); err != nil {
+		t.Fatalf("suspending: %v", err)
+	}
+	limit := 3
+	after, err := pg.UpdateTenant(ctx, scoped.Tenant(), TenantPatch{SetHostLimit: true, HostLimit: &limit})
+	if err != nil {
+		t.Fatalf("setting the limit: %v", err)
+	}
+
+	// The second edit must not have carried `suspended = false` back with it.
+	if !after.Suspended {
+		t.Error("setting a host limit put a suspended fleet back into service")
+	}
+	if after.HostLimit == nil || *after.HostLimit != limit {
+		t.Errorf("host limit is %v, want %d", after.HostLimit, limit)
+	}
+
+	// And the row the database holds agrees with what the update returned.
+	stored, err := pg.GetTenant(ctx, scoped.Tenant())
+	if err != nil {
+		t.Fatalf("re-reading: %v", err)
+	}
+	if !stored.Suspended || stored.HostLimit == nil || *stored.HostLimit != limit {
+		t.Errorf("stored tenant is %+v, want suspended with a limit of %d", stored, limit)
+	}
+
+	// Removing the limit is a different request from leaving it alone, which is the whole reason
+	// SetHostLimit exists beside a nil-able HostLimit.
+	cleared, err := pg.UpdateTenant(ctx, scoped.Tenant(), TenantPatch{SetHostLimit: true, HostLimit: nil})
+	if err != nil {
+		t.Fatalf("clearing the limit: %v", err)
+	}
+	if cleared.HostLimit != nil {
+		t.Errorf("host limit is %v after an explicit clear, want nil", cleared.HostLimit)
+	}
+	if !cleared.Suspended {
+		t.Error("clearing the limit also cleared the suspension")
+	}
+
+	// A patch that carries nothing changes nothing.
+	untouched, err := pg.UpdateTenant(ctx, scoped.Tenant(), TenantPatch{})
+	if err != nil {
+		t.Fatalf("empty patch: %v", err)
+	}
+	if !untouched.Suspended || untouched.HostLimit != nil || untouched.DisplayName != before.DisplayName {
+		t.Errorf("an empty patch changed something: %+v", untouched)
 	}
 }

@@ -333,26 +333,39 @@ func (m *Memory) ListTenants(_ context.Context) ([]Tenant, error) {
 //
 // Nothing already queued is revisited. A job records the approval rule it was created under, so
 // relaxing this setting cannot release work that was queued under a stricter one.
-func (m *Memory) UpdateTenant(_ context.Context, t Tenant) error {
-	mode, err := normaliseApprovalMode(t.ApprovalMode)
-	if err != nil {
-		return err
-	}
-
+func (m *Memory) UpdateTenant(_ context.Context, id TenantID, patch TenantPatch) (Tenant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	existing, ok := m.tenants[t.ID]
+	existing, ok := m.tenants[id]
 	if !ok {
-		return ErrNotFound
+		return Tenant{}, ErrNotFound
 	}
-	existing.DisplayName = t.DisplayName
-	existing.ApprovalMode = mode
-	existing.WebhookURL = t.WebhookURL
-	existing.HostLimit = t.HostLimit
-	existing.Suspended = t.Suspended
-	m.tenants[t.ID] = existing
-	return nil
+
+	// Field by field, matching the PostgreSQL statement: only what the patch carries is written, so a
+	// caller changing one setting cannot restore stale values for the others.
+	if patch.DisplayName != nil {
+		existing.DisplayName = *patch.DisplayName
+	}
+	if patch.ApprovalMode != nil {
+		mode, err := normaliseApprovalMode(*patch.ApprovalMode)
+		if err != nil {
+			return Tenant{}, err
+		}
+		existing.ApprovalMode = mode
+	}
+	if patch.WebhookURL != nil {
+		existing.WebhookURL = *patch.WebhookURL
+	}
+	if patch.SetHostLimit {
+		existing.HostLimit = patch.HostLimit
+	}
+	if patch.Suspended != nil {
+		existing.Suspended = *patch.Suspended
+	}
+
+	m.tenants[id] = existing
+	return existing, nil
 }
 
 // DeleteTenant removes a tenant and everything belonging to it.

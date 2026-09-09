@@ -168,7 +168,7 @@ approves another.
 | --- | --- |
 | `400` | Malformed body or CSR |
 | `401` | Token unknown, expired, or already used |
-| `403` | `host_limit_reached` — the fleet is at its host limit; `tenant_suspended` — the fleet is suspended. Neither consumes the token |
+| `403` | `host_limit_reached` — the fleet is at its host limit; `tenant_suspended` — the fleet is suspended. Neither consumes the token, with one exception: when two machines contend for a fleet's last slot the loser is refused by the atomic check, which happens after redemption, and its message says the token was spent |
 | `409` | A host with this `machineIdHash` is already enrolled |
 | `429` | Rate limited; honour `Retry-After` |
 

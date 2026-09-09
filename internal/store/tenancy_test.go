@@ -1702,12 +1702,8 @@ func TestGuaranteeATenantsApprovalModeCannotRewriteAJobAlreadyQueued(t *testing.
 		}
 
 		// The operator relaxes their own fleet's rule, which is a thing they are allowed to do.
-		stored, err := s.GetTenant(ctx, tenant.Tenant())
-		if err != nil {
-			t.Fatalf("reading the tenant: %v", err)
-		}
-		stored.ApprovalMode = ApprovalNone
-		if err := s.UpdateTenant(ctx, stored); err != nil {
+		relaxed := ApprovalNone
+		if _, err := s.UpdateTenant(ctx, tenant.Tenant(), TenantPatch{ApprovalMode: &relaxed}); err != nil {
 			t.Fatalf("relaxing the tenant: %v", err)
 		}
 

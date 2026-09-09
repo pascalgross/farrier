@@ -460,19 +460,37 @@ func (p *Postgres) ListTenants(ctx context.Context) ([]Tenant, error) {
 // A changed approval mode reaches jobs created afterwards and nothing already queued: each job records
 // what it required when it was created, which is what stops relaxing this setting from releasing work
 // that was queued under a stricter one.
-func (p *Postgres) UpdateTenant(ctx context.Context, t Tenant) error {
-	tag, err := p.pool.Exec(ctx, `
+func (p *Postgres) UpdateTenant(ctx context.Context, id TenantID, patch TenantPatch) (Tenant, error) {
+	// COALESCE for the three fields where NULL cannot be the intended value, and an explicit flag for
+	// host_limit, where it can: `COALESCE($6, host_limit)` would make "remove this fleet's limit"
+	// indistinguishable from "leave it alone", which is the same conflation that made the provisioner
+	// clear a limit on a misspelt argument.
+	//
+	// One statement, so there is no read-modify-write to lose a concurrent edit in, and RETURNING so
+	// the caller renders the row that now exists rather than the one it assembled.
+	var mode *string
+	if patch.ApprovalMode != nil {
+		s := string(*patch.ApprovalMode)
+		mode = &s
+	}
+
+	row := p.pool.QueryRow(ctx, `
 		UPDATE tenants
-		   SET display_name = $2, approval_mode = $3, webhook_url = $4, host_limit = $5, suspended = $6
-		 WHERE id = $1`,
-		string(t.ID), t.DisplayName, string(t.ApprovalMode), t.WebhookURL, t.HostLimit, t.Suspended)
-	if err != nil {
-		return wrap(err, "updating a tenant")
+		   SET display_name  = COALESCE($2, display_name),
+		       approval_mode = COALESCE($3, approval_mode),
+		       webhook_url   = COALESCE($4, webhook_url),
+		       host_limit    = CASE WHEN $5::boolean THEN $6::integer ELSE host_limit END,
+		       suspended     = COALESCE($7, suspended)
+		 WHERE id = $1
+		 RETURNING `+tenantColumns,
+		string(id), patch.DisplayName, mode, patch.WebhookURL,
+		patch.SetHostLimit, patch.HostLimit, patch.Suspended)
+
+	tenant, err := scanTenant(row)
+	if errors.Is(err, ErrNotFound) {
+		return Tenant{}, ErrNotFound
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return tenant, wrap(err, "updating a tenant")
 }
 
 // DeleteTenant removes a tenant and everything belonging to it.
